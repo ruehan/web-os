@@ -5,6 +5,10 @@
 //       프로세스는 그동안 Atomics.wait로 실제로 멈춰 있다. 커널이 응답을 미루면
 //       (빈 파이프 읽기, 자식 종료 대기 등) 프로세스는 그만큼 멈춰 있게 된다.
 
+import type { TraceRecord } from './trace.ts'
+
+export type { TraceRecord }
+
 export const Sys = {
   write: 1, // args [fd], data            -> ret 쓴 바이트 수
   read: 2, // args [fd, maxLen]          -> data
@@ -151,6 +155,8 @@ export type KernelEvent =
   | { type: 'fs-change' }
   /** 영구 저장소를 비웠다. 화면은 페이지를 다시 불러와 처음 상태로 시작한다. */
   | { type: 'storage-reset' }
+  /** 추적 중에 일어난 시스템 콜들. 너무 많으면 일부를 버리고 그 수를 dropped에 적는다. */
+  | { type: 'trace'; records: TraceRecord[]; dropped: number }
 
 /** 메인 스레드 → 커널 명령. */
 export type KernelCommand =
@@ -161,3 +167,5 @@ export type KernelCommand =
   | { type: 'kill'; pid: number }
   | { type: 'fs'; id: number; request: FsRequest }
   | { type: 'storage-reset' }
+  /** 시스템 콜 추적을 켜거나 끈다. */
+  | { type: 'trace'; on: boolean }

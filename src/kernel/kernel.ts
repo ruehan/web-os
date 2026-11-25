@@ -19,6 +19,7 @@ import {
 } from './abi.ts'
 import { Errno, KernelError } from './errno.ts'
 import { Pipe, WaitQueue } from './pipe.ts'
+import { describeArgs, describeResult, sysName, type TraceRecord } from './trace.ts'
 import { Tty } from './tty.ts'
 import { MemFs, type DirNode, type FileNode } from './vfs/memfs.ts'
 
@@ -55,6 +56,8 @@ interface Process {
   /** 조건을 기다리며 미뤄 둔 시스템 콜 */
   pending?: SysReq
   blockedOn?: WaitQueue
+  /** 지금의 시스템 콜이 처음 미뤄진 시각 (추적 기록의 대기 시간 계산용) */
+  blockedSince?: number
 }
 
 export interface ProcessHandle {
@@ -91,6 +94,9 @@ interface ExecOptions {
   sessionLeader?: boolean
 }
 
+/** 추적 기록을 묶어 보내는 간격과, 한 번에 보내는 최대 개수 */
+const TRACE_FLUSH_MS = 50
+const TRACE_BATCH_MAX = 400
 /** 파일 변경 알림을 묶어 보내는 간격 */
 const FS_NOTIFY_MS = 100
 const VERSION = 'Web OS 0.5 (wasm32-wasip1)'
@@ -107,6 +113,11 @@ export class Kernel {
   private modules = new WeakMap<FileNode, { version: number; module: WebAssembly.Module }>()
   private notifiedGeneration = 0
   private notifyTimer: ReturnType<typeof setTimeout> | undefined
+  private tracing = false
+  private traceBuffer: TraceRecord[] = []
+  private traceDropped = 0
+  private traceSeq = 0
+  private traceTimer: ReturnType<typeof setTimeout> | undefined
 
   constructor(host: KernelHost) {
     this.host = host
@@ -290,17 +301,65 @@ export class Kernel {
     try {
       res = this.dispatch(proc, req)
     } catch (e) {
-      if (e instanceof Gone) return
+      if (e instanceof Gone) {
+        // 응답 없이 끝났다: exit이거나, 호출 도중 종료된 경우(끊긴 파이프에 쓰기 등)
+        if (this.tracing) this.trace(proc, req, req.nr === Sys.exit ? undefined : { result: '= 종료됨', error: true })
+        return
+      }
       if (e instanceof Block) {
         proc.pending = req
         proc.blockedOn = e.queue
+        proc.blockedSince ??= this.host.now()
         e.queue.pids.add(pid)
         return
       }
       if (!(e instanceof KernelError)) throw e
       res = { errno: e.errno }
     }
+    if (this.tracing) this.trace(proc, req, describeResult(req, res))
+    proc.blockedSince = undefined
     writeReply(proc.channel, res)
+  }
+
+  // ───────────── 시스템 콜 추적 ─────────────
+
+  /** 추적을 켜면 모든 프로세스의 시스템 콜이 trace 이벤트로 나간다. */
+  setTracing(on: boolean): void {
+    this.tracing = on
+    if (on) return
+    clearTimeout(this.traceTimer)
+    this.traceTimer = undefined
+    this.traceBuffer = []
+    this.traceDropped = 0
+  }
+
+  private trace(proc: Process, req: SysReq, outcome?: { result: string; error: boolean }): void {
+    // 번호는 버린 호출에도 매기므로, 번호가 건너뛴 곳이 곧 기록이 빠진 곳이다.
+    const seq = ++this.traceSeq
+    // 화면이 따라올 수 없을 만큼 쏟아지면 넘치는 만큼은 세기만 한다.
+    if (this.traceBuffer.length >= TRACE_BATCH_MAX) this.traceDropped++
+    else {
+      const now = this.host.now()
+      this.traceBuffer.push({
+        seq,
+        time: now,
+        pid: proc.pid,
+        comm: proc.argv[0] ?? '',
+        call: sysName(req.nr),
+        args: describeArgs(req),
+        result: outcome?.result ?? '',
+        error: outcome?.error ?? false,
+        waited: proc.blockedSince === undefined ? undefined : now - proc.blockedSince,
+      })
+    }
+    this.traceTimer ??= setTimeout(() => {
+      this.traceTimer = undefined
+      const records = this.traceBuffer
+      const dropped = this.traceDropped
+      this.traceBuffer = []
+      this.traceDropped = 0
+      this.host.emit({ type: 'trace', records, dropped })
+    }, TRACE_FLUSH_MS)
   }
 
   // ───────────── 프로세스 수명 ─────────────

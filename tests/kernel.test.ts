@@ -161,6 +161,89 @@ describe('shell', () => {
   })
 })
 
+describe('system call tracing', () => {
+  /** 추적을 켠 채 명령을 실행하고, 기록을 "프로그램: 호출(인자) 결과" 줄로 돌려준다. */
+  async function traced(line: string) {
+    const { kernel, events, sh } = start()
+    kernel.setTracing(true)
+    const run = await sh(line)
+    await new Promise((r) => setTimeout(r, 120))
+    const records = events.flatMap((e) => (e.type === 'trace' ? e.records : []))
+    return { run, records, lines: records.map((r) => `${r.comm}: ${r.call}(${r.args}) ${r.result}`.trimEnd()) }
+  }
+
+  it('records what each program asks of the kernel', async () => {
+    const { lines } = await traced('echo hi > /tmp/f; cat /tmp/f /nope')
+    expect(lines).toContain('sh: open("/tmp/f", CREAT|TRUNC) = 4')
+    expect(lines).toContain('sh: spawn("/bin/echo", ["echo", "hi"], stdio=[0,4,2]) = 2')
+    expect(lines).toContain('echo: write(1, "hi\\n", 3) = 3')
+    expect(lines).toContain('echo: exit(0)')
+    expect(lines).toContain('sh: wait(2) = 2 (exit 0)')
+    expect(lines).toContain('cat: open("/tmp/f") = 4')
+    expect(lines).toContain('cat: read(4, 8192) = 3')
+    expect(lines).toContain('cat: open("/nope") = -1 ENOENT')
+    expect(lines).toContain('cat: exit(1)')
+  })
+
+  it('numbers records in order and marks failures', async () => {
+    const { records } = await traced('cat /nope')
+    expect(records.map((r) => r.seq)).toEqual(records.map((_, i) => i + 1))
+    expect(records.filter((r) => r.error).map((r) => r.result)).toContain('= -1 ENOENT')
+    expect(records.every((r) => r.time >= 0 && r.pid > 0)).toBe(true)
+  })
+
+  it('reports how long a blocked call waited', async () => {
+    const { records } = await traced('sleep 0.3')
+    const wait = records.find((r) => r.comm === 'sh' && r.call === 'wait')!
+    expect(wait.result).toBe('= 2 (exit 0)')
+    // 테스트 환경의 시계는 멈춰 있으므로 값의 크기가 아니라 기록 여부만 본다.
+    expect(wait.waited).toBe(0)
+    expect(records.find((r) => r.call === 'getpid')!.waited).toBeUndefined()
+  })
+
+  it('shows pipes, renames and a writer killed by a closed pipe', async () => {
+    const { lines } = await traced('yes | head -n 1; touch /tmp/a; mv /tmp/a /tmp/b')
+    expect(lines).toContain('sh: pipe() = [4, 5]')
+    expect(lines.some((l) => /^sh: spawn\("\/bin\/yes", \["yes"\], stdio=\[0,5,2\]\) = \d+$/.test(l))).toBe(true)
+    expect(lines.some((l) => l.startsWith('yes: write(1, "y\\ny\\n') && l.endsWith('= 종료됨'))).toBe(true)
+    expect(lines).toContain('mv: rename("/tmp/a", "/tmp/b") = 0')
+  })
+
+  it('escapes binary data and truncates long writes', async () => {
+    const { lines } = await traced('cat /bin/true | head -n 0; echo "0123456789012345678901234567890123456789"')
+    expect(lines.some((l) => l.startsWith('cat: write(1, "\\x00asm\\x01\\x00\\x00\\x00'))).toBe(true)
+    expect(lines).toContain('echo: write(1, "01234567890123456789012345678901"…, 41) = 41')
+  })
+
+  it('emits nothing unless tracing is on, and stops when turned off', async () => {
+    const { kernel, events, sh } = start()
+    await sh('echo quiet')
+    await new Promise((r) => setTimeout(r, 120))
+    expect(events.some((e) => e.type === 'trace')).toBe(false)
+
+    kernel.setTracing(true)
+    kernel.setTracing(false)
+    await start().sh('echo quiet')
+    expect(events.some((e) => e.type === 'trace')).toBe(false)
+  })
+
+  it('caps a flood and reports how many records were dropped', async () => {
+    const { kernel, events, sh } = start()
+    kernel.setTracing(true)
+    await sh('yes | head -n 20000 | wc -l')
+    await new Promise((r) => setTimeout(r, 150))
+    const batches = events.flatMap((e) => (e.type === 'trace' ? [e] : []))
+    expect(batches.every((b) => b.records.length <= 400)).toBe(true)
+    const kept = batches.reduce((n, b) => n + b.records.length, 0)
+    const dropped = batches.reduce((n, b) => n + b.dropped, 0)
+    expect(dropped).toBeGreaterThan(0)
+    // 번호는 버린 호출에도 매겨지므로, 남긴 것과 버린 것을 합치면 마지막 번호 이상이 된다.
+    const last = batches.at(-1)!.records.at(-1)!
+    expect(last.seq).toBeGreaterThan(kept)
+    expect(kept + dropped).toBeGreaterThanOrEqual(last.seq)
+  })
+})
+
 describe('/proc', () => {
   it('exposes each process as a directory', async () => {
     const r = await start().sh('ls /proc | head -n 3; cat /proc/1/status; cat /proc/version /proc/mounts')
