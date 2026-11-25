@@ -53,6 +53,18 @@ export class FsError extends Error {
   }
 }
 
+/** 브라우저 저장소의 상태 */
+export interface StorageStatus {
+  /** 이 사이트가 쓰고 있는 양과 쓸 수 있는 한도 (바이트). 브라우저가 알려 주지 않으면 없다. */
+  usage?: number
+  quota?: number
+  /**
+   * 브라우저가 이 사이트의 데이터를 임의로 지우지 않기로 했는가.
+   * false면 디스크가 부족할 때 통째로 지워질 수 있다. 알 수 없으면 undefined.
+   */
+  protected?: boolean
+}
+
 /** 연결했거나, 예전에 연결해서 기억하고 있는 로컬 폴더 */
 export interface Mount {
   /** /mnt 아래의 이름 */
@@ -94,6 +106,7 @@ export function createSystem() {
   const [fsVersion, setFsVersion] = createSignal(0)
   const fsCalls = new Map<number, { resolve(result: FsResult): void; reject(error: FsError): void }>()
   const [mounts, setMounts] = createStore<Mount[]>([])
+  const [storage, setStorage] = createStore<StorageStatus>({})
   const mountCalls = new Map<number, (result: MountResult) => void>()
   const handles = new Map<string, FileSystemDirectoryHandle>()
 
@@ -155,6 +168,37 @@ export function createSystem() {
       }
     }
   }
+
+  // ───────────── 저장소 보호 ─────────────
+
+  /** 사용량과 보호 여부를 다시 읽는다. */
+  async function refreshStorage() {
+    try {
+      const [estimate, kept] = await Promise.all([navigator.storage.estimate(), navigator.storage.persisted()])
+      setStorage({ usage: estimate.usage, quota: estimate.quota, protected: kept })
+    } catch {
+      // 저장소 정보를 알려 주지 않는 브라우저에서는 비워 둔다.
+    }
+  }
+
+  /**
+   * 브라우저에 "이 사이트의 데이터를 임의로 지우지 말라"고 요청한다. 허용됐으면 true.
+   * 브라우저가 사용 빈도, 북마크, 설치 여부 등으로 스스로 판단하거나(Chrome, Safari) 사용자에게 묻는다(Firefox).
+   */
+  async function protectStorage(): Promise<boolean> {
+    try {
+      await navigator.storage.persist()
+    } catch {
+      // 지원하지 않으면 그대로 둔다.
+    }
+    await refreshStorage()
+    return storage.protected === true
+  }
+
+  // Firefox는 이 요청에 권한 창을 띄운다. 페이지를 열자마자 창이 뜨면 거슬리므로,
+  // 묻지 않고 판단하는 브라우저에서만 미리 요청하고 Firefox에서는 설정의 버튼으로 요청한다.
+  if (navigator.userAgent.includes('Firefox')) void refreshStorage()
+  else void protectStorage()
 
   // ───────────── 로컬 폴더 연결 ─────────────
 
@@ -266,6 +310,8 @@ export function createSystem() {
     logs,
     ready,
     fsVersion,
+    /** 브라우저 저장소의 사용량과 보호 여부 */
+    storage: { status: storage, refresh: refreshStorage, protect: protectStorage },
     /** 사용자가 고른 로컬 폴더를 /mnt 아래에 연결한다. */
     mounts: mountApi,
     /** 파일 작업. 경로는 모두 절대 경로이며, 실패하면 FsError로 거부된다. */

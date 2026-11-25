@@ -75,3 +75,67 @@ test('resetting storage restores the first-visit state', async ({ page }) => {
   await expectScreen(page).toContain('ls\nREADME.md  hello.sh\n')
   expect(await screen(page)).not.toContain('mine.txt')
 })
+
+test.describe('storage protection', () => {
+  /** 브라우저의 판단을 정해 둔다: 지금 보호 중인지, 요청하면 허용할지. */
+  const stubPersistence = (page: import('@playwright/test').Page, start: boolean, grant: boolean) =>
+    page.addInitScript(
+      ({ start, grant }) => {
+        const state = { kept: start, asked: 0 }
+        ;(window as unknown as Record<string, unknown>).__persistence = state
+        navigator.storage.persisted = async () => state.kept
+        navigator.storage.persist = async () => {
+          state.asked++
+          if (grant) state.kept = true
+          return state.kept
+        }
+      },
+      { start, grant },
+    )
+  const asked = (page: import('@playwright/test').Page) =>
+    page.evaluate(() => (window as unknown as { __persistence: { asked: number } }).__persistence.asked)
+
+  test('is requested at startup and shown in settings with the usage', async ({ page }) => {
+    await stubPersistence(page, false, true)
+    await page.reload()
+    await expectScreen(page).toMatch(/\$$/)
+    expect(await asked(page)).toBe(1)
+
+    await launch(page, '설정')
+    const facts = appWindow(page, 'settings').getByLabel('저장 상태')
+    await expect(facts).toContainText('보호됨 · 브라우저가 이 데이터를 임의로 지우지 않습니다.')
+    await expect(facts).toContainText(/사용량\s*[\d.]+ (B|KB|MB) \/ [\d.]+ (MB|GB)/)
+    await expect(appWindow(page, 'settings').getByRole('button', { name: '보호 요청' })).toHaveCount(0)
+  })
+
+  test('says so when the browser will not protect the data', async ({ page }) => {
+    await stubPersistence(page, false, false)
+    await page.reload()
+    await expectScreen(page).toMatch(/\$$/)
+    await launch(page, '설정')
+    const settings = appWindow(page, 'settings')
+    await expect(settings.getByLabel('저장 상태')).toContainText('보호되지 않음')
+    await expect(settings.getByLabel('저장 상태')).toContainText('브라우저가 이 데이터를 지울 수')
+
+    await settings.getByRole('button', { name: '보호 요청' }).click()
+    await expect(settings.getByRole('status')).toContainText('브라우저가 아직 허용하지 않았습니다')
+    expect(await asked(page)).toBe(2)
+  })
+
+  test('the request button works once the browser agrees', async ({ page }) => {
+    await stubPersistence(page, false, false)
+    await page.reload()
+    await expectScreen(page).toMatch(/\$$/)
+    await launch(page, '설정')
+    const settings = appWindow(page, 'settings')
+    await expect(settings.getByRole('button', { name: '보호 요청' })).toBeVisible()
+    // 그사이 사용자가 사이트를 북마크하는 등 브라우저의 판단이 바뀐 상황
+    await page.evaluate(() => {
+      const state = (window as unknown as { __persistence: { kept: boolean } }).__persistence
+      navigator.storage.persist = async () => (state.kept = true)
+    })
+    await settings.getByRole('button', { name: '보호 요청' }).click()
+    await expect(settings.getByLabel('저장 상태')).toContainText('보호됨')
+    await expect(settings.getByRole('button', { name: '보호 요청' })).toHaveCount(0)
+  })
+})

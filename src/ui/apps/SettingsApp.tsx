@@ -1,4 +1,5 @@
-import { For, Show, createSignal } from 'solid-js'
+import { For, Show, createEffect, createSignal } from 'solid-js'
+import { formatSize } from '../path.ts'
 import { ACCENTS, MOUNT_LIMITS, THEMES, setSettings, settings } from '../settings.ts'
 import type { AppProps } from './registry.tsx'
 
@@ -6,6 +7,18 @@ export function SettingsApp(props: AppProps) {
   const [confirmingReset, setConfirmingReset] = createSignal(false)
   const [mountError, setMountError] = createSignal('')
   const mounts = props.system.mounts
+  const storage = props.system.storage
+  const [protectDenied, setProtectDenied] = createSignal(false)
+
+  // 창을 열 때와 파일이 바뀔 때마다 사용량을 다시 읽는다.
+  createEffect(() => {
+    props.system.fsVersion()
+    void storage.refresh()
+  })
+
+  async function protect() {
+    setProtectDenied(!(await storage.protect()))
+  }
 
   /** 폴더 작업을 실행하고, 실패하면 이유를 보여 준다. */
   const attempt = (work: () => Promise<unknown>) => {
@@ -51,6 +64,41 @@ export function SettingsApp(props: AppProps) {
           홈 폴더(<code>/home</code>)의 파일은 이 브라우저에 저장되어 새로고침해도 남습니다. 그 밖의 폴더는 다시 열면 처음
           상태로 돌아갑니다.
         </p>
+        <dl class="facts storage-facts" aria-label="저장 상태">
+          <Show when={storage.status.usage !== undefined && storage.status.quota}>
+            <dt>사용량</dt>
+            <dd>
+              {formatSize(storage.status.usage!)} / {formatSize(storage.status.quota!)}
+            </dd>
+          </Show>
+          <Show when={storage.status.protected !== undefined}>
+            <dt>보호</dt>
+            <dd>
+              <Show
+                when={storage.status.protected}
+                fallback={
+                  <>
+                    <span class="status-error">보호되지 않음</span> · 디스크 공간이 부족해지면 브라우저가 이 데이터를 지울 수
+                    있습니다.
+                  </>
+                }
+              >
+                보호됨 · 브라우저가 이 데이터를 임의로 지우지 않습니다.
+              </Show>
+            </dd>
+          </Show>
+        </dl>
+        <Show when={storage.status.protected === false}>
+          <button class="tool" onClick={protect}>
+            보호 요청
+          </button>
+          <Show when={protectDenied()}>
+            <p class="hint storage-note" role="status">
+              브라우저가 아직 허용하지 않았습니다. 이 사이트를 자주 쓰거나, 북마크하거나, 앱으로 설치하면 허용될 수
+              있습니다. 그 전까지는 중요한 파일을 따로 보관해 두세요.
+            </p>
+          </Show>
+        </Show>
         <Show
           when={confirmingReset()}
           fallback={

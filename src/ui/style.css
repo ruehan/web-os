@@ -1229,3 +1229,17 @@ input {
 .segmented {
   flex-wrap: wrap;
 }
+
+/* ───────────── 설정: 저장 상태 ───────────── */
+
+.storage-facts {
+  margin-bottom: 10px;
+}
+
+.storage-facts dd {
+  line-height: 1.6;
+}
+
+.storage-note {
+  margin: 10px 0 0;
+}
