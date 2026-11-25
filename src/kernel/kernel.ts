@@ -40,6 +40,8 @@ interface Process {
   /** 프로세스 그룹. 파이프라인 하나가 한 그룹이고, Ctrl+C는 그룹 단위로 전달된다. */
   pgid: number
   argv: string[]
+  /** 시작 시각 (부팅 후 밀리초) */
+  startTime: number
   fds: Map<number, OpenFile>
   channel: SharedArrayBuffer
   handle: ProcessHandle
@@ -91,6 +93,7 @@ interface ExecOptions {
 
 /** 파일 변경 알림을 묶어 보내는 간격 */
 const FS_NOTIFY_MS = 100
+const VERSION = 'Web OS 0.5 (wasm32-wasip1)'
 const SHELL = '/bin/sh'
 const SHELL_ENV = { USER: 'guest', HOME: '/home/guest', PWD: '/home/guest', PATH: '/bin', TERM: 'webos' }
 
@@ -107,7 +110,7 @@ export class Kernel {
 
   constructor(host: KernelHost) {
     this.host = host
-    for (const dir of ['/bin', '/tmp', '/home/guest', '/etc']) this.fs.mkdirp(dir)
+    for (const dir of ['/bin', '/tmp', '/home/guest', '/etc', '/proc']) this.fs.mkdirp(dir)
   }
 
   log(msg: string): void {
@@ -192,6 +195,7 @@ export class Kernel {
 
   private fsDispatch(req: FsRequest): FsResult {
     const { fs } = this
+    if ('path' in req && isProcPath(req.path.slice(1))) this.refreshProc()
     const parentOf = (path: string) => fs.lookupParent(fs.root, path)
     switch (req.op) {
       case 'list': {
@@ -227,6 +231,39 @@ export class Kernel {
         return {}
       }
     }
+  }
+
+  /**
+   * /proc 의 내용을 지금의 커널 상태로 다시 만든다. 누군가 /proc 아래를 열거나 조회하려 할 때마다 부른다.
+   * 이미 열려 있는 파일은 열었을 때의 내용을 그대로 본다.
+   */
+  private refreshProc(): void {
+    const { fs } = this
+    const text = (s: string) => new TextEncoder().encode(s)
+    fs.quiet(() => {
+      fs.mkdirp('/proc').entries.clear()
+      fs.writeFile('/proc/version', text(`${VERSION}\n`))
+      fs.writeFile('/proc/uptime', text(`${(this.host.now() / 1000).toFixed(2)}\n`))
+      fs.writeFile('/proc/mounts', text('memfs / rw\nopfs /home rw,persistent\nprocfs /proc ro\n'))
+      for (const p of this.procs.values()) {
+        fs.mkdirp(`/proc/${p.pid}`)
+        // 조건을 기다리며 시스템 콜에 멈춰 있으면 S, 아니면 R
+        const state = p.pending ? 'S (sleeping)' : 'R (running)'
+        const fields: [string, string | number][] = [
+          ['Name', p.argv[0] ?? ''],
+          ['State', state],
+          ['Pid', p.pid],
+          ['PPid', p.ppid],
+          ['Pgid', p.pgid],
+          ['Tty', p.tty?.id ?? '-'],
+          ['Fds', p.fds.size],
+          ['StartTime', (p.startTime / 1000).toFixed(2)],
+        ]
+        fs.writeFile(`/proc/${p.pid}/status`, text(fields.map(([k, v]) => `${k}:\t${v}\n`).join('')))
+        // 리눅스처럼 인자를 NUL 문자로 구분한다.
+        fs.writeFile(`/proc/${p.pid}/cmdline`, text(p.argv.map((a) => a + '\0').join('')))
+      }
+    })
   }
 
   /** 파일시스템이 바뀌었으면 화면에 알린다. 연속된 변경은 한 번으로 묶는다. */
@@ -287,6 +324,7 @@ export class Kernel {
       ppid: parent?.pid ?? 0,
       pgid: opts.pgid || pid,
       argv: opts.argv,
+      startTime: this.host.now(),
       fds,
       channel: createChannel(),
       handle: { terminate() {} },
@@ -412,6 +450,7 @@ export class Kernel {
   private dispatch(proc: Process, req: SysReq): SysRes {
     const [a0 = 0, a1 = 0, a2 = 0] = req.args
     const path = req.path ?? ''
+    if ((req.nr === Sys.open || req.nr === Sys.pathstat) && isProcPath(path)) this.refreshProc()
     switch (req.nr) {
       case Sys.exit:
         this.reap(proc.pid, a0)
@@ -630,6 +669,11 @@ export class Kernel {
     if (flags & WaitFlags.NOHANG) return { errno: 0, ret: 0 }
     throw new Block(proc.childQ)
   }
+}
+
+/** 루트 기준 상대 경로가 /proc 또는 그 아래를 가리키는가 */
+function isProcPath(path: string): boolean {
+  return path === 'proc' || path.startsWith('proc/')
 }
 
 function fileType(file: OpenFile): number {

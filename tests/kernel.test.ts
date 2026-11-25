@@ -134,12 +134,12 @@ describe('shell', () => {
 
   it('lists many entries across multiple readdir calls', async () => {
     const r = await start().sh('ls /bin | wc -l; ls /bin | head -n 2; ls /bin | tail -n 1')
-    expect(r.stdout).toBe('25\ncat\nclear\nyes\n')
+    expect(r.stdout).toBe('26\ncat\nclear\nyes\n')
   })
 
   it('runs script files, directly and via sh', async () => {
     const { sh } = start()
-    const expected = '안녕하세요, guest 님\n현재 위치: /home/guest\n25\n'
+    const expected = '안녕하세요, guest 님\n현재 위치: /home/guest\n26\n'
     expect((await sh('sh hello.sh')).stdout).toBe(expected)
     expect((await start().sh('./hello.sh')).stdout).toBe(expected)
   })
@@ -158,6 +158,48 @@ describe('shell', () => {
   it('wc counts lines, words and bytes', async () => {
     const r = await start().sh('echo "one two\nthree" > /tmp/w; wc /tmp/w; wc -w < /tmp/w')
     expect(r.stdout).toBe('      2       3      14 /tmp/w\n3\n')
+  })
+})
+
+describe('/proc', () => {
+  it('exposes each process as a directory', async () => {
+    const r = await start().sh('ls /proc | head -n 3; cat /proc/1/status; cat /proc/version /proc/mounts')
+    expect(r.stdout).toMatch(/^1\n2\n3\n/)
+    expect(r.stdout).toContain('Name:\tsh\nState:\tS (sleeping)\nPid:\t1\nPPid:\t0\nPgid:\t1\nTty:\t-\nFds:\t4\n')
+    expect(r.stdout).toContain('Web OS 0.5 (wasm32-wasip1)\nmemfs / rw\nopfs /home rw,persistent\nprocfs /proc ro\n')
+  })
+
+  it('keeps arguments NUL-separated in cmdline', async () => {
+    const { kernel, sh } = start()
+    await sh('cat /proc/1/cmdline > /tmp/cmdline')
+    expect([...kernel.fs.readFile('/tmp/cmdline')].filter((b) => b === 0).length).toBe(3)
+    expect(new TextDecoder().decode(kernel.fs.readFile('/tmp/cmdline')).split('\0')[0]).toBe('sh')
+  })
+
+  it('entries disappear when the process exits', async () => {
+    const r = await start().sh('sleep 0.2 & cat /proc/2/cmdline | wc -c; sleep 0.4; cat /proc/2/status')
+    expect(r.stdout).toMatch(/^\[2\]\n10\n$/)
+    expect(r.stderr).toBe('cat: /proc/2/status: No such file or directory\n')
+  })
+
+  it('ps lists processes with their parent, state and command', async () => {
+    const term = await start().terminal()
+    await term.exec('sleep 5 &')
+    const out = (await term.exec('ps | cat')).split('\n')
+    expect(out[0]).toBe('  PID  PPID STAT TTY COMMAND')
+    expect(out[1]).toBe('    1     0 S    1   sh')
+    expect(out[2]).toBe('    2     1 R    1   sleep 5')
+    expect(out.slice(3).map((l) => l.replace(/^\s+\d+/, ''))).toEqual(['     1 R    1   ps', '     1 S    1   cat'])
+  })
+
+  it('reading /proc does not count as a filesystem change', async () => {
+    const { kernel, events, until } = start()
+    kernel.fsRequest({ op: 'list', path: '/' })
+    await until(() => events.some((e) => e.type === 'fs-change'), 'the initial notification')
+    const before = events.filter((e) => e.type === 'fs-change').length
+    expect(kernel.fsRequest({ op: 'list', path: '/proc' }).entries!.map((e) => e.name)).toEqual(['version', 'uptime', 'mounts'])
+    await new Promise((r) => setTimeout(r, 200))
+    expect(events.filter((e) => e.type === 'fs-change').length).toBe(before)
   })
 })
 
@@ -186,7 +228,7 @@ describe('file requests from the desktop', () => {
   it('lists, reads, writes, renames and removes', () => {
     const { kernel } = start()
     const names = (path: string) => kernel.fsRequest({ op: 'list', path }).entries!.map((e) => e.name)
-    expect(names('/')).toEqual(['bin', 'tmp', 'home', 'etc'])
+    expect(names('/')).toEqual(['bin', 'tmp', 'home', 'etc', 'proc'])
     expect(kernel.fsRequest({ op: 'list', path: '/home/guest' }).entries).toContainEqual({
       name: 'hello.sh',
       dir: false,

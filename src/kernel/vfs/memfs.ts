@@ -32,6 +32,13 @@ export class MemFs {
     this.root = root
   }
 
+  /** 변경 알림을 일으키지 않고 파일시스템을 고친다 (커널이 /proc 을 갱신할 때). */
+  quiet(change: () => void): void {
+    const generation = this.generation
+    change()
+    this.generation = generation
+  }
+
   /** 경로를 따라가 inode를 찾는다. 절대 경로는 루트에서, 상대 경로는 base에서 시작한다. */
   lookup(base: DirNode, path: string): Inode {
     let node: Inode = path.startsWith('/') ? this.root : base
