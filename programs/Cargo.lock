@@ -3,6 +3,13 @@
 version = 4
 
 [[package]]
+name = "coreutils"
+version = "0.1.0"
+dependencies = [
+ "webos",
+]
+
+[[package]]
 name = "exitcode"
 version = "0.1.0"
 
@@ -15,5 +22,16 @@ name = "hello"
 version = "0.1.0"
 
 [[package]]
+name = "sh"
+version = "0.1.0"
+dependencies = [
+ "webos",
+]
+
+[[package]]
 name = "spin"
+version = "0.1.0"
+
+[[package]]
+name = "webos"
 version = "0.1.0"
