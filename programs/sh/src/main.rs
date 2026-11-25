@@ -6,10 +6,15 @@
 use std::collections::BTreeMap;
 use std::env;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, BufRead, IsTerminal, Write};
+use std::io::{self, BufRead, IsTerminal};
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::process::exit;
 
+mod editor;
+
+use editor::{Editor, Input};
+
+const BUILTINS: [&str; 4] = ["cd", "exit", "export", "unset"];
 const NOT_FOUND: i32 = 127;
 const CANNOT_RUN: i32 = 126;
 const ENOEXEC: i32 = 45;
@@ -83,29 +88,15 @@ fn main() {
         }
     }
 
-    let interactive = io::stdin().is_terminal();
-    if interactive {
-        if let Ok(motd) = fs::read_to_string("/etc/motd") {
-            print!("{motd}");
+    if io::stdin().is_terminal() {
+        sh.interact();
+    } else {
+        // 터미널이 아닌 입력(파이프, 파일)은 편집 없이 한 줄씩 읽어 실행한다.
+        let mut line = String::new();
+        while matches!(io::stdin().lock().read_line(&mut line), Ok(n) if n > 0) {
+            sh.run_line(line.trim_end_matches('\n'));
+            line.clear();
         }
-    }
-    let mut line = String::new();
-    loop {
-        if interactive {
-            while let Some((pid, code)) = webos::try_wait_any() {
-                println!("[{pid}] done ({code})");
-            }
-            print!("{}", sh.prompt());
-            let _ = io::stdout().flush();
-        }
-        line.clear();
-        match io::stdin().lock().read_line(&mut line) {
-            Ok(0) | Err(_) => break,
-            Ok(_) => sh.run_line(line.trim_end_matches('\n')),
-        }
-    }
-    if interactive {
-        println!("exit");
     }
     exit(sh.status);
 }
@@ -123,6 +114,68 @@ impl Shell {
             _ => cwd,
         };
         format!("\x1b[32m{}@webos\x1b[0m:\x1b[34m{}\x1b[0m$ ", self.var("USER"), shown)
+    }
+
+    /// 터미널에서 프롬프트를 띄우고 명령을 받는다.
+    fn interact(&mut self) {
+        if let Ok(motd) = fs::read_to_string("/etc/motd") {
+            print!("{motd}");
+        }
+        let mut editor = Editor::default();
+        loop {
+            while let Some((pid, code)) = webos::try_wait_any() {
+                println!("[{pid}] done ({code})");
+            }
+            let input = editor.read_line(&self.prompt(), &|word, command| self.complete(word, command));
+            match input {
+                Input::Line(line) => self.run_line(&line),
+                Input::Eof => break,
+            }
+        }
+        println!("exit");
+    }
+
+    /// 탭 자동완성 후보. 명령어 자리에서는 실행할 수 있는 이름을, 그 외에는 파일 경로를 찾는다.
+    fn complete(&self, word: &str, command: bool) -> Vec<String> {
+        let mut found: Vec<String> = Vec::new();
+        let names_in = |dir: &str| -> Vec<(String, bool)> {
+            let Ok(entries) = fs::read_dir(dir) else {
+                return Vec::new();
+            };
+            entries
+                .flatten()
+                .map(|e| {
+                    let is_dir = e.file_type().map(|t| t.is_dir()).unwrap_or(false);
+                    (e.file_name().to_string_lossy().into_owned(), is_dir)
+                })
+                .collect()
+        };
+
+        if command && !word.contains('/') {
+            found.extend(BUILTINS.iter().map(|b| b.to_string()));
+            for dir in self.var("PATH").split(':').filter(|d| !d.is_empty()) {
+                found.extend(names_in(dir).into_iter().filter(|(_, is_dir)| !is_dir).map(|(name, _)| name));
+            }
+            found.retain(|name| name.starts_with(word));
+        } else {
+            // "src/ma" → 디렉터리 "src/" 안에서 "ma"로 시작하는 이름을 찾는다.
+            let split = word.rfind('/').map_or(0, |i| i + 1);
+            let (typed_dir, prefix) = word.split_at(split);
+            let dir = match typed_dir.strip_prefix("~/") {
+                Some(rest) => format!("{}/{rest}", self.var("HOME")),
+                None if typed_dir.is_empty() => ".".to_string(),
+                None => typed_dir.to_string(),
+            };
+            for (name, is_dir) in names_in(&dir) {
+                // 숨김 파일은 점으로 시작하는 단어를 쳤을 때만 보여 준다.
+                if name.starts_with(prefix) && (prefix.starts_with('.') || !name.starts_with('.')) {
+                    found.push(format!("{typed_dir}{name}{}", if is_dir { "/" } else { "" }));
+                }
+            }
+        }
+        found.sort();
+        found.dedup();
+        found
     }
 
     fn run_line(&mut self, line: &str) {
