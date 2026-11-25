@@ -1,21 +1,27 @@
 // 커널 Worker 진입점. 메인 스레드의 명령을 받고, 프로세스 Worker를 직접 띄운다.
+// 파일시스템을 브라우저 저장소와 (연결돼 있으면) 사용자의 보관 폴더에 보존하는 일도 여기서 한다.
 import type { KernelCommand, KernelEvent, SysReq } from './abi.ts'
+import { TooLarge, directoryStore, measure, type Dir, type FileWriter } from './dirstore.ts'
 import { KernelError } from './errno.ts'
 import { Kernel } from './kernel.ts'
-import { TooLarge, directoryStore, measure, type Dir } from './dirstore.ts'
 import { clearOpfs, openOpfs } from './opfs.ts'
 import { Persister } from './persist.ts'
 
-/** /home 을 브라우저 저장소와 맞춰 두는 동기화기. 저장소를 쓸 수 없으면 없다. */
+/** 보관 폴더임을 알리는 표시 파일. 폴더의 맨 위에 두며, OS의 파일로는 취급하지 않는다. */
+const MARKER = '.webos'
+/** 보존하지 않는 것: 커널이 그때그때 만들어 내는 /proc, 그리고 표시 파일 */
+const EXCLUDE = ['proc', MARKER]
+
+/** 파일시스템을 브라우저 저장소(OPFS)와 맞춰 두는 동기화기. 저장소를 쓸 수 없으면 없다. */
 let persister: Persister | undefined
-/** 연결된 로컬 폴더들. 이름 → 그 폴더(/mnt/<이름>)의 동기화기 */
-const mounts = new Map<string, Persister>()
+/** 파일시스템을 사용자의 보관 폴더와 맞춰 두는 동기화기. 연결돼 있을 때만 있다. */
+let archive: Persister | undefined
 
 const emit = (event: KernelEvent) => {
-  // 파일이 바뀌었다는 알림은 화면뿐 아니라 영구 저장의 신호이기도 하다.
+  // 파일이 바뀌었다는 알림은 화면뿐 아니라 저장의 신호이기도 하다.
   if (event.type === 'fs-change') {
     persister?.schedule()
-    for (const mount of mounts.values()) mount.schedule()
+    archive?.schedule()
   }
   self.postMessage(event)
 }
@@ -35,151 +41,226 @@ const kernel: Kernel = new Kernel({
   },
 })
 
+const describe = (e: unknown) => (e instanceof Error ? e.message : String(e))
+
+// ───────────── 부팅 ─────────────
+
 interface Initrd {
   bin: string[]
   files: string[]
 }
 
-const PERSISTED = '/home'
-
 /**
- * 지난 방문 때 /home 에 남긴 파일을 되살린다.
+ * 지난 방문 때의 파일시스템을 되살린다.
  * 돌려주는 값은 "기본 파일을 새로 깔아야 하는가"다 (첫 방문이거나 저장소를 쓸 수 없을 때).
  */
-async function restoreHome(): Promise<boolean> {
+async function restoreFiles(): Promise<boolean> {
   try {
     const store = await openOpfs()
-    persister = new Persister(kernel.fs, PERSISTED, store)
-    persister.onError = (e) => kernel.log(`storage: failed to save: ${e instanceof Error ? e.message : e}`)
+    persister = new Persister(kernel.fs, '/', store, EXCLUDE)
+    persister.onError = (e) => kernel.log(`storage: failed to save: ${describe(e)}`)
     const files = await persister.restore()
-    kernel.log(
-      store.fresh ? `storage: created persistent ${PERSISTED}` : `storage: restored ${files} files to ${PERSISTED}`,
-    )
+    if (store.legacyHome) {
+      for (const entry of store.legacyHome) {
+        if (entry.data) kernel.fs.writeFile(`/home/${entry.path}`, entry.data)
+        else kernel.fs.mkdirp(`/home/${entry.path}`)
+      }
+      await store.discardLegacy()
+      kernel.log('storage: moved /home from the previous storage layout')
+    }
+    kernel.mounts.add('opfs')
+    kernel.log(store.fresh ? 'storage: created persistent storage' : `storage: restored ${files} files`)
     return store.fresh
   } catch (e) {
-    kernel.log(`storage: unavailable, ${PERSISTED} will not survive a reload (${e instanceof Error ? e.message : e})`)
+    kernel.log(`storage: unavailable, files will not survive a reload (${describe(e)})`)
     return true
   }
 }
 
 /**
- * 빌드 때 만들어 둔 초기 파일들(실행 파일과 기본 문서)을 메모리 파일시스템에 올린다.
- * 사용자가 고치거나 지웠을 수 있는 /home 의 기본 파일은 처음 한 번만 깐다.
+ * 빌드 때 만들어 둔 초기 파일들을 올린다.
+ * 실행 파일은 매번 최신으로 맞추고(프로그램이 고쳐지면 반영돼야 한다),
+ * 그 밖의 기본 파일은 사용자가 고치거나 지웠을 수 있으므로 처음 한 번만 깐다.
  */
-async function loadInitrd(installHome: boolean): Promise<Initrd> {
+async function loadInitrd(installDefaults: boolean): Promise<Initrd> {
   const base = import.meta.env.BASE_URL
   const fetchBytes = async (url: string) => {
     const res = await fetch(base + url)
     if (!res.ok) throw new Error(`failed to load ${url}: HTTP ${res.status}`)
     return new Uint8Array(await res.arrayBuffer())
   }
+  /** 내용이 같으면 쓰지 않는다. 쓰면 저장소에도 매번 다시 저장하게 된다. */
+  const install = (path: string, data: Uint8Array) => {
+    try {
+      const current = kernel.fs.readFile(path)
+      if (current.length === data.length && current.every((b, i) => b === data[i])) return
+    } catch {
+      // 아직 없는 파일
+    }
+    kernel.fs.mkdirp(path.slice(0, path.lastIndexOf('/')))
+    kernel.fs.writeFile(path, data)
+  }
   const initrd: Initrd = JSON.parse(new TextDecoder().decode(await fetchBytes('initrd.json')))
-  const files = initrd.files.filter((path) => installHome || !`/${path}`.startsWith(`${PERSISTED}/`))
+  const files = installDefaults ? initrd.files : []
   await Promise.all([
-    ...initrd.bin.map(async (name) => kernel.fs.writeFile(`/bin/${name}`, await fetchBytes(`bin/${name}.wasm`))),
-    ...files.map(async (path) => {
-      const data = await fetchBytes(`rootfs/${path}`)
-      kernel.fs.mkdirp(`/${path}`.slice(0, `/${path}`.lastIndexOf('/')))
-      kernel.fs.writeFile(`/${path}`, data)
-    }),
+    ...initrd.bin.map(async (name) => install(`/bin/${name}`, await fetchBytes(`bin/${name}.wasm`))),
+    ...files.map(async (path) => install(`/${path}`, await fetchBytes(`rootfs/${path}`))),
   ])
   return { bin: initrd.bin, files }
+}
+
+/** /tmp 는 켤 때마다 비운다. */
+function clearTmp(): void {
+  const tmp = kernel.fs.lookup(kernel.fs.root, '/tmp')
+  if (tmp.kind === 'dir') for (const name of [...tmp.entries.keys()]) kernel.fs.removeTree(tmp, name)
 }
 
 async function boot(): Promise<void> {
   kernel.log('kernel: booting')
   kernel.log(`kernel: cross-origin isolated = ${self.crossOriginIsolated}`)
   kernel.log('vfs: mounted memfs on /')
-  const installHome = await restoreHome()
-  const initrd = await loadInitrd(installHome)
-  kernel.log(`initrd: ${initrd.bin.length} programs in /bin, ${initrd.files.length} files`)
+  const installDefaults = await restoreFiles()
+  const initrd = await loadInitrd(installDefaults)
+  clearTmp()
+  kernel.log(`initrd: ${initrd.bin.length} programs in /bin, ${initrd.files.length} default files`)
   persister?.schedule()
   kernel.log('kernel: ready')
   emit({ type: 'ready' })
 }
 
-/** 저장된 파일을 모두 지운다. 진행 중이던 저장이 끝난 뒤에 지워야 다시 생기지 않는다. */
-async function resetStorage(): Promise<void> {
-  await persister?.stop()
-  await clearOpfs()
-  emit({ type: 'storage-reset' })
-}
+// ───────────── 저장 ─────────────
 
 /** 미뤄 둔 저장을 지금 모두 끝낸다 (다른 탭에 자리를 넘겨주기 직전 등). */
 async function flush(): Promise<void> {
   await persister?.sync()
-  for (const mount of mounts.values()) await mount.sync()
+  await archive?.sync()
   emit({ type: 'flushed' })
 }
 
-const MOUNT_ROOT = '/mnt'
-const describe = (e: unknown) => (e instanceof Error ? e.message : String(e))
+/** 저장된 파일을 모두 지운다. 진행 중이던 저장이 끝난 뒤에 지워야 다시 생기지 않는다. */
+async function resetStorage(): Promise<void> {
+  await persister?.stop()
+  await archive?.stop()
+  await clearOpfs()
+  emit({ type: 'restart' })
+}
 
-/** 사용자가 고른 로컬 폴더를 /mnt/<이름> 에 연결한다. */
-async function mountLocal(cmd: Extract<KernelCommand, { type: 'mount' }>): Promise<void> {
-  const path = `${MOUNT_ROOT}/${cmd.name}`
+// ───────────── 보관 폴더 ─────────────
+
+/** 로컬 파일은 쓰기 스트림으로 바꿔 쓴다. 닫는 순간 내용이 한꺼번에 교체된다. */
+const writeLocal: FileWriter = async (file, data) => {
+  const writable = await file.createWritable()
+  await writable.write(data as Uint8Array<ArrayBuffer>)
+  await writable.close()
+}
+
+const hasMarker = (root: Dir) =>
+  root.getFileHandle(MARKER).then(
+    () => true,
+    () => false,
+  )
+
+async function isEmpty(root: Dir): Promise<boolean> {
+  for await (const _ of root.entries()) return false
+  return true
+}
+
+function stopArchive(): Promise<void> | undefined {
+  const stopping = archive?.stop()
+  archive = undefined
+  kernel.mounts.delete('localdir')
+  return stopping
+}
+
+/** 폴더를 지금의 파일시스템과 똑같이 맞추고, 이후의 변경도 계속 반영한다. */
+async function mirrorTo(root: Dir): Promise<void> {
+  await stopArchive()
+  const mirror = new Persister(kernel.fs, '/', directoryStore(root, writeLocal), EXCLUDE)
+  mirror.onError = (e) => {
+    kernel.log(`archive: failed to save: ${describe(e)}`)
+    emit({ type: 'archive-error', msg: describe(e) })
+  }
+  await writeLocal(await root.getFileHandle(MARKER, { create: true }), new TextEncoder().encode('Web OS archive v1\n'))
+  await mirror.adopt()
+  await mirror.sync()
+  archive = mirror
+  kernel.mounts.add('localdir')
+  kernel.log(`archive: mirroring to local folder "${root.name}"`)
+}
+
+/** 폴더의 내용으로 파일시스템을 통째로 바꾼다. 실행 중인 프로그램이 있으므로 곧바로 다시 시작해야 한다. */
+async function loadFrom(root: Dir): Promise<void> {
+  await stopArchive()
+  for (const name of [...kernel.fs.root.entries.keys()]) {
+    if (!EXCLUDE.includes(name)) kernel.fs.removeTree(kernel.fs.root, name)
+  }
+  await new Persister(kernel.fs, '/', directoryStore(root, writeLocal), EXCLUDE).restore()
+  // 다시 시작하면 브라우저 저장소에서 부팅하므로, 불러온 내용을 먼저 거기에 반영해 둔다.
+  await persister?.sync()
+  kernel.log(`archive: loaded from local folder "${root.name}"`)
+}
+
+async function linkArchive(cmd: Extract<KernelCommand, { type: 'archive-link' }>): Promise<void> {
   const root = cmd.handle as Dir
+  const fail = (result: Record<string, unknown>) => emit({ type: 'archive-result', id: cmd.id, ok: false, ...result } as KernelEvent)
   try {
-    // 통째로 메모리에 올리기 전에 크기부터 확인한다.
+    const marked = await hasMarker(root)
+    if (cmd.mode === 'auto' && marked) return fail({ reason: 'needs-choice' })
+    if (cmd.mode === 'auto' && !(await isEmpty(root))) return fail({ reason: 'not-empty' })
+    if (cmd.mode === 'attach' && !marked) return fail({ reason: 'failed', msg: 'not an archive folder' })
+    // 내용을 통째로 읽어 비교하거나 불러오므로, 예상 밖으로 큰 폴더는 읽기 전에 거절한다.
     await measure(root, cmd)
-    // 로컬 파일은 쓰기 스트림으로 바꿔 쓴다. 닫는 순간 내용이 한꺼번에 교체된다.
-    const store = directoryStore(root, async (file, data) => {
-      const writable = await file.createWritable()
-      await writable.write(data as Uint8Array<ArrayBuffer>)
-      await writable.close()
-    })
-    kernel.fs.mkdirp(path)
-    const mount = new Persister(kernel.fs, path, store)
-    mount.onError = (e) => {
-      kernel.log(`mount: failed to save to ${path}: ${describe(e)}`)
-      emit({ type: 'mount-error', name: cmd.name, msg: describe(e) })
+
+    if (cmd.mode === 'import') {
+      await loadFrom(root)
+      emit({ type: 'archive-result', id: cmd.id, ok: true })
+      return emit({ type: 'restart' })
     }
-    const files = await mount.restore()
-    mounts.set(cmd.name, mount)
-    kernel.mounts.set(path, 'localdir')
-    kernel.log(`mount: local folder "${root.name}" on ${path} (${files} files)`)
-    emit({ type: 'mount-result', id: cmd.id, ok: true, path, files })
-    emit({ type: 'fs-change' })
+    await mirrorTo(root)
+    emit({ type: 'archive-result', id: cmd.id, ok: true })
   } catch (e) {
-    if (e instanceof TooLarge) {
-      emit({ type: 'mount-result', id: cmd.id, ok: false, reason: 'too-large', files: e.files, bytes: e.bytes })
-    } else {
-      emit({ type: 'mount-result', id: cmd.id, ok: false, reason: 'failed', msg: describe(e) })
-    }
+    if (e instanceof TooLarge) fail({ reason: 'too-large', files: e.files, bytes: e.bytes })
+    else fail({ reason: 'failed', msg: describe(e) })
   }
 }
 
-/** 연결을 끊는다. 아직 저장하지 못한 변경을 마저 쓴 뒤, 메모리의 사본만 지운다 (실제 파일은 그대로 남는다). */
-async function unmountLocal(cmd: Extract<KernelCommand, { type: 'unmount' }>): Promise<void> {
-  const mount = mounts.get(cmd.name)
-  const path = `${MOUNT_ROOT}/${cmd.name}`
-  if (mount) {
-    await mount.sync()
-    await mount.stop()
-    mounts.delete(cmd.name)
-    kernel.mounts.delete(path)
-    const parent = kernel.fs.lookup(kernel.fs.root, MOUNT_ROOT)
-    if (parent.kind === 'dir' && parent.entries.has(cmd.name)) kernel.fs.removeTree(parent, cmd.name)
-    kernel.log(`mount: disconnected ${path}`)
-  }
-  emit({ type: 'mount-result', id: cmd.id, ok: true, path, files: 0 })
-  emit({ type: 'fs-change' })
+async function unlinkArchive(id: number): Promise<void> {
+  // 남은 변경을 마저 쓴 뒤에 끊는다. 폴더와 그 안의 파일은 그대로 남는다.
+  await archive?.sync().catch(() => {})
+  await stopArchive()
+  kernel.log('archive: disconnected')
+  emit({ type: 'archive-result', id, ok: true })
 }
+
+// ───────────── 명령 ─────────────
 
 self.onmessage = (e: MessageEvent<KernelCommand>) => {
   const cmd = e.data
   try {
-    if (cmd.type === 'tty-open') kernel.openTerminal(cmd.cols, cmd.rows, cmd.ref)
-    else if (cmd.type === 'tty-close') kernel.closeTerminal(cmd.tty)
-    else if (cmd.type === 'storage-reset') void resetStorage()
-    else if (cmd.type === 'trace') kernel.setTracing(cmd.on)
-    else if (cmd.type === 'flush') void flush()
-    else if (cmd.type === 'mount') void mountLocal(cmd)
-    else if (cmd.type === 'unmount') void unmountLocal(cmd)
-    else if (cmd.type === 'fs') emit({ type: 'fs-result', id: cmd.id, result: kernel.fsRequest(cmd.request) })
-    else if (cmd.type === 'tty-resize') kernel.ttyResize(cmd.tty, cmd.cols, cmd.rows)
-    else if (cmd.type === 'tty-input') kernel.ttyInput(cmd.tty, cmd.text)
-    else kernel.kill(cmd.pid)
+    switch (cmd.type) {
+      case 'tty-open':
+        return void kernel.openTerminal(cmd.cols, cmd.rows, cmd.ref)
+      case 'tty-close':
+        return kernel.closeTerminal(cmd.tty)
+      case 'tty-resize':
+        return kernel.ttyResize(cmd.tty, cmd.cols, cmd.rows)
+      case 'tty-input':
+        return kernel.ttyInput(cmd.tty, cmd.text)
+      case 'kill':
+        return kernel.kill(cmd.pid)
+      case 'fs':
+        return emit({ type: 'fs-result', id: cmd.id, result: kernel.fsRequest(cmd.request) })
+      case 'trace':
+        return kernel.setTracing(cmd.on)
+      case 'flush':
+        return void flush()
+      case 'storage-reset':
+        return void resetStorage()
+      case 'archive-link':
+        return void linkArchive(cmd)
+      case 'archive-unlink':
+        return void unlinkArchive(cmd.id)
+    }
   } catch (err) {
     if (!(err instanceof KernelError)) throw err
     if (cmd.type === 'fs') emit({ type: 'fs-result', id: cmd.id, errno: err.errno })
@@ -187,4 +268,4 @@ self.onmessage = (e: MessageEvent<KernelCommand>) => {
   }
 }
 
-boot().catch((err) => emit({ type: 'error', msg: `boot failed: ${err instanceof Error ? err.message : err}` }))
+boot().catch((err) => emit({ type: 'error', msg: `boot failed: ${describe(err)}` }))

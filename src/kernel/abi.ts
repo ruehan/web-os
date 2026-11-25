@@ -156,14 +156,16 @@ export type KernelEvent =
   | { type: 'fs-change' }
   /** flush 명령에 대한 응답: 바뀐 내용이 모두 저장소에 반영됐다. */
   | { type: 'flushed' }
-  /** 영구 저장소를 비웠다. 화면은 페이지를 다시 불러와 처음 상태로 시작한다. */
-  | { type: 'storage-reset' }
-  /** 로컬 폴더 연결·해제 요청의 결과 */
-  | { type: 'mount-result'; id: number; ok: true; path: string; files: number }
-  | { type: 'mount-result'; id: number; ok: false; reason: 'too-large'; files: number; bytes: number }
-  | { type: 'mount-result'; id: number; ok: false; reason: 'failed'; msg: string }
-  /** 연결된 로컬 폴더에 저장하지 못했다 (권한이 취소됐거나 폴더가 사라진 경우 등) */
-  | { type: 'mount-error'; name: string; msg: string }
+  /** 저장된 내용이 통째로 바뀌었다(초기화, 보관 폴더에서 불러오기). 화면은 페이지를 다시 불러와야 한다. */
+  | { type: 'restart' }
+  /** 보관 폴더 연결·해제 요청의 결과 */
+  | { type: 'archive-result'; id: number; ok: true }
+  /** needs-choice: 예전에 쓰던 보관 폴더라 어느 쪽 내용을 살릴지 정해야 한다. not-empty: 다른 파일이 든 폴더다. */
+  | { type: 'archive-result'; id: number; ok: false; reason: 'needs-choice' | 'not-empty' }
+  | { type: 'archive-result'; id: number; ok: false; reason: 'too-large'; files: number; bytes: number }
+  | { type: 'archive-result'; id: number; ok: false; reason: 'failed'; msg: string }
+  /** 보관 폴더에 저장하지 못했다 (권한이 취소됐거나 폴더가 사라진 경우 등) */
+  | { type: 'archive-error'; msg: string }
   /** 추적 중에 일어난 시스템 콜들. 너무 많으면 일부를 버리고 그 수를 dropped에 적는다. */
   | { type: 'trace'; records: TraceRecord[]; dropped: number }
 
@@ -177,11 +179,21 @@ export type KernelCommand =
   | { type: 'fs'; id: number; request: FsRequest }
   | { type: 'storage-reset' }
   /**
-   * 사용자가 고른 로컬 폴더를 /mnt/<name> 에 연결한다. 폴더의 내용을 메모리에 올리고,
-   * 이후 브라우저에서 바꾼 내용을 실제 파일에 반영한다. 한도를 넘는 폴더는 거절한다.
+   * 사용자가 고른 로컬 폴더를 보관 폴더로 연결한다. 연결된 동안 파일시스템 전체(/proc 제외)가 그 폴더에도 저장된다.
+   *  - auto: 새로 고른 폴더. 빈 폴더면 지금 내용을 내보내고, 예전 보관 폴더면 되묻고, 그 밖에는 거절한다.
+   *  - export: 지금 내용으로 폴더를 맞춘다 (폴더에만 있던 것은 지워진다).
+   *  - import: 폴더의 내용으로 지금 내용을 바꾼 뒤 다시 시작한다.
+   *  - attach: 지난 방문 때 연결했던 폴더를 다시 잇는다.
    */
-  | { type: 'mount'; id: number; name: string; handle: FileSystemDirectoryHandle; maxFiles: number; maxBytes: number }
-  | { type: 'unmount'; id: number; name: string }
+  | {
+      type: 'archive-link'
+      id: number
+      handle: FileSystemDirectoryHandle
+      mode: 'auto' | 'export' | 'import' | 'attach'
+      maxFiles: number
+      maxBytes: number
+    }
+  | { type: 'archive-unlink'; id: number }
   /** 아직 저장하지 않은 변경을 지금 모두 저장한다. 끝나면 flushed 이벤트가 온다. */
   | { type: 'flush' }
   /** 시스템 콜 추적을 켜거나 끈다. */

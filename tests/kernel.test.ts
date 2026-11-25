@@ -249,7 +249,7 @@ describe('/proc', () => {
     const r = await start().sh('ls /proc | head -n 3; cat /proc/1/status; cat /proc/version /proc/mounts')
     expect(r.stdout).toMatch(/^1\n2\n3\n/)
     expect(r.stdout).toContain('Name:\tsh\nState:\tS (sleeping)\nPid:\t1\nPPid:\t0\nPgid:\t1\nTty:\t-\nFds:\t4\n')
-    expect(r.stdout).toContain('Web OS 0.5 (wasm32-wasip1)\nmemfs / rw\nopfs /home rw,persistent\nprocfs /proc ro\n')
+    expect(r.stdout).toContain('Web OS 0.6 (wasm32-wasip1)\nmemfs / rw\nprocfs /proc ro\n')
   })
 
   it('keeps arguments NUL-separated in cmdline', async () => {
@@ -311,7 +311,7 @@ describe('file requests from the desktop', () => {
   it('lists, reads, writes, renames and removes', () => {
     const { kernel } = start()
     const names = (path: string) => kernel.fsRequest({ op: 'list', path }).entries!.map((e) => e.name)
-    expect(names('/')).toEqual(['bin', 'tmp', 'home', 'etc', 'proc', 'mnt'])
+    expect(names('/')).toEqual(['bin', 'tmp', 'home', 'etc', 'proc'])
     expect(kernel.fsRequest({ op: 'list', path: '/home/guest' }).entries).toContainEqual({
       name: 'hello.sh',
       dir: false,

@@ -104,7 +104,7 @@ const TRACE_FLUSH_MS = 50
 const TRACE_BATCH_MAX = 400
 /** 파일 변경 알림을 묶어 보내는 간격 */
 const FS_NOTIFY_MS = 100
-const VERSION = 'Web OS 0.5 (wasm32-wasip1)'
+const VERSION = 'Web OS 0.6 (wasm32-wasip1)'
 const SHELL = '/bin/sh'
 const SHELL_ENV = { USER: 'guest', HOME: '/home/guest', PWD: '/home/guest', PATH: '/bin', TERM: 'webos' }
 
@@ -118,8 +118,8 @@ export class Kernel {
   private modules = new WeakMap<FileNode, { version: number; module: WebAssembly.Module }>()
   private notifiedGeneration = 0
   private notifyTimer: ReturnType<typeof setTimeout> | undefined
-  /** 바깥 저장소에 연결된 경로와 그 종류 (/proc/mounts 표시용). 연결 자체는 호스트가 관리한다. */
-  readonly mounts = new Map<string, string>([['/home', 'opfs']])
+  /** 파일시스템을 보존하는 바깥 저장소의 종류들 (/proc/mounts 표시용). 저장 자체는 호스트가 관리한다. */
+  readonly mounts = new Set<string>()
   private tracing = false
   private traceBuffer: TraceRecord[] = []
   private traceDropped = 0
@@ -128,7 +128,7 @@ export class Kernel {
 
   constructor(host: KernelHost) {
     this.host = host
-    for (const dir of ['/bin', '/tmp', '/home/guest', '/etc', '/proc', '/mnt']) this.fs.mkdirp(dir)
+    for (const dir of ['/bin', '/tmp', '/home/guest', '/etc', '/proc']) this.fs.mkdirp(dir)
   }
 
   log(msg: string): void {
@@ -262,7 +262,7 @@ export class Kernel {
       fs.mkdirp('/proc').entries.clear()
       fs.writeFile('/proc/version', text(`${VERSION}\n`))
       fs.writeFile('/proc/uptime', text(`${(this.host.now() / 1000).toFixed(2)}\n`))
-      const mounts = [...this.mounts].map(([path, kind]) => `${kind} ${path} rw,persistent\n`).join('')
+      const mounts = [...this.mounts].map((kind) => `${kind} / rw,persistent\n`).join('')
       fs.writeFile('/proc/mounts', text(`memfs / rw\n${mounts}procfs /proc ro\n`))
       for (const p of this.procs.values()) {
         fs.mkdirp(`/proc/${p.pid}`)
