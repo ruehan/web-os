@@ -11,7 +11,7 @@ async function reload(page: import('@playwright/test').Page) {
   await expectScreen(page).toMatch(/\$$/)
 }
 
-test('files in the home folder survive a reload; other folders do not', async ({ page }) => {
+test('files survive a reload everywhere except /tmp', async ({ page }) => {
   await type(page, 'mkdir -p notes/deep && echo 남는다 > notes/deep/keep.txt && echo gone > /tmp/scratch.txt')
   await type(page, 'echo edited >> README.md && rm hello.sh')
   await expectScreen(page).toMatch(/rm hello\.sh\nguest@webos:~\$$/)
@@ -20,13 +20,21 @@ test('files in the home folder survive a reload; other folders do not', async ({
   await type(page, 'cat notes/deep/keep.txt; tail -n 1 README.md; ls; ls /tmp | wc -l')
   await expectScreen(page).toContain('wc -l\n남는다\nedited\nREADME.md  notes\n0\n')
 
+  // 홈 밖의 디렉터리도 남는다: 고친 설정 파일, 직접 넣은 프로그램, 새로 만든 최상위 폴더
+  await type(page, 'echo custom > /etc/motd && cp /bin/hello /bin/mine && mkdir /data && echo d > /data/x')
+  await expectScreen(page).toMatch(/data\/x\nguest@webos:~\$$/)
+  await reload(page)
+  expect(await screen(page)).toMatch(/^custom\n/)
+  await type(page, 'mine | head -n 1; cat /data/x; ls /')
+  await expectScreen(page).toContain('ls /\nHello from a real WASM process!\nd\nbin  data  etc  home  proc  tmp\n')
+
   await launch(page, '시스템 로그')
   await expect(page.getByTestId('klog')).toContainText('storage: restored')
 })
 
 test('the first visit installs the default files and says so', async ({ page }) => {
   await launch(page, '시스템 로그')
-  await expect(page.getByTestId('klog')).toContainText('storage: created persistent /home')
+  await expect(page.getByTestId('klog')).toContainText('storage: created persistent storage')
   await launch(page, '파일')
   await expect(appWindow(page, 'files').locator('.file-name')).toHaveText(['hello.sh', 'README.md'])
 })
@@ -62,11 +70,11 @@ test('resetting storage restores the first-visit state', async ({ page }) => {
 
   await launch(page, '설정')
   const settings = appWindow(page, 'settings')
-  await settings.getByRole('button', { name: '홈 폴더 초기화…' }).click()
+  await settings.getByRole('button', { name: '처음 상태로 되돌리기…' }).click()
   await settings.getByRole('alertdialog').getByRole('button', { name: '취소' }).click()
   await expect(settings.getByRole('alertdialog')).toHaveCount(0)
-  await settings.getByRole('button', { name: '홈 폴더 초기화…' }).click()
-  await settings.getByRole('button', { name: '초기화', exact: true }).click()
+  await settings.getByRole('button', { name: '처음 상태로 되돌리기…' }).click()
+  await settings.getByRole('button', { name: '되돌리기', exact: true }).click()
 
   // 페이지가 다시 열리고 기본 파일만 남는다.
   await expect(appWindow(page, 'settings')).toHaveCount(0)
@@ -138,4 +146,39 @@ test.describe('storage protection', () => {
     await expect(settings.getByLabel('저장 상태')).toContainText('보호됨')
     await expect(settings.getByRole('button', { name: '보호 요청' })).toHaveCount(0)
   })
+})
+
+test('shipped programs are refreshed on every start, even if the saved copy differs', async ({ page }) => {
+  // 예전 버전의 프로그램이 저장돼 있던 상황을 만든다.
+  await type(page, 'echo stale > /bin/hello')
+  await expectScreen(page).toMatch(/bin\/hello\nguest@webos:~\$$/)
+  await reload(page)
+  await type(page, 'hello | head -n 1')
+  await expectScreen(page).toContain('head -n 1\nHello from a real WASM process!\n')
+})
+
+test('a home saved by the previous storage layout is carried over', async ({ page }) => {
+  // 예전에는 /home 의 내용만 "home" 이라는 이름으로 저장했다.
+  await page.evaluate(async () => {
+    const origin = await navigator.storage.getDirectory()
+    await origin.removeEntry('root', { recursive: true })
+    const guest = await (await origin.getDirectoryHandle('home', { create: true })).getDirectoryHandle('guest', { create: true })
+    const writable = await (await guest.getFileHandle('old.txt', { create: true })).createWritable()
+    await writable.write('from the old layout\n')
+    await writable.close()
+  })
+  await page.reload()
+  await expectScreen(page).toMatch(/\$$/)
+  await type(page, 'cat old.txt; ls')
+  // 첫 방문이 아니므로 기본 파일을 다시 깔지 않는다.
+  await expectScreen(page).toContain('cat old.txt; ls\nfrom the old layout\nold.txt\n')
+  await reload(page)
+  await type(page, 'cat old.txt')
+  await expectScreen(page).toContain('cat old.txt\nfrom the old layout\n')
+  expect(await page.evaluate(async () => {
+    const names: string[] = []
+    const origin = (await navigator.storage.getDirectory()) as unknown as { keys(): AsyncIterable<string> }
+    for await (const name of origin.keys()) names.push(name)
+    return names
+  })).toEqual(['root'])
 })

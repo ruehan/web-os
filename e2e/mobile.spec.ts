@@ -28,7 +28,7 @@ test('the terminal works and wraps to the narrow width', async ({ page }) => {
   const text = 'abcdefghij'.repeat(5)
   await expect.poll(async () => (await page.locator('.terminal .line').allTextContents()).join('')).toContain(`${text}${text}`)
   await type(page, 'ls /')
-  await expectScreen(page).toContain('\nbin  etc  home  mnt  proc  tmp\n')
+  await expectScreen(page).toContain('\nbin  etc  home  proc  tmp\n')
   // 셸이 처음부터 실제 화면 폭을 알고 있어서, 폭을 잘못 계산한 흔적(% 표시)이 남지 않는다.
   expect(await page.locator('.terminal .line').allTextContents()).not.toContain('%')
 })

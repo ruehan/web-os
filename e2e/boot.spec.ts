@@ -7,7 +7,7 @@ test.beforeEach(({ page }) => boot(page))
 test('boots into a desktop with a shell', async ({ page }) => {
   expect(await page.evaluate(() => crossOriginIsolated)).toBe(true)
   const text = await screen(page)
-  expect(text).toContain('Web OS 0.5')
+  expect(text).toContain('Web OS 0.6')
   expect(text.endsWith(PROMPT)).toBe(true)
 
   await launch(page, '시스템 로그')
@@ -79,7 +79,7 @@ test('clear wipes the screen', async ({ page }) => {
 
 test('ls colors directories on a terminal', async ({ page }) => {
   await type(page, 'ls /')
-  await expectScreen(page).toContain('ls /\nbin  etc  home  mnt  proc  tmp\n')
+  await expectScreen(page).toContain('ls /\nbin  etc  home  proc  tmp\n')
   const dir = focusedWindow(page).locator('.terminal .line span', { hasText: /^bin$/ })
   await expect(dir).toHaveCSS('font-weight', '650')
 })
