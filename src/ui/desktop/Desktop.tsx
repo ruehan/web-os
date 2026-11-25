@@ -11,7 +11,6 @@ export function Desktop(props: { system: System }) {
   const wm = createWindowManager()
   const [now, setNow] = createSignal(new Date())
   let layer!: HTMLDivElement
-  let origin = { left: 0, top: 0 }
 
   /** 첫 방문 때만 안내 창을 띄우기 위한 표시 */
   const WELCOMED = 'webos.welcomed'
@@ -46,9 +45,9 @@ export function Desktop(props: { system: System }) {
 
   onMount(() => {
     const measure = () => {
-      const box = layer.getBoundingClientRect()
-      origin = { left: box.left, top: box.top }
-      wm.setDesk({ w: box.width, h: box.height })
+      // 화면에 그려진 크기(getBoundingClientRect)가 아니라 배치상의 크기를 쓴다.
+      // 그려진 크기는 나타나는 움직임처럼 요소가 확대·축소되는 동안에는 실제와 다르다.
+      wm.setDesk({ w: layer.clientWidth, h: layer.clientHeight })
     }
     const observer = new ResizeObserver(measure)
     observer.observe(layer)
@@ -87,7 +86,8 @@ export function Desktop(props: { system: System }) {
             {(win) => (
               <button
                 class="rail-button window-tab"
-                classList={{ active: wm.focused() === win.id, minimized: win.minimized }}
+                data-tab={win.id}
+                classList={{ active: wm.focused() === win.id, minimized: win.minimized, closing: win.closing }}
                 aria-label={`창: ${win.title}`}
                 title={win.title}
                 onClick={() => wm.toggle(win.id)}
@@ -146,7 +146,8 @@ export function Desktop(props: { system: System }) {
               wm={wm}
               system={props.system}
               launch={(id, args) => launch(appById(id), args)}
-              origin={() => origin}
+              // 창이 포인터 좌표를 바탕 화면 기준으로 바꿀 때마다 그 순간의 위치를 잰다.
+              origin={() => layer.getBoundingClientRect()}
             />
           )}
         </For>
