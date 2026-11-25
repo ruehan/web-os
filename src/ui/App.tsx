@@ -18,6 +18,7 @@ export function App() {
   let ready = false
   /** 현재 열려 있는 터미널 장치. 0이면 셸이 끝난 상태다. */
   let tty = 0
+  let size = { cols: 80, rows: 24 }
 
   const send = (cmd: KernelCommand) => kernel?.postMessage(cmd)
 
@@ -29,7 +30,7 @@ export function App() {
       case 'ready':
         ready = true
         term.writeText('\r\n')
-        send({ type: 'tty-open' })
+        send({ type: 'tty-open', ...size })
         break
       case 'tty-open':
         tty = ev.tty
@@ -56,7 +57,12 @@ export function App() {
 
   function onInput(text: string) {
     if (tty) send({ type: 'tty-input', tty, text })
-    else if (ready) send({ type: 'tty-open' })
+    else if (ready) send({ type: 'tty-open', ...size })
+  }
+
+  function onResize(cols: number, rows: number) {
+    size = { cols, rows }
+    if (tty) send({ type: 'tty-resize', tty, cols, rows })
   }
 
   onMount(() => {
@@ -79,7 +85,7 @@ export function App() {
         <span class="phase">2단계 · 터미널과 셸</span>
       </header>
 
-      <Terminal ref={(h) => (term = h)} onInput={onInput} />
+      <Terminal ref={(h) => (term = h)} onInput={onInput} onResize={onResize} />
 
       <section class="procs" data-testid="procs">
         <h2>프로세스 {procs.length}개</h2>

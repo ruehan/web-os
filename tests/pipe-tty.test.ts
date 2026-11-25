@@ -86,6 +86,38 @@ describe('Tty', () => {
     expect(text(tty.read(100)!)).toBe('x\n')
   })
 
+  it('raw mode passes keys through untouched, without echo or interrupts', () => {
+    const { tty, out, interrupts } = make()
+    tty.setRaw(true)
+    tty.input('a')
+    tty.input('\x1b[A\x03\r')
+    expect(text(tty.read(100)!)).toBe('a')
+    expect(text(tty.read(100)!)).toBe('\x1b[A\x03\r')
+    expect(out()).toBe('')
+    expect(interrupts()).toBe(0)
+  })
+
+  it('switching to raw mode hands over a half-typed line', () => {
+    const { tty } = make()
+    tty.input('ec')
+    expect(tty.read(100)).toBeNull()
+    tty.setRaw(true)
+    expect(text(tty.read(100)!)).toBe('ec')
+    tty.setRaw(false)
+    tty.input('ho\r')
+    expect(text(tty.read(100)!)).toBe('ho\n')
+  })
+
+  it('leaving raw mode replays unread keys through line editing', () => {
+    const { tty, out } = make()
+    tty.setRaw(true)
+    tty.input('ab\x7fc\rnext')
+    tty.setRaw(false)
+    expect(out()).toBe('ab\b \bc\r\nnext')
+    expect(text(tty.read(100)!)).toBe('ac\n')
+    expect(tty.read(100)).toBeNull()
+  })
+
   it('translates newlines on output', () => {
     const { tty, out } = make()
     tty.write(bytes('a\nb\n'))

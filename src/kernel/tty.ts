@@ -21,6 +21,14 @@ export class Tty {
   /** 키보드 입력을 받을 수 있는 전경 프로세스 그룹 */
   fg = 0
   readQ = new WaitQueue()
+  /** 화면 크기 (글자 수). 줄 편집기가 줄바꿈 위치를 계산하는 데 쓴다. */
+  cols = 80
+  rows = 24
+  /**
+   * 키 단위 입력 모드. 켜면 줄 편집·에코·Ctrl+C 처리를 하지 않고 키 입력을 그대로 넘긴다.
+   * 셸의 줄 편집기처럼 화면을 직접 다루는 프로그램이 쓴다.
+   */
+  raw = false
 
   private host: TtyHost
   private line: string[] = []
@@ -65,8 +73,31 @@ export class Tty {
     this.host.readable()
   }
 
-  /** 키보드 → 줄 편집 */
+  setRaw(on: boolean): void {
+    if (on === this.raw) return
+    this.raw = on
+    if (on) {
+      // 줄 모드에서 치다 만 내용은 버리지 않고 그대로 넘겨준다.
+      if (this.line.length === 0) return
+      this.ready.push(enc.encode(this.line.join('')))
+      this.line = []
+      this.host.readable()
+    } else {
+      // 키 단위 모드에서 아직 읽히지 않은 입력은 줄 모드의 규칙(에코, 줄 편집)으로 다시 처리한다.
+      // 그래야 셸이 명령을 실행하기 직전에 미리 친 키가 그 명령에 올바르게 전달된다.
+      const dec = new TextDecoder()
+      const unread = this.ready.map((chunk) => dec.decode(chunk, { stream: true })).join('')
+      this.ready = []
+      if (unread) this.input(unread)
+    }
+  }
+
+  /** 키보드 → 프로세스 */
   input(text: string): void {
+    if (this.raw) {
+      if (text) this.deliver(text)
+      return
+    }
     let echo = ''
     let wake = false
     for (const ch of text) {

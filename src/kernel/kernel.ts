@@ -121,13 +121,15 @@ export class Kernel {
   }
 
   /** 새 터미널 장치를 만들고 거기에 셸을 띄운다. */
-  openTerminal(): number {
+  openTerminal(cols = 80, rows = 24): number {
     const id = this.nextTty++
     const tty: Tty = new Tty(id, {
       output: (data) => this.host.emit({ type: 'tty-output', tty: id, data }),
       interrupt: () => this.interrupt(tty),
       readable: () => this.wake(tty.readQ),
     })
+    tty.cols = cols
+    tty.rows = rows
     const file: OpenFile = { kind: 'tty', tty, refs: 0 }
     const shell = this.exec({
       path: SHELL,
@@ -145,6 +147,13 @@ export class Kernel {
 
   ttyInput(id: number, text: string): void {
     this.ttys.get(id)?.input(text)
+  }
+
+  ttyResize(id: number, cols: number, rows: number): void {
+    const tty = this.ttys.get(id)
+    if (!tty) return
+    tty.cols = cols
+    tty.rows = rows
   }
 
   kill(pid: number): void {
@@ -390,6 +399,13 @@ export class Kernel {
         if (!proc.tty) throw new KernelError(Errno.NOTTY)
         proc.tty.fg = a0
         return { errno: 0 }
+      case Sys.ttyraw:
+        if (!proc.tty) throw new KernelError(Errno.NOTTY)
+        proc.tty.setRaw(a0 !== 0)
+        return { errno: 0 }
+      case Sys.winsize:
+        if (!proc.tty) throw new KernelError(Errno.NOTTY)
+        return { errno: 0, data: new Uint8Array(Uint32Array.of(proc.tty.cols, proc.tty.rows).buffer) }
       case Sys.getpid:
         return { errno: 0, ret: proc.pid }
       case Sys.kill:

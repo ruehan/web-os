@@ -27,6 +27,8 @@ export const Sys = {
   setfg: 18, // args [pgid]                터미널의 전경 프로세스 그룹 지정
   getpid: 19, //                            -> ret pid
   kill: 20, // args [pid]
+  ttyraw: 21, // args [0 | 1]              터미널을 키 단위 입력 모드로 전환
+  winsize: 22, //                            -> data u32 열 수, u32 줄 수
 } as const
 
 export interface SysReq {
@@ -125,6 +127,7 @@ export type KernelEvent =
 
 /** 메인 스레드 → 커널 명령. */
 export type KernelCommand =
-  | { type: 'tty-open' }
+  | { type: 'tty-open'; cols: number; rows: number }
+  | { type: 'tty-resize'; tty: number; cols: number; rows: number }
   | { type: 'tty-input'; tty: number; text: string }
   | { type: 'kill'; pid: number }

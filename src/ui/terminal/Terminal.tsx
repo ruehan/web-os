@@ -26,7 +26,12 @@ const KEYS: Record<string, string> = {
 const BLANK: Cell = { ch: ' ', width: 1, fg: -1, bg: -1, bold: false }
 const isPlain = (c: Cell) => c.ch === ' ' && c.bg === -1
 
-export function Terminal(props: { onInput: (text: string) => void; ref?: (handle: TerminalHandle) => void }) {
+export function Terminal(props: {
+  onInput: (text: string) => void
+  /** 화면에 들어가는 글자 수가 바뀌었다 */
+  onResize?: (cols: number, rows: number) => void
+  ref?: (handle: TerminalHandle) => void
+}) {
   let root!: HTMLDivElement
   let screen!: HTMLDivElement
   let input!: HTMLTextAreaElement
@@ -116,7 +121,12 @@ export function Terminal(props: { onInput: (text: string) => void; ref?: (handle
     const style = getComputedStyle(root)
     const width = root.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight)
     const height = root.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom)
-    emu.resize(Math.max(20, Math.floor(width / cell.w)), Math.max(4, Math.floor(height / cell.h)))
+    const cols = Math.max(20, Math.floor(width / cell.w))
+    const rows = Math.max(4, Math.floor(height / cell.h))
+    if (cols !== emu.cols || rows !== emu.rows) {
+      emu.resize(cols, rows)
+      props.onResize?.(cols, rows)
+    }
     schedule()
   }
 

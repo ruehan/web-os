@@ -58,7 +58,8 @@ async function boot(): Promise<void> {
 self.onmessage = (e: MessageEvent<KernelCommand>) => {
   const cmd = e.data
   try {
-    if (cmd.type === 'tty-open') kernel.openTerminal()
+    if (cmd.type === 'tty-open') kernel.openTerminal(cmd.cols, cmd.rows)
+    else if (cmd.type === 'tty-resize') kernel.ttyResize(cmd.tty, cmd.cols, cmd.rows)
     else if (cmd.type === 'tty-input') kernel.ttyInput(cmd.tty, cmd.text)
     else kernel.kill(cmd.pid)
   } catch (err) {

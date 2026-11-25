@@ -17,6 +17,10 @@ extern "C" {
     fn sys_getpid() -> i32;
     #[link_name = "kill"]
     fn sys_kill(pid: i32) -> i32;
+    #[link_name = "set_raw"]
+    fn sys_set_raw(on: i32) -> i32;
+    #[link_name = "winsize"]
+    fn sys_winsize(size: *mut u32) -> i32;
 }
 
 const WAIT_NOHANG: u32 = 1;
@@ -111,6 +115,51 @@ pub fn getpid() -> i32 {
 
 pub fn kill(pid: i32) -> io::Result<()> {
     check(unsafe { sys_kill(pid) }).map(|_| ())
+}
+
+/// 터미널을 키 단위 입력 모드로 바꾼다. 켜면 키 입력이 에코나 줄 편집 없이 바로 전달되고,
+/// Ctrl+C도 일반 키로 들어온다. 끝나면 반드시 꺼야 다른 프로그램이 정상 동작한다.
+pub fn set_raw(on: bool) -> io::Result<()> {
+    check(unsafe { sys_set_raw(on as i32) }).map(|_| ())
+}
+
+/// 터미널 크기 (열, 줄). 터미널이 없으면 80×24로 본다.
+pub fn window_size() -> (usize, usize) {
+    let mut size = [80u32, 24];
+    unsafe { sys_winsize(size.as_mut_ptr()) };
+    (size[0].max(1) as usize, size[1].max(1) as usize)
+}
+
+/// 글자가 터미널에서 차지하는 칸 수. 터미널 화면(src/shared/wcwidth.ts)과 같은 기준이어야 한다.
+pub fn char_width(c: char) -> usize {
+    const WIDE: [(u32, u32); 14] = [
+        (0x1100, 0x115f),
+        (0x2e80, 0x303e),
+        (0x3041, 0x33ff),
+        (0x3400, 0x4dbf),
+        (0x4e00, 0x9fff),
+        (0xa000, 0xa4cf),
+        (0xac00, 0xd7a3),
+        (0xf900, 0xfaff),
+        (0xfe30, 0xfe4f),
+        (0xff00, 0xff60),
+        (0xffe0, 0xffe6),
+        (0x1f300, 0x1f64f),
+        (0x1f900, 0x1f9ff),
+        (0x20000, 0x3fffd),
+    ];
+    const ZERO: [(u32, u32); 3] = [(0x0300, 0x036f), (0x200b, 0x200f), (0xfe00, 0xfe0f)];
+    let cp = c as u32;
+    let within = |ranges: &[(u32, u32)]| ranges.iter().any(|&(lo, hi)| cp >= lo && cp <= hi);
+    if cp < 0x300 {
+        1
+    } else if within(&ZERO) {
+        0
+    } else if within(&WIDE) {
+        2
+    } else {
+        1
+    }
 }
 
 /// "No such file or directory (os error 44)" 에서 괄호 부분을 뗀 메시지.

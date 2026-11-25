@@ -304,6 +304,13 @@ export function runWasi(
 
     setfg: (pgid: number) => -sys.call({ nr: Sys.setfg, args: [pgid] }).errno,
     getpid: () => sys.call({ nr: Sys.getpid, args: [] }).ret ?? 0,
+    set_raw: (on: number) => -sys.call({ nr: Sys.ttyraw, args: [on] }).errno,
+    winsize(ptr: number) {
+      const res = sys.call({ nr: Sys.winsize, args: [] })
+      if (res.errno) return -res.errno
+      bytes().set(res.data!.subarray(0, 8), ptr)
+      return 0
+    },
     kill: (pid: number) => -sys.call({ nr: Sys.kill, args: [pid] }).errno,
   }
 
