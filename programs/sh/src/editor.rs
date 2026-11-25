@@ -386,7 +386,10 @@ fn visible_chars(text: &str) -> impl Iterator<Item = char> + '_ {
 /// 줄 중간에 있었다면 다음 줄로 넘어가므로, 이전 출력은 끝에 표시(%)가 붙은 채로 남는다.
 fn start_on_fresh_line() {
     let (cols, _) = webos::window_size();
-    emit(&format!("\x1b[90m%\x1b[0m{}\r\x1b[K", " ".repeat(cols.saturating_sub(1))));
+    // 전체 화면 프로그램이 뒷정리를 못 하고 끝났을(강제 종료 등) 때를 대비해
+    // 먼저 터미널을 평소 상태로 되돌린다: 대체 화면에서 나오고, 커서를 보이고, 색을 지운다.
+    const RESET: &str = "\x1b[?1049l\x1b[?25h\x1b[0m";
+    emit(&format!("{RESET}\x1b[90m%\x1b[0m{}\r\x1b[K", " ".repeat(cols.saturating_sub(1))));
 }
 
 fn emit(text: &str) {

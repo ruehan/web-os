@@ -1,5 +1,7 @@
 //! WASI에 없는 커널 기능(프로세스 생성, 파이프, 터미널 제어)을 감싼 라이브러리.
 
+pub mod term;
+
 use std::io;
 use std::os::fd::{FromRawFd, OwnedFd, RawFd};
 
