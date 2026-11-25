@@ -1,0 +1,140 @@
+:root {
+  color-scheme: light dark;
+  --bg: light-dark(#f4f4f2, #111214);
+  --panel: light-dark(#ffffff, #1a1b1f);
+  --line: light-dark(#dcdcd8, #2c2e34);
+  --text: light-dark(#1c1d20, #e6e6e3);
+  --muted: light-dark(#6d6f76, #8b8e97);
+  --accent: light-dark(#2d5bd8, #7ea2ff);
+  --err: light-dark(#b3261e, #ff8a80);
+  --mono: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.5 system-ui, -apple-system, 'Apple SD Gothic Neo', sans-serif;
+}
+
+main {
+  max-width: 880px;
+  margin: 0 auto;
+  padding: 32px 16px;
+  display: grid;
+  gap: 16px;
+}
+
+header {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+
+h1 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 650;
+}
+
+h2 {
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.phase,
+.empty {
+  color: var(--muted);
+}
+
+.empty {
+  margin: 0;
+}
+
+.warn {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--err);
+  border-radius: 8px;
+  color: var(--err);
+}
+
+.bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+button {
+  font: 13px var(--mono);
+  padding: 6px 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--text);
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.log {
+  height: 420px;
+  overflow-y: auto;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  font: 13px/1.55 var(--mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.log .klog {
+  color: var(--muted);
+}
+
+.log .sys {
+  color: var(--accent);
+}
+
+.log .err {
+  color: var(--err);
+}
+
+.procs {
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+}
+
+.proc {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 4px 0;
+  font-family: var(--mono);
+}
+
+.proc .pid {
+  width: 3ch;
+  color: var(--muted);
+  text-align: right;
+}
+
+.proc .name {
+  flex: 1;
+}
