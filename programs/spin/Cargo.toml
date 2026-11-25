@@ -1,0 +1,4 @@
+[package]
+name = "spin"
+version.workspace = true
+edition.workspace = true
