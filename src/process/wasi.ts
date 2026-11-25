@@ -193,6 +193,11 @@ export function runWasi(
     path_unlink_file: (dirfd: number, pathPtr: number, pathLen: number) =>
       sys.call({ nr: Sys.unlink, args: [dirfd], path: readString(pathPtr, pathLen) }).errno,
 
+    path_rename(fromFd: number, fromPtr: number, fromLen: number, toFd: number, toPtr: number, toLen: number) {
+      const path = `${readString(fromPtr, fromLen)}\0${readString(toPtr, toLen)}`
+      return sys.call({ nr: Sys.rename, args: [fromFd, toFd], path }).errno
+    },
+
     path_remove_directory: (dirfd: number, pathPtr: number, pathLen: number) =>
       sys.call({ nr: Sys.rmdir, args: [dirfd], path: readString(pathPtr, pathLen) }).errno,
 

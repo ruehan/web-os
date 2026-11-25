@@ -10,6 +10,8 @@ import {
   Whence,
   createChannel,
   writeReply,
+  type FsRequest,
+  type FsResult,
   type KernelEvent,
   type ProcessInit,
   type SysReq,
@@ -87,6 +89,8 @@ interface ExecOptions {
   sessionLeader?: boolean
 }
 
+/** 파일 변경 알림을 묶어 보내는 간격 */
+const FS_NOTIFY_MS = 100
 const SHELL = '/bin/sh'
 const SHELL_ENV = { USER: 'guest', HOME: '/home/guest', PWD: '/home/guest', PATH: '/bin', TERM: 'webos' }
 
@@ -98,6 +102,8 @@ export class Kernel {
   private ttys = new Map<number, Tty>()
   private nextTty = 1
   private modules = new WeakMap<FileNode, { version: number; module: WebAssembly.Module }>()
+  private notifiedGeneration = 0
+  private notifyTimer: ReturnType<typeof setTimeout> | undefined
 
   constructor(host: KernelHost) {
     this.host = host
@@ -175,10 +181,74 @@ export class Kernel {
     this.reap(pid, ExitStatus.ABORT)
   }
 
+  /** 화면 쪽 앱의 파일 작업 요청을 처리한다. 실패하면 KernelError를 던진다. */
+  fsRequest(req: FsRequest): FsResult {
+    try {
+      return this.fsDispatch(req)
+    } finally {
+      this.notifyFsChange()
+    }
+  }
+
+  private fsDispatch(req: FsRequest): FsResult {
+    const { fs } = this
+    const parentOf = (path: string) => fs.lookupParent(fs.root, path)
+    switch (req.op) {
+      case 'list': {
+        const dir = fs.lookup(fs.root, req.path)
+        if (dir.kind !== 'dir') throw new KernelError(Errno.NOTDIR)
+        return {
+          entries: [...dir.entries].map(([name, node]) => ({
+            name,
+            dir: node.kind === 'dir',
+            size: node.kind === 'file' ? node.size : node.entries.size,
+          })),
+        }
+      }
+      case 'read':
+        return { data: fs.readFile(req.path) }
+      case 'write':
+        fs.writeFile(req.path, req.data)
+        return {}
+      case 'mkdir': {
+        const { dir, name } = parentOf(req.path)
+        fs.mkdir(dir, name)
+        return {}
+      }
+      case 'remove': {
+        const { dir, name } = parentOf(req.path)
+        fs.removeTree(dir, name)
+        return {}
+      }
+      case 'rename': {
+        const from = parentOf(req.from)
+        const to = parentOf(req.to)
+        fs.rename(from.dir, from.name, to.dir, to.name)
+        return {}
+      }
+    }
+  }
+
+  /** 파일시스템이 바뀌었으면 화면에 알린다. 연속된 변경은 한 번으로 묶는다. */
+  private notifyFsChange(): void {
+    if (this.fs.generation === this.notifiedGeneration || this.notifyTimer !== undefined) return
+    this.notifyTimer = setTimeout(() => {
+      this.notifyTimer = undefined
+      this.notifiedGeneration = this.fs.generation
+      this.host.emit({ type: 'fs-change' })
+    }, FS_NOTIFY_MS)
+  }
+
   /** 시스템 콜 진입점. 응답은 채널에 쓰며, 조건이 안 되면 미뤄 둔다. */
   syscall(pid: number, req: SysReq): void {
     const proc = this.procs.get(pid)
     if (!proc) return
+    this.dispatchSyscall(proc, req)
+    this.notifyFsChange()
+  }
+
+  private dispatchSyscall(proc: Process, req: SysReq): void {
+    const pid = proc.pid
     let res: SysRes
     try {
       res = this.dispatch(proc, req)
@@ -388,6 +458,13 @@ export class Kernel {
       case Sys.rmdir: {
         const { dir, name } = this.fs.lookupParent(this.dirFd(proc, a0), path)
         this.fs.rmdir(dir, name)
+        return { errno: 0 }
+      }
+      case Sys.rename: {
+        const [fromPath = '', toPath = ''] = path.split('\0')
+        const from = this.fs.lookupParent(this.dirFd(proc, a0), fromPath)
+        const to = this.fs.lookupParent(this.dirFd(proc, a1), toPath)
+        this.fs.rename(from.dir, from.name, to.dir, to.name)
         return { errno: 0 }
       }
       case Sys.readdir:

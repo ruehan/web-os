@@ -60,12 +60,14 @@ self.onmessage = (e: MessageEvent<KernelCommand>) => {
   try {
     if (cmd.type === 'tty-open') kernel.openTerminal(cmd.cols, cmd.rows, cmd.ref)
     else if (cmd.type === 'tty-close') kernel.closeTerminal(cmd.tty)
+    else if (cmd.type === 'fs') emit({ type: 'fs-result', id: cmd.id, result: kernel.fsRequest(cmd.request) })
     else if (cmd.type === 'tty-resize') kernel.ttyResize(cmd.tty, cmd.cols, cmd.rows)
     else if (cmd.type === 'tty-input') kernel.ttyInput(cmd.tty, cmd.text)
     else kernel.kill(cmd.pid)
   } catch (err) {
     if (!(err instanceof KernelError)) throw err
-    emit({ type: 'error', msg: err.message })
+    if (cmd.type === 'fs') emit({ type: 'fs-result', id: cmd.id, errno: err.errno })
+    else emit({ type: 'error', msg: err.message })
   }
 }
 

@@ -29,6 +29,7 @@ export const Sys = {
   kill: 20, // args [pid]
   ttyraw: 21, // args [0 | 1]              터미널을 키 단위 입력 모드로 전환
   winsize: 22, //                            -> data u32 열 수, u32 줄 수
+  rename: 23, // args [fromDirfd, toDirfd], path "from\0to"
 } as const
 
 export interface SysReq {
@@ -103,6 +104,26 @@ export function waitReply(sab: SharedArrayBuffer): SysRes {
   }
 }
 
+/**
+ * 화면 쪽 앱(파일 탐색기, 편집기)이 커널에 직접 요청하는 파일 작업.
+ * 프로세스의 시스템 콜과 달리 비동기 메시지로 오가며, 경로는 모두 절대 경로다.
+ */
+export type FsRequest =
+  | { op: 'list'; path: string }
+  | { op: 'read'; path: string }
+  | { op: 'write'; path: string; data: Uint8Array }
+  | { op: 'mkdir'; path: string }
+  | { op: 'remove'; path: string }
+  | { op: 'rename'; from: string; to: string }
+
+export interface FsEntry {
+  name: string
+  dir: boolean
+  size: number
+}
+
+export type FsResult = { entries?: FsEntry[]; data?: Uint8Array }
+
 /** 프로세스 Worker가 시작될 때 커널에게서 받는 정보. */
 export interface ProcessInit {
   pid: number
@@ -125,6 +146,9 @@ export type KernelEvent =
   | { type: 'tty-open'; ref: number; tty: number; pid: number }
   | { type: 'tty-output'; tty: number; data: Uint8Array }
   | { type: 'tty-close'; tty: number }
+  | { type: 'fs-result'; id: number; result?: FsResult; errno?: number }
+  /** 파일시스템 내용이 바뀌었다 (짧은 시간에 여러 번 바뀌면 한 번으로 묶인다). */
+  | { type: 'fs-change' }
 
 /** 메인 스레드 → 커널 명령. */
 export type KernelCommand =
@@ -133,3 +157,4 @@ export type KernelCommand =
   | { type: 'tty-resize'; tty: number; cols: number; rows: number }
   | { type: 'tty-input'; tty: number; text: string }
   | { type: 'kill'; pid: number }
+  | { type: 'fs'; id: number; request: FsRequest }

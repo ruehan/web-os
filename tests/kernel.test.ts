@@ -134,12 +134,12 @@ describe('shell', () => {
 
   it('lists many entries across multiple readdir calls', async () => {
     const r = await start().sh('ls /bin | wc -l; ls /bin | head -n 2; ls /bin | tail -n 1')
-    expect(r.stdout).toBe('23\ncat\nclear\nyes\n')
+    expect(r.stdout).toBe('25\ncat\nclear\nyes\n')
   })
 
   it('runs script files, directly and via sh', async () => {
     const { sh } = start()
-    const expected = '안녕하세요, guest 님\n현재 위치: /home/guest\n23\n'
+    const expected = '안녕하세요, guest 님\n현재 위치: /home/guest\n25\n'
     expect((await sh('sh hello.sh')).stdout).toBe(expected)
     expect((await start().sh('./hello.sh')).stdout).toBe(expected)
   })
@@ -158,6 +158,86 @@ describe('shell', () => {
   it('wc counts lines, words and bytes', async () => {
     const r = await start().sh('echo "one two\nthree" > /tmp/w; wc /tmp/w; wc -w < /tmp/w')
     expect(r.stdout).toBe('      2       3      14 /tmp/w\n3\n')
+  })
+})
+
+describe('mv and cp', () => {
+  it('renames and moves files and directories', async () => {
+    const r = await start().sh(
+      'cd /tmp; echo a > one; mkdir d; mv one two; mv two d; ls d; mv d e; cat e/two; touch x; mv x e/two; mv e e/inside; mv nope y',
+    )
+    expect(r.stdout).toBe('two\na\n')
+    expect(r.stderr).toBe('mv: x: File exists\nmv: e: Invalid argument\nmv: nope: No such file or directory\n')
+  })
+
+  it('copies files and, with -r, directories', async () => {
+    const r = await start().sh(
+      'cd /tmp; mkdir -p a/b; echo hi > a/b/f; cp a/b/f g; cat g; cp a c; cp -r a c; cat c/b/f; echo more >> c/b/f; cat a/b/f',
+    )
+    expect(r.stdout).toBe('hi\nhi\nhi\n')
+    expect(r.stderr).toBe('cp: a: Is a directory (use -r)\n')
+  })
+})
+
+describe('file requests from the desktop', () => {
+  const text = (b?: Uint8Array) => new TextDecoder().decode(b)
+  const bytes = (s: string) => new TextEncoder().encode(s)
+
+  it('lists, reads, writes, renames and removes', () => {
+    const { kernel } = start()
+    const names = (path: string) => kernel.fsRequest({ op: 'list', path }).entries!.map((e) => e.name)
+    expect(names('/')).toEqual(['bin', 'tmp', 'home', 'etc'])
+    expect(kernel.fsRequest({ op: 'list', path: '/home/guest' }).entries).toContainEqual({
+      name: 'hello.sh',
+      dir: false,
+      size: kernel.fs.readFile('/home/guest/hello.sh').length,
+    })
+
+    kernel.fsRequest({ op: 'mkdir', path: '/tmp/docs' })
+    kernel.fsRequest({ op: 'write', path: '/tmp/docs/a.txt', data: bytes('한글') })
+    expect(text(kernel.fsRequest({ op: 'read', path: '/tmp/docs/a.txt' }).data)).toBe('한글')
+    kernel.fsRequest({ op: 'write', path: '/tmp/docs/a.txt', data: bytes('x') })
+    expect(text(kernel.fsRequest({ op: 'read', path: '/tmp/docs/a.txt' }).data)).toBe('x')
+
+    kernel.fsRequest({ op: 'rename', from: '/tmp/docs/a.txt', to: '/tmp/b.txt' })
+    expect(names('/tmp/docs')).toEqual([])
+    kernel.fsRequest({ op: 'rename', from: '/tmp/b.txt', to: '/tmp/docs/b.txt' })
+    kernel.fsRequest({ op: 'remove', path: '/tmp/docs' })
+    expect(names('/tmp')).toEqual([])
+  })
+
+  it('reports failures with an errno', () => {
+    const { kernel } = start()
+    const errno = (fn: () => unknown) => {
+      try {
+        fn()
+      } catch (e) {
+        return (e as KernelError).errno
+      }
+    }
+    expect(errno(() => kernel.fsRequest({ op: 'list', path: '/nope' }))).toBe(Errno.NOENT)
+    expect(errno(() => kernel.fsRequest({ op: 'list', path: '/etc/motd' }))).toBe(Errno.NOTDIR)
+    expect(errno(() => kernel.fsRequest({ op: 'read', path: '/tmp' }))).toBe(Errno.ISDIR)
+    expect(errno(() => kernel.fsRequest({ op: 'mkdir', path: '/tmp' }))).toBe(Errno.EXIST)
+    expect(errno(() => kernel.fsRequest({ op: 'rename', from: '/tmp', to: '/etc' }))).toBe(Errno.EXIST)
+    expect(errno(() => kernel.fsRequest({ op: 'rename', from: '/home', to: '/home/guest/x' }))).toBe(Errno.INVAL)
+  })
+
+  it('announces changes made by processes, coalescing bursts', async () => {
+    const { kernel, events, until, sh } = start()
+    const changes = () => events.filter((e) => e.type === 'fs-change').length
+    // 부팅 때 올린 초기 파일에 대한 알림이 한 번 나간 뒤로는, 읽기만 해서는 알림이 없다.
+    kernel.fsRequest({ op: 'list', path: '/' })
+    await until(() => changes() === 1, 'the initial notification')
+    kernel.fsRequest({ op: 'read', path: '/etc/motd' })
+    await new Promise((r) => setTimeout(r, 200))
+    expect(changes()).toBe(1)
+
+    await sh('cd /tmp; touch a b c d e; rm a b')
+    await until(() => changes() > 1, 'a change notification')
+    await new Promise((r) => setTimeout(r, 250))
+    // 파일 일곱 개가 바뀌었지만 알림은 묶여서 나간다.
+    expect(changes()).toBeLessThanOrEqual(4)
   })
 })
 

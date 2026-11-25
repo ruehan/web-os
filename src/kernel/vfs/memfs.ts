@@ -23,6 +23,8 @@ export type Inode = FileNode | DirNode
 export class MemFs {
   private nextIno = 1
   readonly root: DirNode
+  /** 파일이나 디렉터리가 생기고, 사라지고, 바뀔 때마다 증가한다 (화면 갱신 알림용). */
+  generation = 0
 
   constructor() {
     const root = { kind: 'dir', ino: this.nextIno++, entries: new Map() } as DirNode
@@ -63,6 +65,7 @@ export class MemFs {
     if (dir.entries.has(name)) throw new KernelError(Errno.EXIST)
     const file: FileNode = { kind: 'file', ino: this.nextIno++, buf: new Uint8Array(0), size: 0, version: 0 }
     dir.entries.set(name, file)
+    this.generation++
     return file
   }
 
@@ -70,6 +73,7 @@ export class MemFs {
     if (dir.entries.has(name)) throw new KernelError(Errno.EXIST)
     const child: DirNode = { kind: 'dir', ino: this.nextIno++, parent: dir, entries: new Map() }
     dir.entries.set(name, child)
+    this.generation++
     return child
   }
 
@@ -78,6 +82,7 @@ export class MemFs {
     if (!node) throw new KernelError(Errno.NOENT)
     if (node.kind === 'dir') throw new KernelError(Errno.ISDIR)
     dir.entries.delete(name)
+    this.generation++
   }
 
   rmdir(dir: DirNode, name: string): void {
@@ -86,6 +91,32 @@ export class MemFs {
     if (node.kind !== 'dir') throw new KernelError(Errno.NOTDIR)
     if (node.entries.size > 0) throw new KernelError(Errno.NOTEMPTY)
     dir.entries.delete(name)
+    this.generation++
+  }
+
+  /** 이름을 바꾸거나 다른 디렉터리로 옮긴다. 같은 이름이 이미 있으면 덮어쓰지 않고 실패한다. */
+  rename(fromDir: DirNode, fromName: string, toDir: DirNode, toName: string): void {
+    const node = fromDir.entries.get(fromName)
+    if (!node) throw new KernelError(Errno.NOENT)
+    if (fromDir === toDir && fromName === toName) return
+    if (toDir.entries.has(toName)) throw new KernelError(Errno.EXIST)
+    if (node.kind === 'dir') {
+      // 디렉터리를 자기 자신이나 자기 아래로 옮길 수는 없다.
+      for (let d = toDir; ; d = d.parent) {
+        if (d === node) throw new KernelError(Errno.INVAL)
+        if (d === d.parent) break
+      }
+      node.parent = toDir
+    }
+    fromDir.entries.delete(fromName)
+    toDir.entries.set(toName, node)
+    this.generation++
+  }
+
+  /** 파일이든 디렉터리든(내용 포함) 지운다. */
+  removeTree(dir: DirNode, name: string): void {
+    if (!dir.entries.delete(name)) throw new KernelError(Errno.NOENT)
+    this.generation++
   }
 
   read(file: FileNode, offset: number, length: number): Uint8Array {
@@ -104,6 +135,7 @@ export class MemFs {
     if (offset > file.size) file.buf.fill(0, file.size, offset)
     file.buf.set(data, offset)
     file.version++
+    this.generation++
     file.size = Math.max(file.size, end)
     return data.length
   }
@@ -111,6 +143,7 @@ export class MemFs {
   truncate(file: FileNode): void {
     file.size = 0
     file.version++
+    this.generation++
   }
 
   // 커널 내부(부팅, 테스트)용 편의 함수
