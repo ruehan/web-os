@@ -32,12 +32,16 @@ export async function type(page: Page, line: string) {
 /** 왼쪽 레일에서 앱을 실행한다. */
 export const launch = (page: Page, name: string) => page.getByRole('button', { name, exact: true }).click()
 
-/** 페이지를 열고 첫 터미널의 프롬프트가 뜰 때까지 기다린다. */
-export async function boot(page: Page) {
-  // 창이 열리는 애니메이션 도중에 위치를 재면 값이 어긋나므로 끈다.
+/**
+ * 페이지를 열고 첫 터미널의 프롬프트가 뜰 때까지 기다린다.
+ * 대부분의 테스트는 재방문 상태(안내 창 없음, 부팅 연출 없음)에서 시작한다.
+ */
+export async function boot(page: Page, options: { firstVisit?: boolean } = {}) {
+  // 움직임 줄이기: 부팅 연출을 건너뛰고, 창이 열리는 애니메이션 도중에 위치를 재는 일도 없앤다.
   await page.emulateMedia({ reducedMotion: 'reduce' })
+  if (!options.firstVisit) await page.addInitScript(() => localStorage.setItem('webos.welcomed', '1'))
   await page.goto('/')
-  await expectScreen(page).toMatch(/\$$/)
+  await expectScreen(page, appWindow(page, 'terminal')).toMatch(/\$$/)
 }
 
 export async function box(locator: Locator) {
