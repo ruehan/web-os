@@ -6,6 +6,7 @@ import {
   FolderIcon,
   GuideIcon,
   LogIcon,
+  NoteIcon,
   ProcessesIcon,
   SettingsIcon,
   TerminalIcon,
@@ -15,6 +16,7 @@ import type { System } from '../system.ts'
 import { EditorApp } from './EditorApp.tsx'
 import { FilesApp } from './FilesApp.tsx'
 import { LogApp } from './LogApp.tsx'
+import { NotesApp } from './NotesApp.tsx'
 import { ProcessesApp } from './ProcessesApp.tsx'
 import { SettingsApp } from './SettingsApp.tsx'
 import { TerminalApp } from './TerminalApp.tsx'
@@ -52,6 +54,7 @@ export const APPS: AppDef[] = [
   { id: 'terminal', name: '터미널', icon: TerminalIcon, component: TerminalApp, size: { w: 760, h: 480 } },
   { id: 'files', name: '파일', icon: FolderIcon, component: FilesApp, size: { w: 600, h: 420 } },
   { id: 'editor', name: '편집기', icon: EditorIcon, component: EditorApp, size: { w: 640, h: 460 } },
+  { id: 'notes', name: '메모', icon: NoteIcon, component: NotesApp, size: { w: 720, h: 460 }, single: true },
   { id: 'processes', name: '프로세스', icon: ProcessesIcon, component: ProcessesApp, size: { w: 460, h: 380 }, single: true },
   { id: 'trace', name: '시스템 콜', icon: TraceIcon, component: TraceApp, size: { w: 700, h: 420 }, single: true },
   { id: 'log', name: '시스템 로그', icon: LogIcon, component: LogApp, size: { w: 560, h: 320 }, single: true },

@@ -800,17 +800,47 @@ input {
 
 /* ───────────── 편집기 ───────────── */
 
-.editor-text {
+/* 색 입힌 글(뒤)과 투명한 입력창(앞)을 정확히 겹친다. 두 층의 글꼴·여백·줄바꿈 규칙이 같아야 한다. */
+.code-area {
+  position: relative;
   flex: 1;
   min-height: 0;
+  background: var(--surface);
+}
+
+.code-layer,
+.code-input {
+  position: absolute;
+  inset: 0;
+  margin: 0;
   padding: 12px 14px;
   border: 0;
-  outline: 0;
-  resize: none;
-  background: var(--surface);
-  color: var(--text);
+  overflow: auto;
   font: 13px/1.6 var(--mono);
   tab-size: 2;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: normal;
+  letter-spacing: 0;
+}
+
+.code-layer {
+  color: var(--text);
+  pointer-events: none;
+  /* 스크롤 막대는 입력창의 것만 보인다. 자리는 똑같이 차지해야 줄바꿈 위치가 맞는다. */
+  scrollbar-color: transparent transparent;
+}
+
+.code-input {
+  outline: 0;
+  resize: none;
+  background: transparent;
+  color: transparent;
+  caret-color: var(--text);
+}
+
+.code-input::selection {
+  background: var(--accent-soft);
 }
 
 .editor-note {
@@ -1298,4 +1328,280 @@ input {
 .toast p {
   margin: 4px 0 12px;
   color: var(--muted);
+}
+
+/* ───────────── 문법 색상 ───────────── */
+
+:root {
+  --syn-comment: var(--muted);
+  --syn-string: light-dark(#1a7f37, #6fd08c);
+  --syn-number: light-dark(#8a6100, #e5c07b);
+  --syn-keyword: light-dark(#8b3fc7, #c99bf5);
+  --syn-name: light-dark(#0f7b8a, #66cfdc);
+}
+
+.syn-comment {
+  color: var(--syn-comment);
+}
+
+.syn-string {
+  color: var(--syn-string);
+}
+
+.syn-number {
+  color: var(--syn-number);
+}
+
+.syn-keyword {
+  color: var(--syn-keyword);
+}
+
+.syn-name,
+.syn-link {
+  color: var(--syn-name);
+}
+
+.syn-heading {
+  color: var(--accent);
+}
+
+.syn-emphasis {
+  color: var(--syn-number);
+}
+
+.syn-code {
+  color: var(--syn-string);
+}
+
+.syn-mark {
+  color: var(--syn-keyword);
+}
+
+/* ───────────── 형식별 미리보기 ───────────── */
+
+.preview {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 16px 20px;
+  line-height: 1.7;
+  user-select: text;
+}
+
+.preview > :first-child {
+  margin-top: 0;
+}
+
+.preview h2,
+.preview h3,
+.preview h4,
+.preview h5,
+.preview h6 {
+  margin: 1.4em 0 0.5em;
+  line-height: 1.3;
+}
+
+.preview .md-h1 {
+  font-size: 22px;
+}
+
+.preview .md-h2 {
+  font-size: 18px;
+}
+
+.preview .md-h3 {
+  font-size: 15px;
+}
+
+.preview p,
+.preview ul,
+.preview ol,
+.preview blockquote {
+  margin: 0 0 0.9em;
+}
+
+.preview ul,
+.preview ol {
+  padding-left: 1.5em;
+}
+
+.preview blockquote {
+  padding-left: 12px;
+  border-left: 3px solid var(--line-strong);
+  color: var(--muted);
+}
+
+.preview code,
+.md-code,
+.json-view {
+  font: 12.5px/1.6 var(--mono);
+}
+
+.preview code {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--surface-2);
+}
+
+.md-code,
+.json-view {
+  margin: 0 0 0.9em;
+  padding: 10px 12px;
+  border-radius: var(--radius-m);
+  background: var(--surface-2);
+  overflow-x: auto;
+  white-space: pre;
+}
+
+.json-view {
+  background: none;
+  padding: 0;
+}
+
+.preview a {
+  color: var(--accent);
+}
+
+.preview hr {
+  margin: 1.4em 0;
+  border: 0;
+  border-top: 1px solid var(--line);
+}
+
+.csv-view {
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+
+.csv-view th,
+.csv-view td {
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  text-align: left;
+  white-space: pre-wrap;
+}
+
+.csv-view th {
+  background: var(--surface-2);
+  font-weight: 600;
+}
+
+.preview-note,
+.preview-empty {
+  margin: 10px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.preview-error {
+  margin: 0;
+  color: var(--danger);
+}
+
+/* 새 파일의 형식 고르기 */
+.type-bar {
+  flex-wrap: wrap;
+  background: var(--surface-2);
+}
+
+.type-ext {
+  font-family: var(--mono);
+  color: var(--muted);
+}
+
+/* ───────────── 메모 ───────────── */
+
+.notes {
+  height: 100%;
+  display: grid;
+  grid-template-columns: 220px 1fr;
+}
+
+.notes-side {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--line);
+  background: var(--surface-2);
+}
+
+.notes-side .toolbar {
+  border-bottom: 0;
+}
+
+.notes-side select.tool {
+  flex: 1;
+  min-width: 0;
+  color: var(--text);
+}
+
+.notes-search {
+  margin: 0 8px 6px;
+}
+
+.notes-list {
+  flex: 1;
+  min-height: 0;
+  margin: 0;
+  padding: 0 6px 6px;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.notes-item {
+  display: grid;
+  gap: 1px;
+  padding: 6px 8px;
+  border-radius: var(--radius-s);
+  cursor: default;
+}
+
+.notes-item:hover {
+  background: var(--hover);
+}
+
+.notes-item[aria-selected='true'] {
+  background: var(--accent-soft);
+}
+
+.notes-title,
+.notes-excerpt {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.notes-title {
+  font-weight: 600;
+}
+
+.notes-excerpt {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.notes-empty {
+  padding: 16px 8px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.notes-main {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* 좁은 화면에서는 목록을 위에, 내용을 아래에 둔다. */
+.desktop.compact .notes {
+  grid-template-columns: 1fr;
+  grid-template-rows: minmax(120px, 34%) 1fr;
+}
+
+.desktop.compact .notes-side {
+  border-right: 0;
+  border-bottom: 1px solid var(--line);
 }

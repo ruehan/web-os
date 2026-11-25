@@ -108,3 +108,10 @@ export const TraceIcon = () => (
     <path d="M13.5 7.5L16 10l-2.5 2.5" />
   </Icon>
 )
+
+export const NoteIcon = () => (
+  <Icon>
+    <path d="M4.5 3.5h11a1 1 0 0 1 1 1v7.5l-4.5 4.5h-7.5a1 1 0 0 1-1-1v-11a1 1 0 0 1 1-1z" />
+    <path d="M16.5 12H13a1 1 0 0 0-1 1v3.5M6.5 7h7M6.5 10h4" />
+  </Icon>
+)

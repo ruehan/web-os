@@ -54,6 +54,15 @@ export function WelcomeApp(props: AppProps) {
       <ul class="try-list">
         <li>
           <div class="try-text">
+            <span>메모</span>
+            <small>바로 적으면 저장됩니다. 메모는 홈의 notes 폴더에 파일로 남아 터미널에서도 보입니다.</small>
+          </div>
+          <button class="tool" onClick={() => props.launch('notes')}>
+            열기
+          </button>
+        </li>
+        <li>
+          <div class="try-text">
             <span>파일 탐색기</span>
             <small>홈 폴더의 파일은 새로고침해도 남습니다. 직접 컴파일한 .wasm 파일을 끌어다 놓으면 터미널에서 실행할 수 있습니다.</small>
           </div>
