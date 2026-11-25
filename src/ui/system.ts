@@ -78,6 +78,9 @@ export function createSystem() {
         return setProcs(produce((p) => p.push({ pid: ev.pid, ppid: ev.ppid, name: ev.argv.join(' ') })))
       case 'exit':
         return setProcs((p) => p.filter((x) => x.pid !== ev.pid))
+      case 'storage-reset':
+        // 메모리에 남은 파일까지 버리고 첫 방문 상태로 다시 시작한다.
+        return location.reload()
       case 'fs-change':
         return setFsVersion((v) => v + 1)
       case 'fs-result': {
@@ -127,6 +130,8 @@ export function createSystem() {
       rename: async (from: string, to: string) => void (await fsCall({ op: 'rename', from, to })),
     },
     kill: (pid: number) => send({ type: 'kill', pid }),
+    /** 브라우저에 저장된 /home 을 지우고 처음 상태로 다시 시작한다. */
+    resetStorage: () => send({ type: 'storage-reset' }),
 
     /** 새 터미널 장치를 만들고 셸을 띄운다. */
     openTerminal(

@@ -41,7 +41,7 @@ export const APPS: AppDef[] = [
   { id: 'editor', name: '편집기', icon: EditorIcon, component: EditorApp, size: { w: 640, h: 460 } },
   { id: 'processes', name: '프로세스', icon: ProcessesIcon, component: ProcessesApp, size: { w: 460, h: 380 }, single: true },
   { id: 'log', name: '시스템 로그', icon: LogIcon, component: LogApp, size: { w: 560, h: 320 }, single: true },
-  { id: 'settings', name: '설정', icon: SettingsIcon, component: SettingsApp, size: { w: 420, h: 400 }, single: true },
+  { id: 'settings', name: '설정', icon: SettingsIcon, component: SettingsApp, size: { w: 440, h: 520 }, single: true },
 ]
 
 export const appById = (id: string) => APPS.find((a) => a.id === id)!

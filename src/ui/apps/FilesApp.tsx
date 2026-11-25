@@ -33,7 +33,8 @@ export function FilesApp(props: AppProps) {
     const request = ++latest
     const path = cwd()
     try {
-      const found = await fs.list(path)
+      // 점으로 시작하는 파일(셸 이력 등)은 숨긴다.
+      const found = (await fs.list(path)).filter((e) => !e.name.startsWith('.'))
       if (request !== latest) return // 더 새로운 요청이 이미 나갔다
       // 폴더 먼저, 그다음 이름순
       found.sort((a, b) => Number(b.dir) - Number(a.dir) || a.name.localeCompare(b.name, 'ko'))
