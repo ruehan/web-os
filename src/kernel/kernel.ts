@@ -118,6 +118,8 @@ export class Kernel {
   private modules = new WeakMap<FileNode, { version: number; module: WebAssembly.Module }>()
   private notifiedGeneration = 0
   private notifyTimer: ReturnType<typeof setTimeout> | undefined
+  /** 바깥 저장소에 연결된 경로와 그 종류 (/proc/mounts 표시용). 연결 자체는 호스트가 관리한다. */
+  readonly mounts = new Map<string, string>([['/home', 'opfs']])
   private tracing = false
   private traceBuffer: TraceRecord[] = []
   private traceDropped = 0
@@ -126,7 +128,7 @@ export class Kernel {
 
   constructor(host: KernelHost) {
     this.host = host
-    for (const dir of ['/bin', '/tmp', '/home/guest', '/etc', '/proc']) this.fs.mkdirp(dir)
+    for (const dir of ['/bin', '/tmp', '/home/guest', '/etc', '/proc', '/mnt']) this.fs.mkdirp(dir)
   }
 
   log(msg: string): void {
@@ -260,7 +262,8 @@ export class Kernel {
       fs.mkdirp('/proc').entries.clear()
       fs.writeFile('/proc/version', text(`${VERSION}\n`))
       fs.writeFile('/proc/uptime', text(`${(this.host.now() / 1000).toFixed(2)}\n`))
-      fs.writeFile('/proc/mounts', text('memfs / rw\nopfs /home rw,persistent\nprocfs /proc ro\n'))
+      const mounts = [...this.mounts].map(([path, kind]) => `${kind} ${path} rw,persistent\n`).join('')
+      fs.writeFile('/proc/mounts', text(`memfs / rw\n${mounts}procfs /proc ro\n`))
       for (const p of this.procs.values()) {
         fs.mkdirp(`/proc/${p.pid}`)
         // 조건을 기다리며 시스템 콜에 멈춰 있으면 S, 아니면 R

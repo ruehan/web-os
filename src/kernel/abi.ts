@@ -156,6 +156,12 @@ export type KernelEvent =
   | { type: 'fs-change' }
   /** 영구 저장소를 비웠다. 화면은 페이지를 다시 불러와 처음 상태로 시작한다. */
   | { type: 'storage-reset' }
+  /** 로컬 폴더 연결·해제 요청의 결과 */
+  | { type: 'mount-result'; id: number; ok: true; path: string; files: number }
+  | { type: 'mount-result'; id: number; ok: false; reason: 'too-large'; files: number; bytes: number }
+  | { type: 'mount-result'; id: number; ok: false; reason: 'failed'; msg: string }
+  /** 연결된 로컬 폴더에 저장하지 못했다 (권한이 취소됐거나 폴더가 사라진 경우 등) */
+  | { type: 'mount-error'; name: string; msg: string }
   /** 추적 중에 일어난 시스템 콜들. 너무 많으면 일부를 버리고 그 수를 dropped에 적는다. */
   | { type: 'trace'; records: TraceRecord[]; dropped: number }
 
@@ -168,5 +174,11 @@ export type KernelCommand =
   | { type: 'kill'; pid: number }
   | { type: 'fs'; id: number; request: FsRequest }
   | { type: 'storage-reset' }
+  /**
+   * 사용자가 고른 로컬 폴더를 /mnt/<name> 에 연결한다. 폴더의 내용을 메모리에 올리고,
+   * 이후 브라우저에서 바꾼 내용을 실제 파일에 반영한다. 한도를 넘는 폴더는 거절한다.
+   */
+  | { type: 'mount'; id: number; name: string; handle: FileSystemDirectoryHandle; maxFiles: number; maxBytes: number }
+  | { type: 'unmount'; id: number; name: string }
   /** 시스템 콜 추적을 켜거나 끈다. */
   | { type: 'trace'; on: boolean }
