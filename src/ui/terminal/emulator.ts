@@ -10,6 +10,8 @@ export interface Cell {
   fg: number
   bg: number
   bold: boolean
+  /** 글자색과 배경색을 맞바꿔 그린다 (상태 줄, 선택 표시) */
+  inverse: boolean
 }
 
 export interface Line {
@@ -19,7 +21,7 @@ export interface Line {
 const SCROLLBACK = 5000
 const TAB = 8
 
-const blank = (): Cell => ({ ch: ' ', width: 1, fg: -1, bg: -1, bold: false })
+const blank = (): Cell => ({ ch: ' ', width: 1, fg: -1, bg: -1, bold: false, inverse: false })
 
 export function lineText(line: Line): string {
   return line.cells
@@ -47,6 +49,12 @@ export class Emulator {
   private fg = -1
   private bg = -1
   private bold = false
+  private inverse = false
+  /**
+   * 대체 화면: 전체 화면 프로그램(편집기 등)이 쓰는 별도의 화면. 스크롤 기록이 없고,
+   * 나갈 때 들어오기 전의 화면이 그대로 돌아온다. 여기에는 그 원래 화면을 보관한다.
+   */
+  private main: { lines: Line[]; cx: number; cy: number } | undefined
   private state: 'ground' | 'esc' | 'csi' | 'osc' = 'ground'
   private params = ''
   private saved = { cx: 0, cy: 0 }
@@ -159,7 +167,7 @@ export class Emulator {
     while (cells.length < this.cx) cells.push(blank())
     this.splitWide(cells, this.cx)
     if (width === 2) this.splitWide(cells, this.cx + 1)
-    const attrs = { fg: this.fg, bg: this.bg, bold: this.bold }
+    const attrs = { fg: this.fg, bg: this.bg, bold: this.bold, inverse: this.inverse }
     cells[this.cx] = { ch, width, ...attrs }
     if (width === 2) cells[this.cx + 1] = { ch: '', width: 0, ...attrs }
     this.dirty.add(line)
@@ -213,6 +221,7 @@ export class Emulator {
       case 'h':
       case 'l':
         if (priv && nums[0] === 25) this.cursorVisible = final === 'h'
+        if (priv && (nums[0] === 1049 || nums[0] === 47)) this.setAlternate(final === 'h')
         return
       case 's':
         this.saved = { cx: this.cx, cy: this.cy }
@@ -227,9 +236,11 @@ export class Emulator {
       const c = codes[i]!
       if (c === 0) {
         this.fg = this.bg = -1
-        this.bold = false
+        this.bold = this.inverse = false
       } else if (c === 1) this.bold = true
       else if (c === 22) this.bold = false
+      else if (c === 7) this.inverse = true
+      else if (c === 27) this.inverse = false
       else if (c >= 30 && c <= 37) this.fg = c - 30
       else if (c === 39) this.fg = -1
       else if (c >= 40 && c <= 47) this.bg = c - 40
@@ -261,7 +272,37 @@ export class Emulator {
       return
     }
     this.addLine()
-    if (this.lines.length > SCROLLBACK + this.rows) this.dropLine(this.lines.shift()!)
+    // 대체 화면에는 스크롤 기록이 없다: 위로 밀려난 줄은 바로 사라진다.
+    const keep = this.main ? this.rows : SCROLLBACK + this.rows
+    if (this.lines.length > keep) this.dropLine(this.lines.shift()!)
+  }
+
+  get alternate(): boolean {
+    return this.main !== undefined
+  }
+
+  private setAlternate(on: boolean): void {
+    if (on === this.alternate) return
+    for (const line of this.lines) this.dropLine(line)
+    if (on) {
+      this.main = { lines: this.lines, cx: this.cx, cy: this.cy }
+      this.lines = []
+      for (let i = 0; i < this.rows; i++) this.addLine()
+      this.moveTo(0, 0)
+    } else {
+      const main = this.main!
+      this.main = undefined
+      this.lines = main.lines
+      // 그사이 화면 크기가 달라졌을 수 있다.
+      while (this.lines.length < this.rows) this.lines.push({ cells: [] })
+      // 화면에서 내려갔던 줄들이므로 순서대로 다시 그리게 한다.
+      this.removed = this.removed.filter((line) => !this.lines.includes(line))
+      for (const line of this.lines) {
+        this.dirty.delete(line)
+        this.dirty.add(line)
+      }
+      this.moveTo(main.cx, main.cy)
+    }
   }
 
   private addLine(): void {

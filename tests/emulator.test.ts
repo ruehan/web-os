@@ -130,6 +130,48 @@ describe('Emulator', () => {
     expect(full.cy).toBe(1)
   })
 
+  it('marks inverse text and clears it on reset', () => {
+    const e = term()
+    e.write('\x1b[7mbar\x1b[27mx\x1b[7my\x1b[0mz')
+    expect(e.cursorLine.cells.map((c) => c.inverse)).toEqual([true, true, true, false, true, false])
+  })
+
+  it('the alternate screen hides the main screen and gives it back untouched', () => {
+    const e = term(10, 3)
+    e.write('one\r\ntwo\r\nthree\r\nfour')
+    const before = { lines: e.lines.map(lineText), cx: e.cx, cy: e.cy }
+    const mainLines = [...e.lines]
+
+    e.write('\x1b[?1049h')
+    expect(e.alternate).toBe(true)
+    expect(e.screenText()).toEqual(['', '', ''])
+    expect([e.cx, e.cy]).toEqual([0, 0])
+    // 원래 화면의 줄은 화면에서 내려간다.
+    expect(e.removed).toEqual(mainLines)
+
+    // 대체 화면은 밀려난 줄을 기록으로 남기지 않는다.
+    e.write('a\r\nb\r\nc\r\nd\r\ne')
+    expect(e.lines.map(lineText)).toEqual(['c', 'd', 'e'])
+
+    e.removed.length = 0
+    e.dirty.clear()
+    e.write('\x1b[?1049l')
+    expect(e.alternate).toBe(false)
+    expect({ lines: e.lines.map(lineText), cx: e.cx, cy: e.cy }).toEqual(before)
+    // 돌아온 줄들은 위에서부터 순서대로 다시 그려진다.
+    expect([...e.dirty]).toEqual(mainLines)
+    expect(e.removed.some((line) => mainLines.includes(line))).toBe(false)
+    e.write('!')
+    expect(e.screenText().at(-1)).toBe('four!')
+  })
+
+  it('leaving the alternate screen twice, or without entering, is harmless', () => {
+    const e = term(10, 3)
+    e.write('keep\x1b[?1049l\x1b[?1049h\x1b[?1049h\x1b[?1049l\x1b[?1049l')
+    expect(e.screenText()[0]).toBe('keep')
+    expect(e.alternate).toBe(false)
+  })
+
   it('tracks which lines need redrawing', () => {
     const e = term(10, 3)
     e.dirty.clear()

@@ -23,8 +23,9 @@ const KEYS: Record<string, string> = {
   Delete: '\x1b[3~',
 }
 
-const BLANK: Cell = { ch: ' ', width: 1, fg: -1, bg: -1, bold: false }
-const isPlain = (c: Cell) => c.ch === ' ' && c.bg === -1
+const BLANK: Cell = { ch: ' ', width: 1, fg: -1, bg: -1, bold: false, inverse: false }
+const isPlain = (c: Cell) => c.ch === ' ' && c.bg === -1 && !c.inverse
+const color = (index: number, fallback: string) => (index >= 0 ? `var(--t${index})` : fallback)
 
 export function Terminal(props: {
   onInput: (text: string) => void
@@ -96,15 +97,17 @@ export function Terminal(props: {
       const c = cells[i] ?? BLANK
       if (c.width === 0) continue
       const atCursor = i === cursor || (c.width === 2 && i + 1 === cursor)
-      const style =
-        (c.fg >= 0 ? `color:var(--t${c.fg});` : '') +
-        (c.bg >= 0 ? `background:var(--t${c.bg});` : '') +
-        (c.bold ? 'font-weight:650;' : '')
+      // 반전된 칸은 글자색과 배경색을 맞바꾼다. 기본색끼리도 바뀌어야 하므로 양쪽을 다 지정한다.
+      const fg = c.inverse ? color(c.bg, 'var(--surface)') : color(c.fg, '')
+      const bg = c.inverse ? color(c.fg, 'var(--text)') : color(c.bg, '')
+      const style = (fg ? `color:${fg};` : '') + (bg ? `background:${bg};` : '') + (c.bold ? 'font-weight:650;' : '')
       // 2칸 글자와 커서는 폭을 고정해야 하므로 각자 요소를 갖고, 나머지는 같은 스타일끼리 묶는다.
       if (c.width === 2 || atCursor || !run || style !== runStyle) {
         run = document.createElement('span')
         if (style) run.style.cssText = style
         if (c.width === 2) run.classList.add('wide')
+        // 배경이 있는 칸은 줄 높이를 꽉 채워야 상태 줄 같은 띠가 끊기지 않고 이어진다.
+        if (bg) run.classList.add('fill')
         if (atCursor) run.classList.add('cursor')
         el.appendChild(run)
         runStyle = style

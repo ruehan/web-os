@@ -540,6 +540,12 @@ button {
   vertical-align: top;
 }
 
+.terminal .fill {
+  display: inline-block;
+  height: 18px;
+  vertical-align: top;
+}
+
 .terminal .cursor {
   outline: 1px solid var(--muted);
   outline-offset: -1px;
