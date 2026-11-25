@@ -445,6 +445,20 @@ describe('line editor', () => {
     expect(term.screen()).toContain(`${P} echo a\na\n${P} echo b\nb\n${P} echo c`)
   })
 
+  it('does not overwrite output that lacks a trailing newline', async () => {
+    const term = await start().terminal(40, 10)
+    expect(await term.exec('echo -n partial')).toBe('partial%')
+    expect(await term.exec('echo full')).toBe('full')
+    // 화면 폭을 정확히 채운 출력 뒤에도 빈 줄이나 표시가 끼지 않는다.
+    const row = 'x'.repeat(40)
+    os.kernel.fs.writeFile('/tmp/line', new TextEncoder().encode(row + '\n'))
+    os.kernel.fs.writeFile('/tmp/open', new TextEncoder().encode(row))
+    expect(await term.exec('cat /tmp/line')).toBe(row)
+    // 줄바꿈 없이 화면 끝에서 딱 끝난 경우에는 표시 없이 다음 줄에 프롬프트가 온다.
+    expect(await term.exec('cat /tmp/open')).toBe(row)
+    expect(term.screen()).not.toContain('\n\n\n')
+  })
+
   it('Ctrl+L clears the screen and keeps the line', async () => {
     const term = await start().terminal()
     await term.exec('echo something')

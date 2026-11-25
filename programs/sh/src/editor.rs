@@ -69,6 +69,7 @@ impl Editor {
         let mut at = self.history.len();
         let mut draft: Vec<char> = Vec::new();
         let mut view = View { prompt, cursor_row: 0, on_fresh_row: false };
+        start_on_fresh_line();
         view.draw(&buf, cur);
 
         loop {
@@ -350,6 +351,16 @@ fn visible_chars(text: &str) -> impl Iterator<Item = char> + '_ {
             !in_escape
         }
     })
+}
+
+/// 직전 명령의 출력이 줄바꿈 없이 끝났더라도 프롬프트가 그 출력을 덮어쓰지 않게 한다.
+///
+/// 커서 위치를 물어볼 수 없으므로, 표시 문자 하나와 (화면 폭 - 1)개의 공백을 찍는다.
+/// 커서가 줄 처음에 있었다면 정확히 한 줄을 채우고 같은 줄에 머물러서, 줄 처음으로 돌아가 지우면 흔적이 없다.
+/// 줄 중간에 있었다면 다음 줄로 넘어가므로, 이전 출력은 끝에 표시(%)가 붙은 채로 남는다.
+fn start_on_fresh_line() {
+    let (cols, _) = webos::window_size();
+    emit(&format!("\x1b[90m%\x1b[0m{}\r\x1b[K", " ".repeat(cols.saturating_sub(1))));
 }
 
 fn emit(text: &str) {
