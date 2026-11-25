@@ -101,6 +101,8 @@ export function createSystem() {
   const sessions = new Map<number, SessionState>()
   let nextRef = 1
   /** 시스템 콜 추적을 보고 있는 창들. 하나라도 있는 동안만 커널이 기록을 보낸다. */
+  /** flush 응답을 기다리는 쪽 */
+  let flushed: (() => void) | undefined
   const tracers = new Set<(records: TraceRecord[], dropped: number) => void>()
   /** 파일시스템이 바뀔 때마다 증가한다. 읽으면 변경을 구독하게 된다. */
   const [fsVersion, setFsVersion] = createSignal(0)
@@ -136,6 +138,8 @@ export function createSystem() {
         return setProcs((p) => p.filter((x) => x.pid !== ev.pid))
       case 'trace':
         return tracers.forEach((listener) => listener(ev.records, ev.dropped))
+      case 'flushed':
+        return flushed?.()
       case 'storage-reset':
         // 메모리에 남은 파일까지 버리고 첫 방문 상태로 다시 시작한다.
         return location.reload()
@@ -366,6 +370,16 @@ export function createSystem() {
     },
 
     shutdown: () => kernel.terminate(),
+
+    /** 저장을 마친 뒤 커널을 끈다. 커널이 응답하지 않아도 잠시 뒤에는 끈다. */
+    async close(): Promise<void> {
+      await new Promise<void>((resolve) => {
+        flushed = resolve
+        setTimeout(resolve, 2000)
+        send({ type: 'flush' })
+      })
+      kernel.terminate()
+    },
   }
 }
 

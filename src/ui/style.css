@@ -1243,3 +1243,16 @@ input {
 .storage-note {
   margin: 10px 0 0;
 }
+
+/* ───────────── 다른 탭에서 사용 중 안내 ───────────── */
+
+.notice-text {
+  margin: 0 0 18px;
+  line-height: 1.7;
+  color: var(--muted);
+}
+
+.notice-action {
+  padding: 6px 14px;
+  font-size: 13px;
+}

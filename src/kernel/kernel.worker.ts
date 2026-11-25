@@ -105,6 +105,13 @@ async function resetStorage(): Promise<void> {
   emit({ type: 'storage-reset' })
 }
 
+/** 미뤄 둔 저장을 지금 모두 끝낸다 (다른 탭에 자리를 넘겨주기 직전 등). */
+async function flush(): Promise<void> {
+  await persister?.sync()
+  for (const mount of mounts.values()) await mount.sync()
+  emit({ type: 'flushed' })
+}
+
 const MOUNT_ROOT = '/mnt'
 const describe = (e: unknown) => (e instanceof Error ? e.message : String(e))
 
@@ -166,6 +173,7 @@ self.onmessage = (e: MessageEvent<KernelCommand>) => {
     else if (cmd.type === 'tty-close') kernel.closeTerminal(cmd.tty)
     else if (cmd.type === 'storage-reset') void resetStorage()
     else if (cmd.type === 'trace') kernel.setTracing(cmd.on)
+    else if (cmd.type === 'flush') void flush()
     else if (cmd.type === 'mount') void mountLocal(cmd)
     else if (cmd.type === 'unmount') void unmountLocal(cmd)
     else if (cmd.type === 'fs') emit({ type: 'fs-result', id: cmd.id, result: kernel.fsRequest(cmd.request) })

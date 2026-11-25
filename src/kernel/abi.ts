@@ -154,6 +154,8 @@ export type KernelEvent =
   | { type: 'fs-result'; id: number; result?: FsResult; errno?: number }
   /** 파일시스템 내용이 바뀌었다 (짧은 시간에 여러 번 바뀌면 한 번으로 묶인다). */
   | { type: 'fs-change' }
+  /** flush 명령에 대한 응답: 바뀐 내용이 모두 저장소에 반영됐다. */
+  | { type: 'flushed' }
   /** 영구 저장소를 비웠다. 화면은 페이지를 다시 불러와 처음 상태로 시작한다. */
   | { type: 'storage-reset' }
   /** 로컬 폴더 연결·해제 요청의 결과 */
@@ -180,5 +182,7 @@ export type KernelCommand =
    */
   | { type: 'mount'; id: number; name: string; handle: FileSystemDirectoryHandle; maxFiles: number; maxBytes: number }
   | { type: 'unmount'; id: number; name: string }
+  /** 아직 저장하지 않은 변경을 지금 모두 저장한다. 끝나면 flushed 이벤트가 온다. */
+  | { type: 'flush' }
   /** 시스템 콜 추적을 켜거나 끈다. */
   | { type: 'trace'; on: boolean }
