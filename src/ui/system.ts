@@ -4,6 +4,9 @@ import { createSignal } from 'solid-js'
 import { createStore, produce } from 'solid-js/store'
 import type { FsEntry, FsRequest, FsResult, KernelCommand, KernelEvent, TraceRecord } from '../kernel/abi.ts'
 import { Errno } from '../kernel/errno.ts'
+import { forgetHandle, saveHandle, savedHandles } from './handles.ts'
+import { formatSize } from './path.ts'
+import { mountLimit } from './settings.ts'
 
 export interface Proc {
   pid: number
@@ -50,6 +53,33 @@ export class FsError extends Error {
   }
 }
 
+/** 연결했거나, 예전에 연결해서 기억하고 있는 로컬 폴더 */
+export interface Mount {
+  /** /mnt 아래의 이름 */
+  name: string
+  path: string
+  /** connected: 연결됨. remembered: 기억하고 있지만 이번 방문에서는 아직 권한을 받지 않음. */
+  state: 'connected' | 'remembered'
+  /** 저장 실패 등 사용자가 알아야 할 문제 */
+  error?: string
+}
+
+/** 권한 확인과 요청은 아직 표준 타입 정의에 없다. */
+type PermissionedHandle = FileSystemDirectoryHandle & {
+  queryPermission(options: { mode: 'readwrite' }): Promise<PermissionState>
+  requestPermission(options: { mode: 'readwrite' }): Promise<PermissionState>
+}
+
+type MountResult = Extract<KernelEvent, { type: 'mount-result' }>
+
+type DirectoryPicker = (options: object) => Promise<FileSystemDirectoryHandle>
+
+/** 폴더 선택 창. 지원하지 않는 브라우저에서는 없다. (window에 붙은 채로 불러야 해서 감싸 둔다.) */
+const pickDirectory: DirectoryPicker | undefined =
+  'showDirectoryPicker' in window
+    ? (options) => (window as unknown as { showDirectoryPicker: DirectoryPicker }).showDirectoryPicker(options)
+    : undefined
+
 export function createSystem() {
   const [procs, setProcs] = createStore<Proc[]>([])
   const [logs, setLogs] = createStore<LogLine[]>([])
@@ -63,6 +93,9 @@ export function createSystem() {
   /** 파일시스템이 바뀔 때마다 증가한다. 읽으면 변경을 구독하게 된다. */
   const [fsVersion, setFsVersion] = createSignal(0)
   const fsCalls = new Map<number, { resolve(result: FsResult): void; reject(error: FsError): void }>()
+  const [mounts, setMounts] = createStore<Mount[]>([])
+  const mountCalls = new Map<number, (result: MountResult) => void>()
+  const handles = new Map<string, FileSystemDirectoryHandle>()
 
   const kernel = new Worker(new URL('../kernel/kernel.worker.ts', import.meta.url), { type: 'module', name: 'kernel' })
   const send = (cmd: KernelCommand) => kernel.postMessage(cmd)
@@ -77,7 +110,13 @@ export function createSystem() {
       case 'error':
         return log({ time: performance.now(), msg: ev.msg, error: true })
       case 'ready':
-        return setReady(true)
+        setReady(true)
+        return void restoreMounts()
+      case 'mount-result':
+        mountCalls.get(ev.id)?.(ev)
+        return mountCalls.delete(ev.id)
+      case 'mount-error':
+        return setMounts((m) => m.name === ev.name, 'error', '실제 파일에 저장하지 못했습니다. 폴더가 옮겨졌거나 권한이 취소됐을 수 있습니다.')
       case 'spawn':
         return setProcs(produce((p) => p.push({ pid: ev.pid, ppid: ev.ppid, name: ev.argv.join(' ') })))
       case 'exit':
@@ -117,6 +156,104 @@ export function createSystem() {
     }
   }
 
+  // ───────────── 로컬 폴더 연결 ─────────────
+
+  const mountPath = (name: string) => `/mnt/${name}`
+
+  /** 커널에 연결을 요청하고 결과를 기다린다. 실패하면 사용자에게 보여 줄 문장으로 거부된다. */
+  async function attach(name: string, handle: FileSystemDirectoryHandle): Promise<string> {
+    const limit = mountLimit()
+    const result = await new Promise<MountResult>((resolve) => {
+      const id = nextRef++
+      mountCalls.set(id, resolve)
+      send({ type: 'mount', id, name, handle, maxFiles: limit.maxFiles, maxBytes: limit.maxBytes })
+    })
+    if (result.ok) {
+      setMounts((m) => m.filter((x) => x.name !== name).concat({ name, path: result.path, state: 'connected' }))
+      return result.path
+    }
+    if (result.reason === 'too-large') {
+      throw new Error(
+        `폴더가 너무 큽니다 (파일 ${result.files.toLocaleString()}개 이상, ${formatSize(result.bytes)} 이상). ` +
+          `지금 한도는 ${limit.name}입니다. 전용 폴더를 새로 만들어 연결하거나, 설정에서 한도를 올려 주세요.`,
+      )
+    }
+    throw new Error(`폴더를 연결하지 못했습니다: ${result.msg}`)
+  }
+
+  /** 지난 방문 때 연결했던 폴더들을 되살린다. 권한이 남아 있으면 바로 연결하고, 아니면 목록에만 올린다. */
+  async function restoreMounts() {
+    if (!pickDirectory) return
+    try {
+      for (const [name, handle] of await savedHandles()) {
+        handles.set(name, handle)
+        const granted = (await (handle as PermissionedHandle).queryPermission({ mode: 'readwrite' })) === 'granted'
+        setMounts((m) => m.concat({ name, path: mountPath(name), state: 'remembered' }))
+        if (granted) await attach(name, handle).catch((e) => setMounts((m) => m.name === name, 'error', String(e.message)))
+      }
+    } catch {
+      // 기억해 둔 폴더를 읽지 못해도 나머지 기능에는 지장이 없다.
+    }
+  }
+
+  const mountApi = {
+    /** 이 브라우저가 로컬 폴더 연결을 지원하는가 (데스크톱 Chromium 계열) */
+    supported: pickDirectory !== undefined,
+    list: mounts,
+
+    /**
+     * 폴더 선택 창을 띄워 고른 폴더를 연결하고, 연결된 경로를 돌려준다.
+     * 사용자가 선택을 취소하면 null. 반드시 클릭 같은 사용자 동작 안에서 불러야 한다.
+     */
+    async connect(): Promise<string | null> {
+      if (!pickDirectory) throw new Error('이 브라우저는 로컬 폴더 연결을 지원하지 않습니다.')
+      let handle: FileSystemDirectoryHandle
+      try {
+        handle = await pickDirectory({ mode: 'readwrite', id: 'webos-mount' })
+      } catch (e) {
+        if (e instanceof DOMException && e.name === 'AbortError') return null
+        throw e
+      }
+      // 이미 알고 있는 폴더를 다시 골랐으면 같은 이름으로 연결한다.
+      let name: string | undefined
+      for (const [known, saved] of handles) if (await saved.isSameEntry(handle)) name = known
+      if (name && mounts.some((m) => m.name === name && m.state === 'connected')) return mountPath(name)
+      if (!name) {
+        const base = handle.name.replaceAll('/', '_') || '폴더'
+        name = base
+        for (let n = 2; handles.has(name); n++) name = `${base} ${n}`
+      }
+      const path = await attach(name, handle)
+      handles.set(name, handle)
+      await saveHandle(name, handle).catch(() => {})
+      return path
+    },
+
+    /** 기억해 둔 폴더의 권한을 다시 받아 연결한다. 사용자 동작 안에서 불러야 한다. */
+    async reconnect(name: string): Promise<string> {
+      const handle = handles.get(name) as PermissionedHandle | undefined
+      if (!handle) throw new Error('기억하고 있는 폴더가 아닙니다.')
+      if ((await handle.requestPermission({ mode: 'readwrite' })) !== 'granted') {
+        throw new Error('폴더를 읽고 쓸 권한을 받지 못했습니다.')
+      }
+      return attach(name, handle)
+    },
+
+    /** 연결을 끊고 잊는다. 실제 폴더와 그 안의 파일은 그대로 남는다. */
+    async disconnect(name: string): Promise<void> {
+      if (mounts.some((m) => m.name === name && m.state === 'connected')) {
+        await new Promise<MountResult>((resolve) => {
+          const id = nextRef++
+          mountCalls.set(id, resolve)
+          send({ type: 'unmount', id, name })
+        })
+      }
+      handles.delete(name)
+      await forgetHandle(name).catch(() => {})
+      setMounts((m) => m.filter((x) => x.name !== name))
+    },
+  }
+
   const fsCall = (request: FsRequest) =>
     new Promise<FsResult>((resolve, reject) => {
       const id = nextRef++
@@ -129,6 +266,8 @@ export function createSystem() {
     logs,
     ready,
     fsVersion,
+    /** 사용자가 고른 로컬 폴더를 /mnt 아래에 연결한다. */
+    mounts: mountApi,
     /** 파일 작업. 경로는 모두 절대 경로이며, 실패하면 FsError로 거부된다. */
     fs: {
       list: async (path: string): Promise<FsEntry[]> => (await fsCall({ op: 'list', path })).entries ?? [],

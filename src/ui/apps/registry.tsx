@@ -55,7 +55,7 @@ export const APPS: AppDef[] = [
   { id: 'processes', name: '프로세스', icon: ProcessesIcon, component: ProcessesApp, size: { w: 460, h: 380 }, single: true },
   { id: 'trace', name: '시스템 콜', icon: TraceIcon, component: TraceApp, size: { w: 700, h: 420 }, single: true },
   { id: 'log', name: '시스템 로그', icon: LogIcon, component: LogApp, size: { w: 560, h: 320 }, single: true },
-  { id: 'settings', name: '설정', icon: SettingsIcon, component: SettingsApp, size: { w: 440, h: 520 }, single: true },
+  { id: 'settings', name: '설정', icon: SettingsIcon, component: SettingsApp, size: { w: 480, h: 600 }, single: true },
   { id: 'welcome', name: '시작하기', icon: GuideIcon, component: WelcomeApp, size: { w: 380, h: 580 }, single: true },
 ]
 

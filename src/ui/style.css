@@ -1168,3 +1168,64 @@ input {
   color: var(--muted);
   pointer-events: none;
 }
+
+/* ───────────── 설정: 로컬 폴더 ───────────── */
+
+.settings h3 {
+  margin: 16px 0 8px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--muted);
+}
+
+.mount-list {
+  display: grid;
+  gap: 6px;
+  margin: 0 0 10px;
+  padding: 0;
+  list-style: none;
+}
+
+.mount-list:empty {
+  display: none;
+}
+
+.mount-list li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-m);
+}
+
+.mount-text {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+}
+
+.mount-text code {
+  font: 12px var(--mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mount-text small {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.mount-text small.status-error,
+.mount-error {
+  color: var(--danger);
+}
+
+.mount-error {
+  margin: 10px 0 0;
+  line-height: 1.6;
+}
+
+.segmented {
+  flex-wrap: wrap;
+}

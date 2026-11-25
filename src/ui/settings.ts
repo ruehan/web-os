@@ -20,13 +20,28 @@ export const ACCENTS = [
 
 export type AccentId = (typeof ACCENTS)[number]['id']
 
+/**
+ * 로컬 폴더를 연결할 때 허용하는 크기. 폴더 전체를 메모리에 올리기 때문에,
+ * 실수로 큰 폴더를 골랐을 때 브라우저가 멈추지 않도록 미리 막는다.
+ */
+export const MOUNT_LIMITS = [
+  { id: 'small', name: '100MB · 파일 2천 개', maxBytes: 100 * 1024 * 1024, maxFiles: 2_000 },
+  { id: 'medium', name: '500MB · 파일 1만 개', maxBytes: 500 * 1024 * 1024, maxFiles: 10_000 },
+  { id: 'large', name: '2GB · 파일 5만 개', maxBytes: 2 * 1024 * 1024 * 1024, maxFiles: 50_000 },
+] as const
+
+export type MountLimitId = (typeof MOUNT_LIMITS)[number]['id']
+
+export const mountLimit = () => MOUNT_LIMITS.find((l) => l.id === settings.mountLimit)!
+
 interface Settings {
   theme: Theme
   accent: AccentId
+  mountLimit: MountLimitId
 }
 
 const KEY = 'webos.settings'
-const DEFAULTS: Settings = { theme: 'system', accent: 'indigo' }
+const DEFAULTS: Settings = { theme: 'system', accent: 'indigo', mountLimit: 'small' }
 
 function load(): Settings {
   try {
@@ -34,6 +49,7 @@ function load(): Settings {
     return {
       theme: THEMES.some((t) => t.id === saved.theme) ? saved.theme : DEFAULTS.theme,
       accent: ACCENTS.some((a) => a.id === saved.accent) ? saved.accent : DEFAULTS.accent,
+      mountLimit: MOUNT_LIMITS.some((l) => l.id === saved.mountLimit) ? saved.mountLimit : DEFAULTS.mountLimit,
     }
   } catch {
     return DEFAULTS
