@@ -311,7 +311,7 @@ describe('file requests from the desktop', () => {
   it('lists, reads, writes, renames and removes', () => {
     const { kernel } = start()
     const names = (path: string) => kernel.fsRequest({ op: 'list', path }).entries!.map((e) => e.name)
-    expect(names('/')).toEqual(['bin', 'tmp', 'home', 'etc', 'proc'])
+    expect(names('/')).toEqual(['bin', 'tmp', 'home', 'etc', 'proc', 'mnt'])
     expect(kernel.fsRequest({ op: 'list', path: '/home/guest' }).entries).toContainEqual({
       name: 'hello.sh',
       dir: false,
