@@ -310,6 +310,10 @@ export function runWasi(
     setfg: (pgid: number) => -sys.call({ nr: Sys.setfg, args: [pgid] }).errno,
     getpid: () => sys.call({ nr: Sys.getpid, args: [] }).ret ?? 0,
     set_raw: (on: number) => -sys.call({ nr: Sys.ttyraw, args: [on] }).errno,
+    poll_input(fd: number, timeoutMs: number) {
+      const res = sys.call({ nr: Sys.pollin, args: [fd, timeoutMs] })
+      return res.errno ? -res.errno : (res.ret ?? 0)
+    },
     winsize(ptr: number) {
       const res = sys.call({ nr: Sys.winsize, args: [] })
       if (res.errno) return -res.errno

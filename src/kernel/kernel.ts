@@ -58,6 +58,8 @@ interface Process {
   blockedOn?: WaitQueue
   /** 지금의 시스템 콜이 처음 미뤄진 시각 (추적 기록의 대기 시간 계산용) */
   blockedSince?: number
+  /** 시간 제한이 있는 대기의 타이머 */
+  timer?: ReturnType<typeof setTimeout>
 }
 
 export interface ProcessHandle {
@@ -75,8 +77,11 @@ export interface KernelHost {
 /** 시스템 콜을 지금 끝낼 수 없다. 큐가 깨워질 때 처음부터 다시 실행된다. */
 class Block {
   queue: WaitQueue
-  constructor(queue: WaitQueue) {
+  /** 이 시간(밀리초)이 지나도록 깨워지지 않으면 0을 돌려주며 끝낸다. 없으면 무한정 기다린다. */
+  timeout?: number
+  constructor(queue: WaitQueue, timeout?: number) {
     this.queue = queue
+    this.timeout = timeout
   }
 }
 
@@ -311,14 +316,32 @@ export class Kernel {
         proc.blockedOn = e.queue
         proc.blockedSince ??= this.host.now()
         e.queue.pids.add(pid)
+        // 깨워졌다가 다시 미뤄진 경우에는 처음 건 타이머를 그대로 둔다 (제한 시간은 처음부터 잰다).
+        if (e.timeout !== undefined) proc.timer ??= setTimeout(() => this.timedOut(proc, req), e.timeout)
         return
       }
       if (!(e instanceof KernelError)) throw e
       res = { errno: e.errno }
     }
+    this.reply(proc, req, res)
+  }
+
+  private reply(proc: Process, req: SysReq, res: SysRes): void {
+    clearTimeout(proc.timer)
+    proc.timer = undefined
     if (this.tracing) this.trace(proc, req, describeResult(req, res))
     proc.blockedSince = undefined
     writeReply(proc.channel, res)
+  }
+
+  /** 제한 시간 안에 조건이 충족되지 않았다: 기다림을 풀고 0을 돌려준다. */
+  private timedOut(proc: Process, req: SysReq): void {
+    proc.timer = undefined
+    if (proc.pending !== req) return
+    proc.blockedOn?.pids.delete(proc.pid)
+    proc.pending = undefined
+    proc.blockedOn = undefined
+    this.reply(proc, req, { errno: 0, ret: 0 })
   }
 
   // ───────────── 시스템 콜 추적 ─────────────
@@ -418,6 +441,7 @@ export class Kernel {
     if (!proc) return
     this.procs.delete(pid)
     proc.handle.terminate()
+    clearTimeout(proc.timer)
     proc.blockedOn?.pids.delete(pid)
     for (const file of proc.fds.values()) this.release(file)
     proc.fds.clear()
@@ -588,6 +612,12 @@ export class Kernel {
       case Sys.winsize:
         if (!proc.tty) throw new KernelError(Errno.NOTTY)
         return { errno: 0, data: new Uint8Array(Uint32Array.of(proc.tty.cols, proc.tty.rows).buffer) }
+      case Sys.pollin: {
+        const queue = this.readable(proc, this.fd(proc, a0))
+        if (!queue) return { errno: 0, ret: 1 }
+        if (a1 <= 0) return { errno: 0, ret: 0 }
+        throw new Block(queue, a1)
+      }
       case Sys.getpid:
         return { errno: 0, ret: proc.pid }
       case Sys.kill:
@@ -630,6 +660,13 @@ export class Kernel {
       case 'dir':
         throw new KernelError(Errno.ISDIR)
     }
+  }
+
+  /** 지금 읽으면 멈추지 않는가. 멈춘다면 무엇을 기다려야 하는지(대기 큐)를 돌려준다. */
+  private readable(proc: Process, file: OpenFile): WaitQueue | undefined {
+    if (file.kind === 'tty' && proc.pgid === file.tty.fg && !file.tty.hasInput()) return file.tty.readQ
+    if (file.kind === 'pipe' && file.end === 'read' && file.pipe.size === 0 && file.pipe.writers > 0) return file.pipe.readQ
+    return undefined
   }
 
   private sysRead(proc: Process, fd: number, max: number): SysRes {

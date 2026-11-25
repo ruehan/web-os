@@ -95,6 +95,8 @@ export function describeArgs(req: SysReq): string {
       return `${a0}${a1 ? ', NOHANG' : ''}`
     case Sys.ttyraw:
       return a0 ? 'on' : 'off'
+    case Sys.pollin:
+      return `${a0}, ${a1}ms`
     case Sys.pipe:
     case Sys.getpid:
     case Sys.winsize:

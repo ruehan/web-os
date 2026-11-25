@@ -55,6 +55,11 @@ export class Tty {
     this.host.output(out)
   }
 
+  /** 읽으면 바로 돌려줄 입력이 있는가 */
+  hasInput(): boolean {
+    return this.ready.length > 0
+  }
+
   /** 프로세스 ← 키보드. 읽을 것이 없으면 null (호출자가 멈춰야 한다). */
   read(max: number): Uint8Array | null {
     const chunk = this.ready[0]

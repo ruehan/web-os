@@ -34,6 +34,7 @@ export const Sys = {
   ttyraw: 21, // args [0 | 1]              터미널을 키 단위 입력 모드로 전환
   winsize: 22, //                            -> data u32 열 수, u32 줄 수
   rename: 23, // args [fromDirfd, toDirfd], path "from\0to"
+  pollin: 24, // args [fd, timeoutMs]       -> ret 읽을 것이 있으면 1, 시간이 다 되면 0
 } as const
 
 export interface SysReq {
