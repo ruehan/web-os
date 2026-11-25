@@ -42,6 +42,7 @@ test.describe('files', () => {
     await expect(files.locator('.file-name')).toHaveText(['docs', 'hello.sh', 'README.md'])
 
     await files.getByRole('button', { name: '새 파일' }).click()
+    await files.getByRole('group', { name: '새 파일의 형식' }).getByRole('button', { name: '텍스트 .txt' }).click()
     await expect(rename).toHaveValue('새 파일.txt')
     await expect(rename).toBeFocused()
     await page.keyboard.type('note')
