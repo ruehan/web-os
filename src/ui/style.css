@@ -41,9 +41,13 @@
 }
 
 html,
-body,
-#root {
+body {
   height: 100%;
+}
+
+/* dvh: 휴대폰에서 주소창과 화면 키보드를 뺀 실제 보이는 높이 */
+#root {
+  height: 100dvh;
 }
 
 body {
@@ -85,12 +89,44 @@ button {
 
 .boot {
   height: 100%;
+  display: grid;
+  place-items: center;
   padding: 24px;
+  cursor: default;
+}
+
+.boot-inner {
+  width: min(100%, 560px);
+}
+
+.boot-mark {
+  margin: 0 0 18px;
+  font-size: 22px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.boot-log {
+  min-height: 9lh;
   font: 12px/1.7 var(--mono);
+  color: var(--muted);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* 방금 나온 줄은 또렷하게 보인다. */
+.boot-log > :last-child {
+  color: var(--text);
+}
+
+.boot-hint {
+  margin: 18px 0 0;
+  font-size: 12px;
   color: var(--muted);
 }
 
-.boot-error {
+.boot-error,
+.boot-log > .boot-error {
   color: var(--danger);
 }
 
@@ -99,6 +135,7 @@ button {
 .desktop {
   height: 100%;
   display: grid;
+  animation: desktop-in 0.25s ease-out;
   grid-template-columns: var(--rail-width) 1fr;
   /* 강조색이 은은하게 번지는 배경 위에 점 격자를 깔았다. */
   background:
@@ -235,8 +272,15 @@ button {
   }
 }
 
+@keyframes desktop-in {
+  from {
+    opacity: 0;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .window {
+  .window,
+  .desktop {
     animation: none;
   }
 }
@@ -863,4 +907,177 @@ input {
 
 .confirm span {
   flex: 1 1 100%;
+}
+
+/* ───────────── 터미널 앱과 추가 키 ───────────── */
+
+.terminal-app {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.terminal-host {
+  flex: 1;
+  min-height: 0;
+}
+
+.term-keys {
+  flex: none;
+  display: flex;
+  gap: 6px;
+  padding: 6px 8px;
+  border-top: 1px solid var(--line);
+  background: var(--surface-2);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.term-keys button {
+  flex: 1;
+  min-width: 40px;
+  height: 34px;
+  padding: 0 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-s);
+  background: var(--surface);
+  font: 13px var(--mono);
+  cursor: pointer;
+}
+
+.term-keys button:active {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+
+/* ───────────── 시작 안내 ───────────── */
+
+.welcome {
+  padding: 18px 20px;
+  line-height: 1.65;
+}
+
+.welcome h1 {
+  margin: 0 0 8px;
+  font-size: 20px;
+  font-weight: 650;
+}
+
+.welcome h2 {
+  margin: 20px 0 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.welcome p {
+  margin: 0;
+}
+
+.welcome .hint {
+  margin-top: 18px;
+}
+
+.try-list {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.try-list li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-m);
+}
+
+.try-text {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  gap: 1px;
+}
+
+.try-text code {
+  font: 12px var(--mono);
+  color: var(--accent);
+  overflow-wrap: anywhere;
+}
+
+.try-text small {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+/* ───────────── 좁은 화면 (휴대폰) ───────────── */
+/* 창 하나가 화면 전체를 쓰고, 실행 막대는 아래로 내려온다. */
+
+.desktop.compact {
+  grid-template-columns: 1fr;
+  grid-template-rows: 1fr auto;
+}
+
+.desktop.compact .window-layer {
+  grid-row: 1;
+}
+
+.desktop.compact .rail {
+  grid-row: 2;
+  flex-direction: row;
+  gap: 8px;
+  padding: 6px 8px max(6px, env(safe-area-inset-bottom));
+  border-right: 0;
+  border-top: 1px solid var(--line);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.desktop.compact .rail-group {
+  flex: none;
+  flex-direction: row;
+}
+
+.desktop.compact .rail-windows {
+  width: auto;
+  padding: 0 0 0 8px;
+  border-top: 0;
+  border-left: 1px solid var(--line);
+  overflow: visible;
+}
+
+.desktop.compact .rail-windows:empty {
+  border-left-color: transparent;
+}
+
+.desktop.compact .window-tab::before {
+  left: 50%;
+  bottom: -5px;
+  width: 8px;
+  height: 3px;
+  border-radius: 3px 3px 0 0;
+  translate: -50% 0;
+}
+
+.desktop.compact .window-tab.active::before {
+  width: 18px;
+  height: 3px;
+}
+
+.desktop.compact .clock {
+  display: none;
+}
+
+.desktop.compact .window {
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.desktop.compact .window-body {
+  border-radius: 0;
 }
