@@ -167,15 +167,7 @@ describe('terminal', () => {
     expect(term.screen()).toContain('Web OS')
     expect(await term.exec('echo hi')).toBe('hi')
     expect(await term.exec('cd /tmp')).toBe('')
-    expect(term.screen().endsWith('guest@webos:/tmp$ ')).toBe(true)
-  })
-
-  it('edits the line with backspace, including wide characters', async () => {
-    const term = await start().terminal()
-    term.type('echo 가나\x7f')
-    await term.waitFor('가나')
-    expect(term.raw().endsWith('\b\b  \b\b')).toBe(true)
-    expect(await term.exec('다x\x7f')).toBe('가다')
+    expect(term.lastLine()).toBe('guest@webos:/tmp$')
   })
 
   it('Ctrl+C kills the foreground job but not the shell', async () => {
@@ -188,20 +180,13 @@ describe('terminal', () => {
     expect(os.kernel.pids().length).toBe(1)
   })
 
-  it('Ctrl+C at the prompt discards the line', async () => {
-    const term = await start().terminal()
-    term.type('echo nope\x03')
-    await term.waitFor('nope^C\nguest@webos:~$ ')
-    expect(await term.exec('echo ok')).toBe('ok')
-  })
-
-  it('a foreground program reads the keyboard until Ctrl+D', async () => {
+  it('a foreground program reads the keyboard line by line, with editing, until Ctrl+D', async () => {
     const term = await start().terminal()
     term.type('cat\r')
-    term.type('hello\r')
-    await term.waitFor('hello\nhello\n')
+    term.type('가나\x7f다x\x7f\r')
+    await term.waitFor('가다\n가다')
     term.type('\x04')
-    await term.waitFor('hello\nhello\nguest@webos:~$ ')
+    await term.waitForLine('guest@webos:~$')
   })
 
   it('a pipeline reading the keyboard works', async () => {
@@ -211,10 +196,17 @@ describe('terminal', () => {
     await term.waitFor('a\nb\n2\nguest@webos')
   })
 
+  it('keys typed while a command runs are not lost', async () => {
+    const term = await start().terminal()
+    term.type('sleep 0.3\r')
+    term.type('echo late')
+    await term.waitForLine('guest@webos:~$ echo late')
+    expect(await term.exec('')).toBe('late')
+  })
+
   it('reports finished background jobs at the next prompt', async () => {
     const term = await start().terminal()
-    const out = await term.exec('sleep 0.1 &')
-    expect(out).toMatch(/^\[\d+\]$/)
+    expect(await term.exec('sleep 0.1 &')).toMatch(/^\[\d+\]$/)
     await new Promise((r) => setTimeout(r, 300))
     expect(await term.exec('true')).toMatch(/^\[\d+\] done \(0\)$/)
   })
@@ -225,5 +217,159 @@ describe('terminal', () => {
     term.type('\x04')
     await term.closed()
     expect(os.kernel.pids()).toEqual([])
+  })
+})
+
+describe('line editor', () => {
+  const LEFT = '\x1b[D'
+  const RIGHT = '\x1b[C'
+  const UP = '\x1b[A'
+  const DOWN = '\x1b[B'
+  const HOME = '\x1b[H'
+  const END = '\x1b[F'
+  const DELETE = '\x1b[3~'
+  const P = 'guest@webos:~$'
+
+  it('moves the cursor and inserts or deletes in the middle of the line', async () => {
+    const term = await start().terminal()
+    term.type('echo ac' + LEFT + 'b')
+    await os.until(
+      () => term.lastLine() === `${P} echo abc` && term.emu.cx === P.length + 1 + 'echo ab'.length,
+      'inserted character with the cursor right after it',
+    )
+    term.type(HOME + DELETE + 'E' + END + '!' + LEFT + LEFT + '\x7f' + RIGHT + RIGHT + '?')
+    await term.waitForLine(`${P} Echo ac!?`)
+    term.type('\x15echo ok')
+    await term.waitForLine(`${P} echo ok`)
+    expect(await term.exec('')).toBe('ok')
+  })
+
+  it('Ctrl+A, Ctrl+E, Ctrl+K and Ctrl+W edit the line', async () => {
+    const term = await start().terminal()
+    term.type('one two three\x17\x17')
+    await term.waitForLine(`${P} one`)
+    term.type('\x15echo junk\x01' + RIGHT + RIGHT + RIGHT + RIGHT + '\x0b')
+    await term.waitForLine(`${P} echo`)
+    term.type(' x\x01\x05y')
+    await term.waitForLine(`${P} echo xy`)
+    expect(await term.exec('')).toBe('xy')
+  })
+
+  it('handles wide characters when moving and deleting', async () => {
+    const term = await start().terminal()
+    term.type('echo 가나다' + LEFT + '\x7f' + LEFT + '라')
+    await os.until(
+      () => term.lastLine() === `${P} echo 라가다` && term.emu.cx === P.length + 1 + 'echo '.length + 2,
+      'edited line with the cursor after the inserted character',
+    )
+    expect(await term.exec('')).toBe('라가다')
+  })
+
+  it('recalls earlier commands with the arrow keys and keeps the draft', async () => {
+    const term = await start().terminal()
+    await term.exec('echo one')
+    await term.exec('echo two')
+    await term.exec('echo two')
+    term.type('dra' + UP)
+    await term.waitForLine(`${P} echo two`)
+    term.type(UP)
+    await term.waitForLine(`${P} echo one`)
+    term.type(UP + DOWN + DOWN)
+    await term.waitForLine(`${P} dra`)
+    term.type(UP + UP + '!')
+    await term.waitForLine(`${P} echo one!`)
+    expect(await term.exec('')).toBe('one!')
+  })
+
+  it('Ctrl+C abandons the line without running it', async () => {
+    const term = await start().terminal()
+    term.type('echo nope\x03')
+    await term.waitFor(`${P} echo nope^C\n${P}`)
+    expect(await term.exec('echo ok')).toBe('ok')
+    term.type(UP)
+    await term.waitForLine(`${P} echo ok`)
+  })
+
+  it('redraws correctly when the line wraps across rows', async () => {
+    const term = await start().terminal(30, 10)
+    const text = 'echo 0123456789abcdefghij가나다라마'
+    term.type(text)
+    await term.waitFor('마')
+    const rowsBefore = term.screen().split('\n').length
+    term.type(HOME + RIGHT + RIGHT + RIGHT + RIGHT + RIGHT + 'X')
+    await term.waitFor('X0123')
+    // 줄 처음으로 돌아가 한 글자를 넣어도 프롬프트 줄이 중복으로 그려지지 않는다.
+    expect(term.screen().split('\n').length).toBe(rowsBefore)
+    expect(term.screen().split(P).length).toBe(2)
+    term.type(END)
+    // 출력도 화면 폭에서 줄이 넘어가므로 이어 붙여 비교한다.
+    expect((await term.exec('')).replace('\n', '')).toBe('X0123456789abcdefghij가나다라마')
+  })
+
+  it('handles a line that ends exactly at the right edge', async () => {
+    const term = await start().terminal(30, 10)
+    const fill = 'x'.repeat(30 - (P.length + 1) - 'echo '.length)
+    term.type('echo ' + fill)
+    await term.waitFor(fill)
+    expect([term.emu.cx, term.lastLine()]).toEqual([0, `${P} echo ${fill}`])
+    term.type('y')
+    await term.waitFor(fill + '\ny')
+    term.type('\x7f')
+    await os.until(() => term.screen().endsWith(fill) && term.emu.cx === 0, 'cursor back on the fresh row')
+    expect(await term.exec('')).toBe(fill)
+  })
+
+  it('completes command names', async () => {
+    const term = await start().terminal()
+    term.type('exitc\t')
+    await os.until(() => term.lastLine() === `${P} exitcode` && term.emu.cx === `${P} exitcode `.length, 'completed name')
+    term.type('3')
+    await term.waitForLine(`${P} exitcode 3`)
+    await term.exec('')
+    expect(await term.exec('echo $?')).toBe('3')
+  })
+
+  it('completes file and directory names, including after a pipe', async () => {
+    const term = await start().terminal()
+    term.type('cat REA\t')
+    await term.waitForLine(`${P} cat README.md`)
+    term.type('| gr\t')
+    await term.waitForLine(`${P} cat README.md | grep`)
+    term.type('-c 프로세스')
+    await term.waitForLine(`${P} cat README.md | grep -c 프로세스`)
+    expect(await term.exec('')).toBe('2')
+
+    term.type('ls /ho\t')
+    await term.waitForLine(`${P} ls /home/`)
+    term.type('gu\t')
+    await term.waitForLine(`${P} ls /home/guest/`)
+    term.type('\x15ls ~/he\t')
+    await term.waitForLine(`${P} ls ~/hello.sh`)
+  })
+
+  it('fills in the common prefix, then lists the candidates', async () => {
+    const term = await start().terminal()
+    await term.exec('cd /tmp && touch alpha-one alpha-two beta')
+    term.type('ls al\t')
+    await term.waitForLine('guest@webos:/tmp$ ls alpha-')
+    term.type('\t')
+    await term.waitFor('alpha-one  alpha-two\nguest@webos:/tmp$ ls alpha-')
+    term.type('t\t')
+    await term.waitForLine('guest@webos:/tmp$ ls alpha-two')
+  })
+
+  it('accepts several pasted lines at once', async () => {
+    const term = await start().terminal()
+    term.type('echo a\recho b\recho c')
+    await term.waitForLine(`${P} echo c`)
+    expect(term.screen()).toContain(`${P} echo a\na\n${P} echo b\nb\n${P} echo c`)
+  })
+
+  it('Ctrl+L clears the screen and keeps the line', async () => {
+    const term = await start().terminal()
+    await term.exec('echo something')
+    term.type('echo kept\x0c')
+    await os.until(() => term.screen() === `${P} echo kept`, 'cleared screen with the line kept')
+    expect(term.emu.cy).toBe(0)
   })
 })

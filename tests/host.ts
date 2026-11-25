@@ -4,13 +4,14 @@ import { readFileSync } from 'node:fs'
 import { Worker } from 'node:worker_threads'
 import type { KernelEvent } from '../src/kernel/abi.ts'
 import { Kernel } from '../src/kernel/kernel.ts'
+import { Emulator, lineText } from '../src/ui/terminal/emulator.ts'
 
 const publicDir = new URL('../public/', import.meta.url)
 const initrd: { bin: string[]; files: string[] } = JSON.parse(readFileSync(new URL('initrd.json', publicDir), 'utf8'))
 
 const SHELL_ENV = { USER: 'guest', HOME: '/home/guest', PWD: '/home/guest', PATH: '/bin' }
-const ANSI = /\x1b\[[0-9;?]*[A-Za-z]/g
-const PROMPT = /guest@webos:[^\n]*\$ $/
+/** 아무것도 입력하지 않은 프롬프트 줄 */
+const PROMPT = /^guest@webos:\S*\$$/
 
 export function boot() {
   const events: KernelEvent[] = []
@@ -78,26 +79,43 @@ export function boot() {
   /** 셸 명령 한 줄을 실행한다. */
   const sh = (line: string) => run(['sh', '-c', line])
 
-  /** 터미널을 열고 키보드 입력을 흉내 낸다. */
-  async function terminal() {
-    const id = kernel.openTerminal()
-    const raw = () => text(events.flatMap((e) => (e.type === 'tty-output' && e.tty === id ? [e.data] : [])))
-    const screen = () => raw().replace(ANSI, '').replaceAll('\r\n', '\n')
-    const atPrompt = () => PROMPT.test(screen())
+  /**
+   * 터미널을 열고 키보드 입력을 흉내 낸다. 출력은 실제 터미널 에뮬레이터로 해석하므로,
+   * 셸의 줄 편집기가 커서를 옮겨 가며 다시 그린 결과까지 사용자가 보는 그대로 확인할 수 있다.
+   */
+  async function terminal(cols = 80, rows = 24) {
+    const id = kernel.openTerminal(cols, rows)
+    const emu = new Emulator(cols, rows)
+    const decoder = new TextDecoder()
+    let consumed = 0
+    const screen = () => {
+      for (; consumed < events.length; consumed++) {
+        const e = events[consumed]!
+        if (e.type === 'tty-output' && e.tty === id) emu.write(decoder.decode(e.data, { stream: true }))
+      }
+      return emu.lines.map(lineText).join('\n').trimEnd()
+    }
+    const lastLine = () => screen().split('\n').at(-1)!
+    const atPrompt = () => PROMPT.test(lastLine())
     await until(atPrompt, 'first prompt')
     return {
       id,
-      raw,
+      emu,
       screen,
+      lastLine,
       type: (keys: string) => kernel.ttyInput(id, keys),
       waitFor: (needle: string) => until(() => screen().includes(needle), `"${needle}" on screen`),
-      /** 한 줄을 입력하고, 다음 프롬프트가 나올 때까지의 출력을 돌려준다. */
+      waitForLine: (line: string) => until(() => lastLine() === line, `last line to be "${line}"`),
+      /**
+       * 한 줄을 입력하고(이미 쳐 둔 내용이 있으면 이어서), 다음 프롬프트가 나올 때까지의 출력을 돌려준다.
+       */
       async exec(line: string) {
-        const before = screen().length
+        const before = screen()
+        // 명령 줄 다음 줄부터가 출력이다.
+        const outputStart = before.split('\n').length
         kernel.ttyInput(id, line + '\r')
-        await until(() => screen().length > before + line.length && atPrompt(), `prompt after "${line}"`)
-        const lines = screen().slice(before).split('\n')
-        return lines.slice(1, -1).join('\n')
+        await until(() => screen() !== before && atPrompt(), `prompt after "${line}"`)
+        return screen().split('\n').slice(outputStart, -1).join('\n')
       },
       closed: () => until(() => events.some((e) => e.type === 'tty-close' && e.tty === id), 'terminal to close'),
     }

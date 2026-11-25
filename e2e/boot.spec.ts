@@ -99,3 +99,47 @@ test('the session can be restarted after exit', async ({ page }) => {
   await type(page, 'echo back')
   await expectScreen(page).toContain('\nback\n')
 })
+
+test('arrow keys recall history and move the cursor', async ({ page }) => {
+  await type(page, 'echo first')
+  await type(page, 'echo second')
+  await expectScreen(page).toMatch(/\nsecond\nguest@webos:~\$$/)
+  await page.keyboard.press('ArrowUp')
+  await page.keyboard.press('ArrowUp')
+  await expectScreen(page).toMatch(/\$ echo first$/)
+  await page.keyboard.press('Home')
+  for (let i = 0; i < 5; i++) await page.keyboard.press('ArrowRight')
+  await page.keyboard.type('the ')
+  await page.keyboard.press('Enter')
+  await expectScreen(page).toContain('echo the first\nthe first\n')
+})
+
+test('Tab completes commands and file names', async ({ page }) => {
+  await page.locator('.terminal textarea').focus()
+  await page.keyboard.type('exitc')
+  await page.keyboard.press('Tab')
+  await expectScreen(page).toMatch(/\$ exitcode$/)
+  await page.keyboard.press('Control+u')
+  await page.keyboard.type('cat REA')
+  await page.keyboard.press('Tab')
+  await expectScreen(page).toMatch(/\$ cat README\.md$/)
+  await page.keyboard.type('| wc -l')
+  await page.keyboard.press('Enter')
+  await expectScreen(page).toMatch(/wc -l\n\d+\nguest@webos:~\$$/)
+  // Tab이 페이지의 다른 요소로 포커스를 옮기지 않아야 한다.
+  await expect(page.locator('.terminal textarea')).toBeFocused()
+})
+
+test('a long line wraps and stays editable when the window is narrow', async ({ page }) => {
+  await page.setViewportSize({ width: 420, height: 700 })
+  const text = 'echo ' + 'abcdefghij'.repeat(6)
+  await page.locator('.terminal textarea').focus()
+  await page.keyboard.type(text)
+  await page.keyboard.press('Home')
+  for (let i = 0; i < 5; i++) await page.keyboard.press('ArrowRight')
+  await page.keyboard.type('X')
+  await page.keyboard.press('Enter')
+  // 화면 폭에 따라 줄이 나뉘므로 줄바꿈을 빼고 비교한다.
+  await expect.poll(async () => (await screen(page)).replaceAll('\n', '')).toContain('X' + 'abcdefghij'.repeat(6) + 'X' + 'abcdefghij'.repeat(6) + 'guest@webos')
+  expect((await screen(page)).split('guest@webos').length).toBe(3)
+})
