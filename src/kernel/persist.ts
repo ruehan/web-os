@@ -1,4 +1,4 @@
-// 메모리 파일시스템의 한 디렉터리(/home)를 영구 저장소와 맞춰 둔다.
+// 메모리 파일시스템의 한 디렉터리(보통 루트 전체)를 영구 저장소와 맞춰 둔다.
 //
 // 읽고 쓰는 일은 전부 메모리에서 일어나고, 여기서는 바뀐 부분만 조금 뒤에 저장소로 옮긴다.
 // 부팅할 때는 반대로 저장소의 내용을 메모리에 되살린다.
@@ -28,20 +28,31 @@ export class Persister {
   private running: Promise<void> | undefined
   private again = false
   private stopped = false
+  /** 대상 디렉터리 바로 아래에서 다루지 않을 이름들 (커널이 만들어 내는 /proc 등) */
+  private exclude: Set<string>
   /** 저장에 실패했을 때 알릴 곳 */
   onError: (error: unknown) => void = () => {}
 
-  constructor(fs: MemFs, root: string, store: PersistStore) {
+  constructor(fs: MemFs, root: string, store: PersistStore, exclude: string[] = []) {
     this.fs = fs
     this.root = root
     this.store = store
+    this.exclude = new Set(exclude)
+  }
+
+  private skipped(path: string): boolean {
+    return this.exclude.has(path.split('/', 1)[0]!)
   }
 
   /** 저장소의 내용을 메모리에 되살리고, 되살린 파일 수를 돌려준다. */
   async restore(): Promise<number> {
     let files = 0
+    const prefix = this.root === '/' ? '' : this.root
+    const restored = new Set<string>()
     for (const entry of await this.store.load()) {
-      const path = `${this.root}/${entry.path}`
+      if (this.skipped(entry.path)) continue
+      const path = `${prefix}/${entry.path}`
+      restored.add(entry.path)
       if (entry.data) {
         this.fs.writeFile(path, entry.data)
         files++
@@ -50,8 +61,32 @@ export class Persister {
       }
     }
     // 방금 되살린 것은 이미 저장소에 있으므로 다시 쓸 필요가 없다.
-    this.snapshot = this.capture()
+    // 메모리에만 있던 것(저장소에 아직 없는 디렉터리 등)은 다음 sync 때 저장된다.
+    this.snapshot = new Map([...this.capture()].filter(([path]) => restored.has(path)))
     return files
+  }
+
+  /**
+   * 저장소에 이미 들어 있는 내용을 출발점으로 삼는다. 다음 sync 때 저장소가 메모리와 같아지도록,
+   * 서로 다른 파일만 다시 쓰고 메모리에 없는 것은 지운다. (이미 같은 파일은 건드리지 않는다.)
+   * 메모리의 내용을 다른 저장소에 그대로 옮겨 맞출 때 쓴다.
+   */
+  async adopt(): Promise<void> {
+    const now = this.capture()
+    const snapshot: Snapshot = new Map()
+    for (const entry of await this.store.load()) {
+      if (this.skipped(entry.path)) continue
+      const current = now.get(entry.path)
+      const node = current?.node
+      const same =
+        node !== undefined &&
+        (entry.data
+          ? node.kind === 'file' && node.size === entry.data.length && entry.data.every((b, i) => b === node.buf[i])
+          : node.kind === 'dir')
+      // 다르거나 메모리에 없는 항목은 "예전에 다른 내용이 있었다"고만 적어 둔다.
+      snapshot.set(entry.path, same ? current! : { node: { kind: entry.data ? 'file' : 'dir' } as Inode, version: -1 })
+    }
+    this.snapshot = snapshot
   }
 
   /** 파일시스템이 바뀌었을 때 부른다. 잠시 모았다가 한꺼번에 저장한다. */
@@ -95,6 +130,7 @@ export class Persister {
     const walk = (dir: DirNode, prefix: string) => {
       for (const [name, node] of dir.entries) {
         const path = prefix + name
+        if (prefix === '' && this.exclude.has(name)) continue
         out.set(path, { node, version: node.kind === 'file' ? node.version : 0 })
         if (node.kind === 'dir') walk(node, `${path}/`)
       }

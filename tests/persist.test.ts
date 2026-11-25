@@ -148,3 +148,64 @@ describe('Persister', () => {
     expect(log).toEqual([])
   })
 })
+
+describe('Persister over the whole tree', () => {
+  function whole(initial?: Record<string, string | null>) {
+    const fs = new MemFs()
+    for (const dir of ['/home', '/etc', '/proc', '/tmp']) fs.mkdirp(dir)
+    const fake = fakeStore(initial)
+    const persister = new Persister(fs, '/', fake.store, ['proc', '.marker'])
+    return { fs, persister, ...fake }
+  }
+
+  it('saves every directory except the excluded ones', async () => {
+    const { fs, persister, log } = whole()
+    await persister.restore()
+    fs.writeFile('/etc/conf', bytes('c'))
+    fs.writeFile('/proc/1', bytes('virtual'))
+    fs.writeFile('/home/f', bytes('h'))
+    await persister.sync()
+    expect(log).toEqual(['mkdir home', 'write home/f', 'mkdir etc', 'write etc/conf', 'mkdir tmp'])
+  })
+
+  it('restores to absolute paths and ignores excluded entries in the store', async () => {
+    const { fs, persister } = whole({ etc: null, 'etc/conf': 'saved', proc: null, 'proc/stale': 'x', '.marker': 'm' })
+    expect(await persister.restore()).toBe(1)
+    expect(text(fs.readFile('/etc/conf'))).toBe('saved')
+    const proc = fs.lookup(fs.root, '/proc')
+    expect(proc.kind === 'dir' && proc.entries.size).toBe(0)
+    expect(() => fs.lookup(fs.root, '/.marker')).toThrow()
+  })
+
+  it('adopt() makes a store match memory, touching only what differs', async () => {
+    const { fs, persister, log, dump } = whole({
+      home: null,
+      'home/same': 'equal',
+      'home/changed': 'old',
+      'home/gone': 'x',
+      'home/was-dir': null,
+      'home/was-dir/inner': 'i',
+      proc: null,
+      '.marker': 'keep me',
+    })
+    fs.writeFile('/home/same', bytes('equal'))
+    fs.writeFile('/home/changed', bytes('new'))
+    fs.writeFile('/home/was-dir', bytes('now a file'))
+    fs.writeFile('/home/added', bytes('a'))
+    await persister.adopt()
+    await persister.sync()
+    expect(log).toEqual([
+      'remove home/gone',
+      'remove home/was-dir',
+      'write home/changed',
+      'write home/was-dir',
+      'write home/added',
+      'mkdir etc',
+      'mkdir tmp',
+    ])
+    // 제외한 이름은 저장소에 있어도 건드리지 않는다.
+    expect(dump()).toMatchObject({ '.marker': 'keep me', 'home/same': 'equal', 'home/changed': 'new', 'home/was-dir': 'now a file' })
+    expect(dump()).not.toHaveProperty('home/gone')
+    expect(dump()).toHaveProperty('proc')
+  })
+})
