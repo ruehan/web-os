@@ -121,13 +121,15 @@ export type KernelEvent =
   | { type: 'exit'; pid: number; code: number }
   /** 터미널에 붙지 않은 프로세스의 표준 출력·오류 */
   | { type: 'stdio'; pid: number; fd: number; data: Uint8Array }
-  | { type: 'tty-open'; tty: number; pid: number }
+  /** ref는 tty-open 명령에 실어 보낸 값 그대로다 (어느 요청의 결과인지 구분용). */
+  | { type: 'tty-open'; ref: number; tty: number; pid: number }
   | { type: 'tty-output'; tty: number; data: Uint8Array }
   | { type: 'tty-close'; tty: number }
 
 /** 메인 스레드 → 커널 명령. */
 export type KernelCommand =
-  | { type: 'tty-open'; cols: number; rows: number }
+  | { type: 'tty-open'; ref: number; cols: number; rows: number }
+  | { type: 'tty-close'; tty: number }
   | { type: 'tty-resize'; tty: number; cols: number; rows: number }
   | { type: 'tty-input'; tty: number; text: string }
   | { type: 'kill'; pid: number }

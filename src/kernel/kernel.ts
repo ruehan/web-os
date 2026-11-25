@@ -121,7 +121,7 @@ export class Kernel {
   }
 
   /** 새 터미널 장치를 만들고 거기에 셸을 띄운다. */
-  openTerminal(cols = 80, rows = 24): number {
+  openTerminal(cols = 80, rows = 24, ref = 0): number {
     const id = this.nextTty++
     const tty: Tty = new Tty(id, {
       output: (data) => this.host.emit({ type: 'tty-output', tty: id, data }),
@@ -141,12 +141,19 @@ export class Kernel {
     })
     tty.fg = shell.pgid
     this.ttys.set(id, tty)
-    this.host.emit({ type: 'tty-open', tty: id, pid: shell.pid })
+    this.host.emit({ type: 'tty-open', ref, tty: id, pid: shell.pid })
     return id
   }
 
   ttyInput(id: number, text: string): void {
     this.ttys.get(id)?.input(text)
+  }
+
+  /** 터미널 창이 닫혔다: 셸을 끝내면 그 세션의 프로세스가 모두 정리된다. */
+  closeTerminal(id: number): void {
+    for (const p of this.procs.values()) {
+      if (p.tty?.id === id && p.sessionLeader) return this.reap(p.pid, ExitStatus.HANGUP)
+    }
   }
 
   ttyResize(id: number, cols: number, rows: number): void {
