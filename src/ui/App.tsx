@@ -1,103 +1,85 @@
-// 1단계용 임시 화면: 커널 로그와 프로세스 출력을 보여 주는 시리얼 콘솔.
+// 2단계 화면: 터미널 하나와 프로세스 목록.
 // 창 관리자와 디자인 시스템은 3단계에서 이 화면을 대체한다.
-import { For, Show, createSignal, onCleanup } from 'solid-js'
+import { For, onCleanup, onMount } from 'solid-js'
 import { createStore, produce } from 'solid-js/store'
-import type { KernelCommand, KernelEvent } from '../kernel/abi'
+import type { KernelCommand, KernelEvent } from '../kernel/abi.ts'
+import { Terminal, type TerminalHandle } from './terminal/Terminal.tsx'
 
-type Line = { kind: 'klog' | 'out' | 'err' | 'sys'; text: string }
-type Proc = { pid: number; name: string }
+type Proc = { pid: number; ppid: number; name: string }
 
-const PROGRAMS: { label: string; path: string; argv: string[] }[] = [
-  { label: 'hello', path: '/bin/hello', argv: ['hello', 'world'] },
-  { label: 'fsdemo', path: '/bin/fsdemo', argv: ['fsdemo'] },
-  { label: 'exitcode 42', path: '/bin/exitcode', argv: ['exitcode', '42'] },
-  { label: 'spin', path: '/bin/spin', argv: ['spin'] },
-]
+const DIM = '\x1b[90m'
+const RED = '\x1b[31m'
+const RESET = '\x1b[0m'
 
 export function App() {
-  const [lines, setLines] = createStore<Line[]>([])
   const [procs, setProcs] = createStore<Proc[]>([])
-  const [ready, setReady] = createSignal(false)
-  const streams = new Map<string, { decoder: TextDecoder; partial: string }>()
-  let logEl!: HTMLDivElement
+  let term!: TerminalHandle
+  let kernel: Worker | undefined
+  let ready = false
+  /** 현재 열려 있는 터미널 장치. 0이면 셸이 끝난 상태다. */
+  let tty = 0
 
-  const push = (kind: Line['kind'], text: string) => {
-    setLines(produce((l) => l.push({ kind, text })))
-    queueMicrotask(() => (logEl.scrollTop = logEl.scrollHeight))
-  }
+  const send = (cmd: KernelCommand) => kernel?.postMessage(cmd)
 
-  const kernel = new Worker(new URL('../kernel/kernel.worker.ts', import.meta.url), {
-    type: 'module',
-    name: 'kernel',
-  })
-  const send = (cmd: KernelCommand) => kernel.postMessage(cmd)
-  onCleanup(() => kernel.terminate())
-
-  kernel.onmessage = (e: MessageEvent<KernelEvent>) => {
-    const ev = e.data
+  function onEvent(ev: KernelEvent) {
     switch (ev.type) {
       case 'klog':
-        push('klog', `[${(ev.time / 1000).toFixed(3).padStart(8)}] ${ev.msg}`)
+        term.writeText(`${DIM}[${(ev.time / 1000).toFixed(3).padStart(8)}] ${ev.msg}${RESET}\r\n`)
         break
       case 'ready':
-        setReady(true)
+        ready = true
+        term.writeText('\r\n')
+        send({ type: 'tty-open' })
+        break
+      case 'tty-open':
+        tty = ev.tty
+        break
+      case 'tty-output':
+        if (ev.tty === tty) term.write(ev.data)
+        break
+      case 'tty-close':
+        if (ev.tty !== tty) break
+        tty = 0
+        term.writeText(`\r\n${DIM}[세션이 끝났습니다. 아무 키나 누르면 새 셸을 시작합니다]${RESET}\r\n`)
         break
       case 'spawn':
-        setProcs(produce((p) => p.push({ pid: ev.pid, name: ev.argv.join(' ') })))
-        push('sys', `[${ev.pid}] started: ${ev.argv.join(' ')}`)
+        setProcs(produce((p) => p.push({ pid: ev.pid, ppid: ev.ppid, name: ev.argv.join(' ') })))
         break
-      case 'tty': {
-        // 프로그램은 한 줄을 여러 번의 write로 나눠 보낼 수 있으므로 줄 단위로 모아서 보여 준다.
-        const key = `${ev.pid}:${ev.fd}`
-        let stream = streams.get(key)
-        if (!stream) streams.set(key, (stream = { decoder: new TextDecoder(), partial: '' }))
-        const parts = (stream.partial + stream.decoder.decode(ev.data, { stream: true })).split('\n')
-        stream.partial = parts.pop()!
-        for (const line of parts) push(ev.fd === 2 ? 'err' : 'out', line)
-        break
-      }
       case 'exit':
-        for (const fd of [1, 2]) {
-          const stream = streams.get(`${ev.pid}:${fd}`)
-          if (stream?.partial) push(fd === 2 ? 'err' : 'out', stream.partial)
-          streams.delete(`${ev.pid}:${fd}`)
-        }
         setProcs((p) => p.filter((x) => x.pid !== ev.pid))
-        push('sys', `[${ev.pid}] exited with code ${ev.code}`)
         break
       case 'error':
-        push('err', ev.msg)
+        term.writeText(`${RED}${ev.msg}${RESET}\r\n`)
         break
     }
   }
-  kernel.onerror = (e) => push('err', `kernel crashed: ${e.message}`)
+
+  function onInput(text: string) {
+    if (tty) send({ type: 'tty-input', tty, text })
+    else if (ready) send({ type: 'tty-open' })
+  }
+
+  onMount(() => {
+    if (!crossOriginIsolated) {
+      term.writeText(
+        `${RED}이 페이지는 교차 출처 격리 상태가 아니라서 블로킹 시스템 콜을 쓸 수 없습니다. COOP/COEP 헤더를 확인하세요.${RESET}\r\n`,
+      )
+    }
+    kernel = new Worker(new URL('../kernel/kernel.worker.ts', import.meta.url), { type: 'module', name: 'kernel' })
+    kernel.onmessage = (e: MessageEvent<KernelEvent>) => onEvent(e.data)
+    kernel.onerror = (e) => term.writeText(`${RED}kernel crashed: ${e.message}${RESET}\r\n`)
+    term.focus()
+    onCleanup(() => kernel?.terminate())
+  })
 
   return (
     <main>
       <header>
         <h1>Web OS</h1>
-        <span class="phase">1단계 · 커널 뼈대</span>
+        <span class="phase">2단계 · 터미널과 셸</span>
       </header>
 
-      <Show when={!crossOriginIsolated}>
-        <p class="warn">
-          이 페이지는 교차 출처 격리 상태가 아니라서 블로킹 시스템 콜을 쓸 수 없습니다. COOP/COEP 헤더를 확인하세요.
-        </p>
-      </Show>
-
-      <section class="bar">
-        <For each={PROGRAMS}>
-          {(p) => (
-            <button disabled={!ready()} onClick={() => send({ type: 'spawn', path: p.path, argv: p.argv, env: { USER: 'guest' } })}>
-              {p.label}
-            </button>
-          )}
-        </For>
-      </section>
-
-      <div class="log" ref={logEl} data-testid="console">
-        <For each={lines}>{(l) => <div class={l.kind}>{l.text || ' '}</div>}</For>
-      </div>
+      <Terminal ref={(h) => (term = h)} onInput={onInput} />
 
       <section class="procs" data-testid="procs">
         <h2>프로세스 {procs.length}개</h2>

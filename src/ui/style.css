@@ -22,7 +22,7 @@ body {
 }
 
 main {
-  max-width: 880px;
+  max-width: 960px;
   margin: 0 auto;
   padding: 32px 16px;
   display: grid;
@@ -57,20 +57,6 @@ h2 {
   margin: 0;
 }
 
-.warn {
-  margin: 0;
-  padding: 10px 12px;
-  border: 1px solid var(--err);
-  border-radius: 8px;
-  color: var(--err);
-}
-
-.bar {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
 button {
   font: 13px var(--mono);
   padding: 6px 12px;
@@ -90,28 +76,95 @@ button:disabled {
   cursor: default;
 }
 
-.log {
-  height: 420px;
+.terminal {
+  /* 터미널 16색. 밝은 배경과 어두운 배경 양쪽에서 읽히도록 각각 맞췄다. */
+  --t0: light-dark(#1c1d20, #2c2e34);
+  --t1: light-dark(#b3261e, #ff8a80);
+  --t2: light-dark(#1a7f37, #6fd08c);
+  --t3: light-dark(#8a6100, #e5c07b);
+  --t4: light-dark(#2d5bd8, #7ea2ff);
+  --t5: light-dark(#8b3fc7, #c99bf5);
+  --t6: light-dark(#0f7b8a, #66cfdc);
+  --t7: light-dark(#6d6f76, #c8c9cc);
+  --t8: light-dark(#8b8e97, #7d808a);
+  --t9: light-dark(#d93a31, #ffa8a0);
+  --t10: light-dark(#2a9d4b, #8fe3a7);
+  --t11: light-dark(#a87800, #f0d399);
+  --t12: light-dark(#4a74ea, #a3bcff);
+  --t13: light-dark(#a35ad9, #dbb8fa);
+  --t14: light-dark(#1894a6, #8fdfe9);
+  --t15: light-dark(#1c1d20, #ffffff);
+
+  height: min(62vh, 560px);
   overflow-y: auto;
   padding: 12px 14px;
   border: 1px solid var(--line);
   border-radius: 10px;
   background: var(--panel);
-  font: 13px/1.55 var(--mono);
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
+  font: 13px/18px var(--mono);
+  cursor: text;
 }
 
-.log .klog {
-  color: var(--muted);
+.terminal.focused {
+  border-color: var(--accent);
 }
 
-.log .sys {
-  color: var(--accent);
+.terminal .screen {
+  position: relative;
 }
 
-.log .err {
-  color: var(--err);
+.terminal .line {
+  height: 18px;
+  white-space: pre;
+}
+
+.terminal .wide {
+  display: inline-block;
+  width: 2ch;
+  text-align: center;
+  vertical-align: top;
+}
+
+.terminal .cursor {
+  outline: 1px solid var(--muted);
+  outline-offset: -1px;
+}
+
+.terminal.focused .cursor {
+  outline: none;
+  background: var(--text);
+  color: var(--panel);
+}
+
+.terminal .probe {
+  position: absolute;
+  visibility: hidden;
+  white-space: pre;
+}
+
+/* 키 입력을 받는 숨은 입력창. 조합 중일 때만 커서 자리에 글자가 보인다. */
+.terminal textarea {
+  position: absolute;
+  width: 2ch;
+  height: 18px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  outline: 0;
+  resize: none;
+  overflow: hidden;
+  white-space: pre;
+  font: inherit;
+  color: transparent;
+  background: transparent;
+  caret-color: transparent;
+}
+
+.terminal textarea.composing {
+  width: 24ch;
+  color: var(--text);
+  background: var(--panel);
+  text-decoration: underline;
 }
 
 .procs {
