@@ -1,6 +1,7 @@
 // 창 관리자의 상태: 어떤 창이 열려 있고, 어디에 있으며, 어느 것이 맨 위인가.
 import { batch, createMemo } from 'solid-js'
 import { createStore } from 'solid-js/store'
+import { compact } from './compact.ts'
 import { clampMove, frameFor, placeNew, type Mode, type Rect, type Size } from './geometry.ts'
 
 export interface WindowState {
@@ -29,6 +30,8 @@ export function createWindowManager() {
   let opened = 0
   /** 창을 닫아도 되는지 앱에 묻는 함수 (저장하지 않은 변경 확인 등) */
   const guards = new Map<number, () => boolean>()
+  /** 다른 곳에서 창의 앱으로 보내는 요청을 받는 함수 (예: 터미널에 실행할 명령) */
+  const receivers = new Map<number, (message: string) => void>()
 
   const find = (id: number) => state.windows.find((w) => w.id === id)
   const update = (id: number, patch: Partial<WindowState>) => setState('windows', (w) => w.id === id, patch)
@@ -43,11 +46,14 @@ export function createWindowManager() {
   return {
     state,
     focused,
-    frame: (w: WindowState) => frameFor(w.mode, w.rect, state.desk),
+    /** 창이 실제로 차지하는 자리. 좁은 화면에서는 언제나 화면 전체다. */
+    frame: (w: WindowState) => frameFor(compact() ? 'max' : w.mode, w.rect, state.desk),
 
-    open(app: string, title: string, size: Size, args: Record<string, string> = {}): number {
+    open(app: string, title: string, size: Size, args: Record<string, string> = {}, side?: 'right'): number {
       const id = nextId++
-      const rect = placeNew(opened++, size, state.desk)
+      let rect = placeNew(opened++, size, state.desk)
+      // 오른쪽에 붙여 여는 창은 다른 창을 가리지 않게 화면 오른쪽 가장자리에 둔다.
+      if (side === 'right') rect = { ...rect, x: Math.max(8, state.desk.w - rect.w - 24), y: Math.min(rect.y, 48) }
       const win: WindowState = { id, app, title, args, rect, mode: 'normal', minimized: false, z: ++topZ }
       setState('windows', state.windows.length, win)
       return id
@@ -55,6 +61,7 @@ export function createWindowManager() {
 
     close(id: number) {
       guards.delete(id)
+      receivers.delete(id)
       setState('windows', (ws) => ws.filter((w) => w.id !== id))
     },
 
@@ -66,6 +73,15 @@ export function createWindowManager() {
 
     setGuard(id: number, guard: () => boolean) {
       guards.set(id, guard)
+    },
+
+    setReceiver(id: number, receiver: (message: string) => void) {
+      receivers.set(id, receiver)
+    },
+
+    /** 창의 앱에 요청을 전달한다. */
+    post(id: number, message: string) {
+      receivers.get(id)?.(message)
     },
 
     focus(id: number) {

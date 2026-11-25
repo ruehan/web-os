@@ -3,6 +3,7 @@ import { For, Show } from 'solid-js'
 import type { AppDef } from '../apps/registry.tsx'
 import { CloseIcon, MaximizeIcon, MinimizeIcon, RestoreIcon } from '../icons.tsx'
 import type { System } from '../system.ts'
+import { compact } from './compact.ts'
 import { clampMove, detach, resizeRect, snapZone, type Edge, type Rect } from './geometry.ts'
 import type { WindowManager, WindowState } from './wm.ts'
 
@@ -58,7 +59,8 @@ export function Window(props: {
   }
 
   function startMove(e: PointerEvent) {
-    if ((e.target as Element).closest('button')) return
+    // 좁은 화면에서는 창이 화면 전체를 쓰므로 옮길 수 없다.
+    if (compact() || (e.target as Element).closest('button')) return
     track(
       e,
       (dx, dy, ev) => {
@@ -106,18 +108,20 @@ export function Window(props: {
       onPointerDown={() => wm.focus(win.id)}
       onFocusIn={() => wm.focus(win.id)}
     >
-      <header class="titlebar" onPointerDown={startMove} onDblClick={() => wm.toggleMaximize(win.id)}>
+      <header class="titlebar" onPointerDown={startMove} onDblClick={() => compact() || wm.toggleMaximize(win.id)}>
         <span class="title-icon">{props.app.icon()}</span>
         <span class="title">{win.title}</span>
         <div class="controls">
           <button aria-label="최소화" onClick={() => wm.minimize(win.id)}>
             <MinimizeIcon />
           </button>
-          <button aria-label={win.mode === 'normal' ? '최대화' : '원래 크기로'} onClick={() => wm.toggleMaximize(win.id)}>
-            <Show when={win.mode === 'normal'} fallback={<RestoreIcon />}>
-              <MaximizeIcon />
-            </Show>
-          </button>
+          <Show when={!compact()}>
+            <button aria-label={win.mode === 'normal' ? '최대화' : '원래 크기로'} onClick={() => wm.toggleMaximize(win.id)}>
+              <Show when={win.mode === 'normal'} fallback={<RestoreIcon />}>
+                <MaximizeIcon />
+              </Show>
+            </button>
+          </Show>
           <button class="close" aria-label="닫기" onClick={() => wm.requestClose(win.id)}>
             <CloseIcon />
           </button>
@@ -130,11 +134,12 @@ export function Window(props: {
           focused={focused}
           launch={props.launch}
           guardClose={(guard) => wm.setGuard(win.id, guard)}
+          onMessage={(receiver) => wm.setReceiver(win.id, receiver)}
           close={() => wm.close(win.id)}
           setTitle={(title) => wm.setTitle(win.id, title)}
         />
       </div>
-      <Show when={win.mode === 'normal'}>
+      <Show when={win.mode === 'normal' && !compact()}>
         <For each={EDGES}>{(edge) => <div class={`resize ${edge}`} onPointerDown={[startResize, edge]} />}</For>
       </Show>
     </section>

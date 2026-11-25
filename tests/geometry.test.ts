@@ -55,7 +55,7 @@ describe('window geometry', () => {
     const a = placeNew(0, { w: 720, h: 460 }, desk)
     const b = placeNew(1, { w: 720, h: 460 }, desk)
     expect([b.x - a.x, b.y - a.y]).toEqual([36, 36])
-    expect(a).toMatchObject({ x: 100, y: 48 })
+    expect(a).toMatchObject({ x: 40, y: 48 })
     // 화면 끝에 닿으면 밖으로 나가지 않고 멈춘다.
     const last = placeNew(7, { w: 720, h: 460 }, desk)
     expect(last.x + last.w).toBeLessThanOrEqual(desk.w - 8)

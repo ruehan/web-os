@@ -26,6 +26,8 @@ export interface TerminalSession {
 
 interface SessionState {
   tty: number
+  /** 커널이 터미널을 열어 주기 전에 들어온 입력 */
+  queued: string
   size: { cols: number; rows: number }
   output(data: Uint8Array): void
   closed(): void
@@ -96,7 +98,10 @@ export function createSystem() {
         session.tty = ev.tty
         sessions.set(ev.tty, session)
         // 요청을 보낸 뒤에 창 크기가 바뀌었을 수 있다.
-        return send({ type: 'tty-resize', tty: ev.tty, ...session.size })
+        send({ type: 'tty-resize', tty: ev.tty, ...session.size })
+        if (session.queued) send({ type: 'tty-input', tty: ev.tty, text: session.queued })
+        session.queued = ''
+        return
       }
       case 'tty-output':
         return sessions.get(ev.tty)?.output(ev.data)
@@ -140,12 +145,13 @@ export function createSystem() {
       handlers: { output(data: Uint8Array): void; closed(): void },
     ): TerminalSession {
       const ref = nextRef++
-      const session: SessionState = { tty: 0, size: { cols, rows }, ...handlers }
+      const session: SessionState = { tty: 0, queued: '', size: { cols, rows }, ...handlers }
       opening.set(ref, session)
       send({ type: 'tty-open', ref, cols, rows })
       return {
         input(text) {
           if (session.tty) send({ type: 'tty-input', tty: session.tty, text })
+          else session.queued += text
         },
         resize(cols, rows) {
           session.size = { cols, rows }

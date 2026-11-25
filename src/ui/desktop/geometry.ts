@@ -92,7 +92,7 @@ export function placeNew(index: number, size: Size, desk: Size): Rect {
   const w = Math.min(size.w, Math.max(MIN_SIZE.w, desk.w - GAP * 2))
   const h = Math.min(size.h, Math.max(MIN_SIZE.h, desk.h - GAP * 2))
   const step = (index % 8) * CASCADE_STEP
-  const x = Math.max(GAP, Math.min(desk.w * 0.1 + step, desk.w - w - GAP))
+  const x = Math.max(GAP, Math.min(desk.w * 0.04 + step, desk.w - w - GAP))
   const y = Math.max(GAP, Math.min(desk.h * 0.08 + step, desk.h - h - GAP))
   return { x: Math.round(x), y: Math.round(y), w, h }
 }

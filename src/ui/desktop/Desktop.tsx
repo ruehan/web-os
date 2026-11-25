@@ -2,6 +2,7 @@
 import { For, Show, createSignal, onCleanup, onMount } from 'solid-js'
 import { APPS, appById, type AppDef } from '../apps/registry.tsx'
 import type { System } from '../system.ts'
+import { compact } from './compact.ts'
 import { frameFor } from './geometry.ts'
 import { Window } from './Window.tsx'
 import { createWindowManager } from './wm.ts'
@@ -12,7 +13,29 @@ export function Desktop(props: { system: System }) {
   let layer!: HTMLDivElement
   let origin = { left: 0, top: 0 }
 
+  /** 첫 방문 때만 안내 창을 띄우기 위한 표시 */
+  const WELCOMED = 'webos.welcomed'
+
+  function firstVisit(): boolean {
+    try {
+      if (localStorage.getItem(WELCOMED)) return false
+      localStorage.setItem(WELCOMED, '1')
+      return true
+    } catch {
+      return false // 저장소를 쓸 수 없으면 매번 띄우게 되므로 띄우지 않는다
+    }
+  }
+
   function launch(app: AppDef, args: Record<string, string> = {}) {
+    // 실행할 명령이 딸린 요청은 이미 열려 있는 터미널(맨 위의 것)에 넘긴다.
+    if (app.id === 'terminal' && args.run !== undefined) {
+      const terminals = wm.state.windows.filter((w) => w.app === 'terminal')
+      const top = terminals.reduce<(typeof terminals)[number] | undefined>((a, b) => (!a || b.z > a.z ? b : a), undefined)
+      if (top) {
+        wm.focus(top.id)
+        return wm.post(top.id, args.run)
+      }
+    }
     // 창을 하나만 띄우는 앱이거나 같은 파일을 이미 열어 둔 경우에는 그 창을 앞으로 가져온다.
     const existing = wm.state.windows.find(
       (w) => w.app === app.id && (app.single || (args.path !== undefined && w.args.path === args.path)),
@@ -31,6 +54,7 @@ export function Desktop(props: { system: System }) {
     observer.observe(layer)
     measure()
     launch(appById('terminal'))
+    if (firstVisit()) wm.open('welcome', '시작하기', appById('welcome').size, {}, 'right')
     const clock = setInterval(() => setNow(new Date()), 10_000)
     onCleanup(() => {
       observer.disconnect()
@@ -46,7 +70,7 @@ export function Desktop(props: { system: System }) {
   const previewZ = () => Math.max(0, ...wm.state.windows.map((w) => w.z)) * 2 - 1
 
   return (
-    <div class="desktop">
+    <div class="desktop" classList={{ compact: compact() }}>
       <nav class="rail" aria-label="실행">
         <div class="rail-group">
           <For each={APPS}>
