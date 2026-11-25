@@ -1081,3 +1081,84 @@ input {
 .desktop.compact .window-body {
   border-radius: 0;
 }
+
+/* ───────────── 시스템 콜 추적 ───────────── */
+
+.trace {
+  position: relative;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.trace-filter {
+  flex: 1;
+  min-width: 0;
+}
+
+.trace-list {
+  flex: 1;
+  min-height: 0;
+  padding: 6px 0;
+  overflow: auto;
+  font: 12px/1.65 var(--mono);
+}
+
+.trace-row {
+  display: flex;
+  gap: 8px;
+  padding: 0 12px;
+  white-space: pre;
+}
+
+.trace-row:hover {
+  background: var(--hover);
+}
+
+.trace-time,
+.trace-pid,
+.trace-waited {
+  flex: none;
+  color: var(--muted);
+}
+
+.trace-time {
+  width: 7ch;
+  text-align: right;
+}
+
+.trace-pid {
+  width: 3ch;
+  text-align: right;
+}
+
+.trace-comm {
+  flex: none;
+  width: 9ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.trace-call {
+  flex: none;
+  margin-right: -8px;
+  color: var(--accent);
+}
+
+.trace-result {
+  color: var(--muted);
+}
+
+.trace-row.error .trace-result {
+  color: var(--danger);
+}
+
+.trace-empty {
+  position: absolute;
+  inset: 40% 24px auto;
+  margin: 0;
+  text-align: center;
+  line-height: 1.7;
+  color: var(--muted);
+  pointer-events: none;
+}

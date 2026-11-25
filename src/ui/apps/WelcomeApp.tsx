@@ -57,6 +57,15 @@ export function WelcomeApp(props: AppProps) {
         </li>
         <li>
           <div class="try-text">
+            <span>시스템 콜</span>
+            <small>프로그램이 커널에 보내는 요청을 실시간으로 봅니다. 열어 둔 채 터미널에서 명령을 실행해 보세요.</small>
+          </div>
+          <button class="tool" onClick={() => props.launch('trace')}>
+            열기
+          </button>
+        </li>
+        <li>
+          <div class="try-text">
             <span>프로세스</span>
             <small>실행 중인 프로세스를 보고 종료할 수 있습니다.</small>
           </div>

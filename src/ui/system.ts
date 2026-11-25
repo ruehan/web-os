@@ -2,7 +2,7 @@
 // 상태(프로세스 목록, 로그)와 터미널 세션으로 바꿔 준다.
 import { createSignal } from 'solid-js'
 import { createStore, produce } from 'solid-js/store'
-import type { FsEntry, FsRequest, FsResult, KernelCommand, KernelEvent } from '../kernel/abi.ts'
+import type { FsEntry, FsRequest, FsResult, KernelCommand, KernelEvent, TraceRecord } from '../kernel/abi.ts'
 import { Errno } from '../kernel/errno.ts'
 
 export interface Proc {
@@ -58,6 +58,8 @@ export function createSystem() {
   const opening = new Map<number, SessionState>()
   const sessions = new Map<number, SessionState>()
   let nextRef = 1
+  /** 시스템 콜 추적을 보고 있는 창들. 하나라도 있는 동안만 커널이 기록을 보낸다. */
+  const tracers = new Set<(records: TraceRecord[], dropped: number) => void>()
   /** 파일시스템이 바뀔 때마다 증가한다. 읽으면 변경을 구독하게 된다. */
   const [fsVersion, setFsVersion] = createSignal(0)
   const fsCalls = new Map<number, { resolve(result: FsResult): void; reject(error: FsError): void }>()
@@ -80,6 +82,8 @@ export function createSystem() {
         return setProcs(produce((p) => p.push({ pid: ev.pid, ppid: ev.ppid, name: ev.argv.join(' ') })))
       case 'exit':
         return setProcs((p) => p.filter((x) => x.pid !== ev.pid))
+      case 'trace':
+        return tracers.forEach((listener) => listener(ev.records, ev.dropped))
       case 'storage-reset':
         // 메모리에 남은 파일까지 버리고 첫 방문 상태로 다시 시작한다.
         return location.reload()
@@ -135,6 +139,18 @@ export function createSystem() {
       rename: async (from: string, to: string) => void (await fsCall({ op: 'rename', from, to })),
     },
     kill: (pid: number) => send({ type: 'kill', pid }),
+    /**
+     * 모든 프로세스의 시스템 콜을 받아 본다. 돌려주는 함수를 부르면 그만 받는다.
+     * 보는 쪽이 없을 때는 커널이 기록하지 않으므로 평소 성능에는 영향이 없다.
+     */
+    traceSyscalls(listener: (records: TraceRecord[], dropped: number) => void): () => void {
+      if (tracers.size === 0) send({ type: 'trace', on: true })
+      tracers.add(listener)
+      return () => {
+        tracers.delete(listener)
+        if (tracers.size === 0) send({ type: 'trace', on: false })
+      }
+    },
     /** 브라우저에 저장된 /home 을 지우고 처음 상태로 다시 시작한다. */
     resetStorage: () => send({ type: 'storage-reset' }),
 

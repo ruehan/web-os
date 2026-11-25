@@ -101,3 +101,10 @@ export const GuideIcon = () => (
     <path d="M12.8 7.2l-1.4 4.2-4.2 1.4 1.4-4.2z" />
   </Icon>
 )
+
+export const TraceIcon = () => (
+  <Icon>
+    <path d="M3 5.5h8M3 10h5M3 14.5h8" />
+    <path d="M13.5 7.5L16 10l-2.5 2.5" />
+  </Icon>
+)

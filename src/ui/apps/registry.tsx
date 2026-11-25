@@ -1,7 +1,16 @@
 // 실행할 수 있는 앱 목록. 앱은 창 안에 그려지는 컴포넌트다.
 import type { Accessor, Component, JSX } from 'solid-js'
 import type { Size } from '../desktop/geometry.ts'
-import { EditorIcon, FolderIcon, GuideIcon, LogIcon, ProcessesIcon, SettingsIcon, TerminalIcon } from '../icons.tsx'
+import {
+  EditorIcon,
+  FolderIcon,
+  GuideIcon,
+  LogIcon,
+  ProcessesIcon,
+  SettingsIcon,
+  TerminalIcon,
+  TraceIcon,
+} from '../icons.tsx'
 import type { System } from '../system.ts'
 import { EditorApp } from './EditorApp.tsx'
 import { FilesApp } from './FilesApp.tsx'
@@ -9,6 +18,7 @@ import { LogApp } from './LogApp.tsx'
 import { ProcessesApp } from './ProcessesApp.tsx'
 import { SettingsApp } from './SettingsApp.tsx'
 import { TerminalApp } from './TerminalApp.tsx'
+import { TraceApp } from './TraceApp.tsx'
 import { WelcomeApp } from './WelcomeApp.tsx'
 
 export interface AppProps {
@@ -43,6 +53,7 @@ export const APPS: AppDef[] = [
   { id: 'files', name: '파일', icon: FolderIcon, component: FilesApp, size: { w: 600, h: 420 } },
   { id: 'editor', name: '편집기', icon: EditorIcon, component: EditorApp, size: { w: 640, h: 460 } },
   { id: 'processes', name: '프로세스', icon: ProcessesIcon, component: ProcessesApp, size: { w: 460, h: 380 }, single: true },
+  { id: 'trace', name: '시스템 콜', icon: TraceIcon, component: TraceApp, size: { w: 700, h: 420 }, single: true },
   { id: 'log', name: '시스템 로그', icon: LogIcon, component: LogApp, size: { w: 560, h: 320 }, single: true },
   { id: 'settings', name: '설정', icon: SettingsIcon, component: SettingsApp, size: { w: 440, h: 520 }, single: true },
   { id: 'welcome', name: '시작하기', icon: GuideIcon, component: WelcomeApp, size: { w: 380, h: 580 }, single: true },
