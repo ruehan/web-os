@@ -8,6 +8,15 @@ import { basename, crumbs, dirname, formatSize, join } from '../path.ts'
 import { FsError } from '../system.ts'
 import type { AppProps } from './registry.tsx'
 
+/** 새로 만들 수 있는 파일 형식과 처음 넣어 둘 내용 */
+const FILE_TYPES = [
+  { name: '텍스트', ext: '.txt', content: '' },
+  { name: '마크다운', ext: '.md', content: '' },
+  { name: 'JSON', ext: '.json', content: '{}\n' },
+  { name: '셸 스크립트', ext: '.sh', content: '' },
+  { name: 'CSV', ext: '.csv', content: '' },
+]
+
 export function FilesApp(props: AppProps) {
   const fs = props.system.fs
   const [cwd, setCwd] = createSignal(props.args.path ?? '/home/guest')
@@ -17,6 +26,8 @@ export function FilesApp(props: AppProps) {
   const [confirmingDelete, setConfirmingDelete] = createSignal(false)
   const [error, setError] = createSignal('')
   const [dropping, setDropping] = createSignal(false)
+  /** 새 파일의 형식을 고르는 중인가 */
+  const [choosingType, setChoosingType] = createSignal(false)
   let list!: HTMLUListElement
   let latest = 0
 
@@ -74,6 +85,7 @@ export function FilesApp(props: AppProps) {
     setSelected(null)
     setRenaming(null)
     setConfirmingDelete(false)
+    setChoosingType(false)
     setError('')
     setCwd(path)
   }
@@ -172,10 +184,27 @@ export function FilesApp(props: AppProps) {
         <button class="tool" onClick={() => create(freshName('새 폴더'), fs.mkdir)}>
           새 폴더
         </button>
-        <button class="tool" onClick={() => create(freshName('새 파일', '.txt'), (path) => fs.write(path, new Uint8Array(0)))}>
+        <button class="tool" aria-expanded={choosingType()} onClick={() => setChoosingType((v) => !v)}>
           새 파일
         </button>
       </div>
+      <Show when={choosingType()}>
+        <div class="toolbar type-bar" role="group" aria-label="새 파일의 형식">
+          <For each={FILE_TYPES}>
+            {(type) => (
+              <button
+                class="tool"
+                onClick={() => {
+                  setChoosingType(false)
+                  void create(freshName('새 파일', type.ext), (path) => fs.write(path, new TextEncoder().encode(type.content)))
+                }}
+              >
+                {type.name} <span class="type-ext">{type.ext}</span>
+              </button>
+            )}
+          </For>
+        </div>
+      </Show>
 
       <ul class="file-list" ref={list} tabindex="0" role="listbox" aria-label="파일 목록" onKeyDown={onKeyDown}>
         <For each={entries} fallback={<li class="file-empty">비어 있는 폴더입니다. 파일을 끌어다 놓으면 여기에 올라갑니다.</li>}>

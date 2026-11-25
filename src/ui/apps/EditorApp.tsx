@@ -1,5 +1,8 @@
 // 텍스트 편집기. 파일 하나를 열어 고치고 저장한다.
 import { Match, Show, Switch, createEffect, createSignal, onMount } from 'solid-js'
+import { CodeArea } from '../editor/CodeArea.tsx'
+import { languageOf } from '../editor/highlight.ts'
+import { Preview, previewable } from '../editor/Preview.tsx'
 import { basename } from '../path.ts'
 import type { AppProps } from './registry.tsx'
 
@@ -22,6 +25,10 @@ export function EditorApp(props: AppProps) {
   let area: HTMLTextAreaElement | undefined
 
   const dirty = () => status() === 'ready' && text() !== saved()
+  /** 파일 이름의 확장자에 따라 색상 강조와 미리보기가 달라진다. */
+  const lang = () => languageOf(path())
+  const [previewing, setPreviewing] = createSignal(false)
+  const showPreview = () => previewing() && previewable(lang())
   const bytes = () => new TextEncoder().encode(text()).length
 
   onMount(async () => {
@@ -42,7 +49,7 @@ export function EditorApp(props: AppProps) {
   })
 
   createEffect(() => props.setTitle(`${path() ? basename(path()) : '제목 없음'}${dirty() ? ' •' : ''}`))
-  createEffect(() => props.focused() && !prompt() && area?.focus())
+  createEffect(() => props.focused() && !prompt() && !showPreview() && area?.focus())
 
   // 저장하지 않은 내용이 있으면 닫기 전에 묻는다.
   props.guardClose(() => {
@@ -82,9 +89,10 @@ export function EditorApp(props: AppProps) {
     if (await save()) props.close()
   }
 
-  function trackCursor() {
-    if (!area) return
-    const before = area.value.slice(0, area.selectionStart)
+  function trackCursor(el = area) {
+    if (!el) return
+    area = el
+    const before = el.value.slice(0, el.selectionStart)
     const line = before.split('\n').length
     setCursor({ line, column: before.length - before.lastIndexOf('\n') })
   }
@@ -124,19 +132,33 @@ export function EditorApp(props: AppProps) {
           </p>
         </Match>
         <Match when={status() === 'ready'}>
-          <textarea
-            class="editor-text"
-            ref={area}
-            aria-label="파일 내용"
-            spellcheck={false}
-            value={text()}
-            onInput={(e) => {
-              setText(e.currentTarget.value)
-              trackCursor()
-            }}
-            onKeyUp={trackCursor}
-            onClick={trackCursor}
-          />
+          <Show when={previewable(lang())}>
+            <div class="toolbar">
+              <div class="segmented" role="group" aria-label="보기 방식">
+                <button aria-pressed={!previewing()} onClick={() => setPreviewing(false)}>
+                  편집
+                </button>
+                <button aria-pressed={previewing()} onClick={() => setPreviewing(true)}>
+                  미리보기
+                </button>
+              </div>
+            </div>
+          </Show>
+          <Show
+            when={showPreview()}
+            fallback={
+              <CodeArea
+                ref={(el) => (area = el)}
+                label="파일 내용"
+                lang={lang()}
+                value={text()}
+                onInput={setText}
+                onCursor={trackCursor}
+              />
+            }
+          >
+            <Preview text={text()} lang={lang() as 'markdown'} />
+          </Show>
 
           <Show when={prompt() === 'save-as'}>
             <form
