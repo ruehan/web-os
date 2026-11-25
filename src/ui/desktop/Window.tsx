@@ -1,7 +1,8 @@
 // 창 하나의 틀: 제목 표시줄, 조절 손잡이, 그 안의 앱.
-import { For, Show } from 'solid-js'
+import { For, Show, createEffect, createSignal, on, onCleanup } from 'solid-js'
 import type { AppDef } from '../apps/registry.tsx'
 import { CloseIcon, MaximizeIcon, MinimizeIcon, RestoreIcon } from '../icons.tsx'
+import { DURATION, motion } from '../motion.ts'
 import type { System } from '../system.ts'
 import { compact } from './compact.ts'
 import { clampMove, detach, resizeRect, snapZone, type Edge, type Rect } from './geometry.ts'
@@ -31,6 +32,81 @@ export function Window(props: {
   const frame = () => wm.frame(win)
   const focused = () => wm.focused() === win.id
   let gesture: Gesture | undefined
+  let el!: HTMLElement
+
+  // ───────────── 움직임 ─────────────
+
+  /**
+   * opening: 막 열려서 나타나는 중. hidden: 최소화되어 보이지 않는다.
+   * minimizing/restoring: 레일의 창 표시 쪽으로 줄어들거나 거기서 커지는 중.
+   * 최소화 여부(win.minimized)는 바로 바뀌지만, 화면에서는 움직임이 끝난 뒤에 숨긴다.
+   */
+  const [phase, setPhase] = createSignal<'opening' | 'shown' | 'minimizing' | 'hidden' | 'restoring'>(
+    win.minimized ? 'hidden' : 'opening',
+  )
+  /** 최대화, 가장자리 붙이기 등으로 자리가 바뀌어 새 자리로 미끄러지는 중인가 */
+  const [gliding, setGliding] = createSignal(false)
+  /** 제목 표시줄을 잡고 끌고 있는가 */
+  const [dragging, setDragging] = createSignal(false)
+  let phaseTimer: ReturnType<typeof setTimeout> | undefined = setTimeout(
+    () => phase() === 'opening' && setPhase('shown'),
+    motion(DURATION.open),
+  )
+  let glideTimer: ReturnType<typeof setTimeout> | undefined
+  /** 끌어서 떼어 낼 때처럼, 자리가 바뀌어도 미끄러지면 안 되는 경우 */
+  let jump = false
+  onCleanup(() => {
+    clearTimeout(phaseTimer)
+    clearTimeout(glideTimer)
+  })
+
+  /** 창이 줄어들어 갈(또는 커져 나올) 곳: 레일에 있는 이 창의 표시 */
+  function aimAtTab() {
+    const tab = document.querySelector(`[data-tab="${win.id}"]`)
+    if (!tab) return
+    // 숨겨져 있는 창은 화면에서 크기를 잴 수 없으므로, 창 관리자가 아는 자리로 계산한다.
+    const { left, top } = props.origin()
+    const from = frame()
+    const to = tab.getBoundingClientRect()
+    el.style.setProperty('--to-x', `${to.x + to.width / 2 - (left + from.x + from.w / 2)}px`)
+    el.style.setProperty('--to-y', `${to.y + to.height / 2 - (top + from.y + from.h / 2)}px`)
+  }
+
+  createEffect(
+    on(
+      () => win.minimized,
+      (minimized) => {
+        clearTimeout(phaseTimer)
+        const wait = motion(DURATION.minimize)
+        if (wait === 0) return void setPhase(minimized ? 'hidden' : 'shown')
+        if (minimized) {
+          aimAtTab()
+          setPhase('minimizing')
+          phaseTimer = setTimeout(() => setPhase('hidden'), wait)
+        } else {
+          aimAtTab()
+          setPhase('restoring')
+          phaseTimer = setTimeout(() => setPhase('shown'), wait)
+        }
+      },
+      { defer: true },
+    ),
+  )
+
+  createEffect(
+    on(
+      () => [win.mode, compact()],
+      () => {
+        if (jump) return void (jump = false)
+        const wait = motion(DURATION.glide)
+        if (wait === 0) return
+        clearTimeout(glideTimer)
+        setGliding(true)
+        glideTimer = setTimeout(() => setGliding(false), wait)
+      },
+      { defer: true },
+    ),
+  )
 
   /** 포인터를 붙잡고, 손을 뗄 때까지의 움직임을 처리한다. */
   function track(e: PointerEvent, onMove: (dx: number, dy: number, e: PointerEvent) => void, onEnd?: () => void) {
@@ -52,6 +128,7 @@ export function Window(props: {
       target.removeEventListener('pointercancel', end)
       if (gesture?.moved) onEnd?.()
       gesture = undefined
+      setDragging(false)
     }
     target.addEventListener('pointermove', move)
     target.addEventListener('pointerup', end)
@@ -69,12 +146,14 @@ export function Window(props: {
         const px = ev.clientX - left
         const py = ev.clientY - top
         if (win.mode !== 'normal') {
-          // 붙어 있던 창을 끌면 원래 크기로 돌아가 포인터를 따라온다.
+          // 붙어 있던 창을 끌면 원래 크기로 돌아가 포인터를 따라온다. 손을 따라와야 하므로 미끄러지지 않고 바로 바뀐다.
+          jump = true
           const rect = detach(win.rect, g.rect, g.px - left)
           wm.setRect(win.id, rect)
           wm.setMode(win.id, 'normal')
           g.rect = rect
         }
+        setDragging(true)
         wm.setRect(win.id, clampMove({ ...g.rect, x: g.rect.x + dx, y: g.rect.y + dy }, wm.state.desk))
         wm.setSnapPreview(snapZone(px, py, wm.state.desk))
       },
@@ -94,7 +173,18 @@ export function Window(props: {
   return (
     <section
       class="window"
-      classList={{ focused: focused(), minimized: win.minimized, docked: win.mode !== 'normal' }}
+      ref={el}
+      classList={{
+        focused: focused(),
+        opening: phase() === 'opening',
+        minimized: phase() === 'hidden',
+        minimizing: phase() === 'minimizing',
+        restoring: phase() === 'restoring',
+        closing: win.closing,
+        gliding: gliding(),
+        dragging: dragging(),
+        docked: win.mode !== 'normal',
+      }}
       style={{
         transform: `translate(${frame().x}px, ${frame().y}px)`,
         width: `${frame().w}px`,

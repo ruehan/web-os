@@ -1,6 +1,7 @@
 // 창 관리자의 상태: 어떤 창이 열려 있고, 어디에 있으며, 어느 것이 맨 위인가.
 import { batch, createMemo } from 'solid-js'
 import { createStore } from 'solid-js/store'
+import { DURATION, motion } from '../motion.ts'
 import { compact } from './compact.ts'
 import { clampMove, frameFor, placeNew, type Mode, type Rect, type Size } from './geometry.ts'
 
@@ -14,6 +15,8 @@ export interface WindowState {
   rect: Rect
   mode: Mode
   minimized: boolean
+  /** 닫히는 움직임이 진행 중이다. 곧 목록에서 사라진다. */
+  closing?: boolean
   /** 쌓이는 순서. 클수록 위다. */
   z: number
 }
@@ -39,7 +42,7 @@ export function createWindowManager() {
   /** 최소화되지 않은 창 중 맨 위의 것이 입력을 받는다. */
   const focused = createMemo(() => {
     let top: WindowState | undefined
-    for (const w of state.windows) if (!w.minimized && (!top || w.z > top.z)) top = w
+    for (const w of state.windows) if (!w.minimized && !w.closing && (!top || w.z > top.z)) top = w
     return top?.id ?? 0
   })
 
@@ -60,9 +63,16 @@ export function createWindowManager() {
     },
 
     close(id: number) {
+      const w = find(id)
+      if (!w || w.closing) return
       guards.delete(id)
       receivers.delete(id)
-      setState('windows', (ws) => ws.filter((w) => w.id !== id))
+      const remove = () => setState('windows', (ws) => ws.filter((x) => x.id !== id))
+      // 사라지는 움직임을 보여 준 뒤에 치운다. 그동안에는 입력을 받지 않고 초점도 다음 창으로 넘어간다.
+      const wait = motion(DURATION.close)
+      if (wait === 0) return remove()
+      update(id, { closing: true })
+      setTimeout(remove, wait)
     },
 
     /** 사용자가 닫기를 눌렀을 때. 앱이 막으면(false) 닫지 않는다. */
