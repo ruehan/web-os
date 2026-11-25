@@ -21,7 +21,7 @@ export const ACCENTS = [
 export type AccentId = (typeof ACCENTS)[number]['id']
 
 /**
- * 로컬 폴더를 연결할 때 허용하는 크기. 폴더 전체를 메모리에 올리기 때문에,
+ * 보관 폴더를 읽을 때 허용하는 크기. 폴더 전체를 메모리에 올리기 때문에,
  * 실수로 큰 폴더를 골랐을 때 브라우저가 멈추지 않도록 미리 막는다.
  */
 export const MOUNT_LIMITS = [

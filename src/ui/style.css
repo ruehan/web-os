@@ -1169,7 +1169,7 @@ input {
   pointer-events: none;
 }
 
-/* ───────────── 설정: 로컬 폴더 ───────────── */
+/* ───────────── 설정: 보관 폴더 ───────────── */
 
 .settings h3 {
   margin: 16px 0 8px;
@@ -1255,4 +1255,19 @@ input {
 .notice-action {
   padding: 6px 14px;
   font-size: 13px;
+}
+
+.archive-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-m);
+}
+
+.confirm small.hint {
+  flex: 1 1 100%;
+  margin: 0;
 }

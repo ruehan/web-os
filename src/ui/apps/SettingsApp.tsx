@@ -5,8 +5,22 @@ import type { AppProps } from './registry.tsx'
 
 export function SettingsApp(props: AppProps) {
   const [confirmingReset, setConfirmingReset] = createSignal(false)
-  const [mountError, setMountError] = createSignal('')
-  const mounts = props.system.mounts
+  const [archiveError, setArchiveError] = createSignal('')
+  /** 예전 보관 폴더를 골라서, 어느 쪽 내용을 살릴지 묻는 중인가 */
+  const [choosing, setChoosing] = createSignal(false)
+  const archive = props.system.archive
+
+  /** 폴더 작업을 실행하고, 실패하면 이유를 보여 준다. */
+  const attempt = (work: () => Promise<unknown>) => {
+    setArchiveError('')
+    work().catch((e) => setArchiveError(e instanceof Error ? e.message : String(e)))
+  }
+
+  const pick = () => attempt(async () => setChoosing((await archive.pick()) === 'needs-choice'))
+  const resolve = (choice: 'export' | 'import' | 'cancel') => {
+    setChoosing(false)
+    attempt(() => archive.resolve(choice))
+  }
   const storage = props.system.storage
   const [protectDenied, setProtectDenied] = createSignal(false)
 
@@ -20,11 +34,7 @@ export function SettingsApp(props: AppProps) {
     setProtectDenied(!(await storage.protect()))
   }
 
-  /** 폴더 작업을 실행하고, 실패하면 이유를 보여 준다. */
-  const attempt = (work: () => Promise<unknown>) => {
-    setMountError('')
-    work().catch((e) => setMountError(e instanceof Error ? e.message : String(e)))
-  }
+
   return (
     <div class="app-pane settings">
       <section>
@@ -61,8 +71,8 @@ export function SettingsApp(props: AppProps) {
       <section>
         <h2>저장 공간</h2>
         <p class="hint">
-          홈 폴더(<code>/home</code>)의 파일은 이 브라우저에 저장되어 새로고침해도 남습니다. 그 밖의 폴더는 다시 열면 처음
-          상태로 돌아갑니다.
+          파일은 이 브라우저에 저장되어 새로고침해도 남습니다. 다만 <code>/tmp</code>는 켤 때마다 비우고,{' '}
+          <code>/bin</code>의 기본 프로그램은 매번 최신으로 맞춥니다.
         </p>
         <dl class="facts storage-facts" aria-label="저장 상태">
           <Show when={storage.status.usage !== undefined && storage.status.quota}>
@@ -99,73 +109,80 @@ export function SettingsApp(props: AppProps) {
             </p>
           </Show>
         </Show>
-        <Show
-          when={confirmingReset()}
-          fallback={
-            <button class="tool" onClick={() => setConfirmingReset(true)}>
-              홈 폴더 초기화…
-            </button>
-          }
-        >
-          <div class="confirm" role="alertdialog" aria-label="홈 폴더 초기화">
-            <span>홈 폴더의 파일을 모두 지우고 처음 상태로 되돌립니다.</span>
-            <button class="tool danger" onClick={() => props.system.resetStorage()}>
-              초기화
-            </button>
-            <button class="tool" onClick={() => setConfirmingReset(false)}>
-              취소
-            </button>
-          </div>
-        </Show>
       </section>
 
       <section>
-        <h2>로컬 폴더</h2>
+        <h2>보관 폴더</h2>
         <Show
-          when={mounts.supported}
+          when={archive.supported}
           fallback={
             <p class="hint">
-              이 브라우저는 로컬 폴더 연결을 지원하지 않습니다. 데스크톱의 Chrome이나 Edge에서 사용할 수 있습니다.
+              이 브라우저는 컴퓨터의 폴더에 보관하는 기능을 지원하지 않습니다. 데스크톱의 Chrome이나 Edge에서 사용할 수
+              있습니다.
             </p>
           }
         >
           <p class="hint">
-            컴퓨터의 폴더를 <code>/mnt</code> 아래에 연결하면, 여기서 고친 내용이 실제 파일에 저장됩니다. 연결해 둔
-            동안에는 그 폴더를 다른 프로그램에서 고치지 마세요. 같은 파일을 양쪽에서 고치면 이쪽 내용으로 덮어씁니다.
+            컴퓨터의 폴더 하나를 정해 두면, 모든 디렉터리(<code>/proc</code> 제외)가 그 폴더에도 실제 파일로 저장됩니다.
+            브라우저의 데이터가 지워져도 폴더에서 되살릴 수 있습니다. 이 폴더는 Web OS 전용으로 두세요. 폴더에 직접 넣거나
+            고친 것은 다음에 연결할 때 이쪽 내용으로 덮어쓰이거나 지워집니다.
           </p>
-          <ul class="mount-list" aria-label="연결된 폴더">
-            <For each={mounts.list}>
-              {(mount) => (
-                <li>
-                  <div class="mount-text">
-                    <code>{mount.path}</code>
-                    <small classList={{ 'status-error': !!mount.error }}>
-                      {mount.error ?? (mount.state === 'connected' ? '연결됨' : '다시 연결해야 합니다')}
-                    </small>
-                  </div>
-                  <Show when={mount.state === 'remembered'}>
-                    <button class="tool primary" onClick={() => attempt(() => mounts.reconnect(mount.name))}>
-                      다시 연결
-                    </button>
-                  </Show>
-                  <button class="tool" onClick={() => attempt(() => mounts.disconnect(mount.name))}>
-                    {mount.state === 'connected' ? '연결 해제' : '잊기'}
-                  </button>
-                </li>
-              )}
-            </For>
-          </ul>
-          <button class="tool" onClick={() => attempt(() => mounts.connect())}>
-            폴더 연결…
-          </button>
-          <Show when={mountError()}>
+
+          <Show when={archive.status.state !== 'none'}>
+            <div class="archive-status" aria-label="보관 폴더 상태">
+              <div class="mount-text">
+                <code>{archive.status.name}</code>
+                <small classList={{ 'status-error': !!archive.status.error }}>
+                  {archive.status.error ??
+                    (archive.status.state === 'linked'
+                      ? '연결됨 · 바뀐 내용이 이 폴더에도 저장됩니다'
+                      : '멈춤 · 다시 연결하면 그동안 바뀐 내용을 저장합니다')}
+                </small>
+              </div>
+              <Show when={archive.status.state === 'paused'}>
+                <button class="tool primary" onClick={() => attempt(archive.resume)}>
+                  다시 연결
+                </button>
+              </Show>
+              <button class="tool" onClick={() => attempt(archive.unlink)}>
+                연결 해제
+              </button>
+            </div>
+          </Show>
+
+          <Show
+            when={choosing()}
+            fallback={
+              <Show when={archive.status.state === 'none'}>
+                <button class="tool" onClick={pick}>
+                  보관 폴더 정하기…
+                </button>
+              </Show>
+            }
+          >
+            <div class="confirm" role="alertdialog" aria-label="보관 폴더의 내용 선택">
+              <span>예전에 보관하던 폴더입니다. 어느 쪽 내용을 살릴까요?</span>
+              <button class="tool primary" onClick={() => resolve('import')}>
+                폴더의 내용 불러오기
+              </button>
+              <button class="tool danger" onClick={() => resolve('export')}>
+                지금 내용으로 폴더 덮어쓰기
+              </button>
+              <button class="tool" onClick={() => resolve('cancel')}>
+                취소
+              </button>
+              <small class="hint">불러오면 지금 브라우저에 있는 파일은 사라지고 화면이 다시 열립니다.</small>
+            </div>
+          </Show>
+
+          <Show when={archiveError()}>
             <p class="status-error mount-error" role="alert">
-              {mountError()}
+              {archiveError()}
             </p>
           </Show>
 
-          <h3>연결할 수 있는 폴더 크기</h3>
-          <div class="segmented" role="group" aria-label="연결할 수 있는 폴더 크기">
+          <h3>불러올 수 있는 폴더 크기</h3>
+          <div class="segmented" role="group" aria-label="불러올 수 있는 폴더 크기">
             <For each={MOUNT_LIMITS}>
               {(limit) => (
                 <button aria-pressed={settings.mountLimit === limit.id} onClick={() => setSettings('mountLimit', limit.id)}>
@@ -178,10 +195,35 @@ export function SettingsApp(props: AppProps) {
       </section>
 
       <section>
+        <h2>초기화</h2>
+        <Show
+          when={confirmingReset()}
+          fallback={
+            <button class="tool" onClick={() => setConfirmingReset(true)}>
+              처음 상태로 되돌리기…
+            </button>
+          }
+        >
+          <div class="confirm" role="alertdialog" aria-label="처음 상태로 되돌리기">
+            <span>
+              브라우저에 저장된 파일을 모두 지우고 처음 상태로 되돌립니다. 보관 폴더와의 연결은 끊기지만 폴더의 파일은
+              남습니다.
+            </span>
+            <button class="tool danger" onClick={() => void props.system.resetStorage()}>
+              되돌리기
+            </button>
+            <button class="tool" onClick={() => setConfirmingReset(false)}>
+              취소
+            </button>
+          </div>
+        </Show>
+      </section>
+
+      <section>
         <h2>정보</h2>
         <dl class="facts">
           <dt>버전</dt>
-          <dd>Web OS 0.5</dd>
+          <dd>Web OS 0.6</dd>
           <dt>실행 중</dt>
           <dd>프로세스 {props.system.procs.length}개</dd>
           <dt>격리</dt>

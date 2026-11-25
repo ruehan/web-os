@@ -169,19 +169,6 @@ export function FilesApp(props: AppProps) {
             )}
           </For>
         </nav>
-        <Show when={props.system.mounts.supported}>
-          <button
-            class="tool"
-            title="컴퓨터의 폴더를 /mnt 아래에 연결합니다"
-            onClick={() => {
-              setError('')
-              // 폴더 선택 창은 클릭에 대한 응답으로만 띄울 수 있으므로 여기서 바로 부른다.
-              props.system.mounts.connect().then((path) => path && go(path), report)
-            }}
-          >
-            로컬 폴더 연결
-          </button>
-        </Show>
         <button class="tool" onClick={() => create(freshName('새 폴더'), fs.mkdir)}>
           새 폴더
         </button>

@@ -65,13 +65,16 @@ export interface StorageStatus {
   protected?: boolean
 }
 
-/** 연결했거나, 예전에 연결해서 기억하고 있는 로컬 폴더 */
-export interface Mount {
-  /** /mnt 아래의 이름 */
-  name: string
-  path: string
-  /** connected: 연결됨. remembered: 기억하고 있지만 이번 방문에서는 아직 권한을 받지 않음. */
-  state: 'connected' | 'remembered'
+/** 파일시스템 전체를 함께 저장해 두는 사용자의 로컬 폴더 */
+export interface ArchiveStatus {
+  /**
+   * none: 연결한 폴더가 없다.
+   * linked: 연결됨. 바뀐 내용이 폴더에도 저장된다.
+   * paused: 예전에 연결했지만 이번 방문에서는 아직 권한을 받지 않았다. 그동안의 변경은 다시 연결할 때 반영된다.
+   */
+  state: 'none' | 'linked' | 'paused'
+  /** 폴더 이름 */
+  name?: string
   /** 저장 실패 등 사용자가 알아야 할 문제 */
   error?: string
 }
@@ -82,7 +85,11 @@ type PermissionedHandle = FileSystemDirectoryHandle & {
   requestPermission(options: { mode: 'readwrite' }): Promise<PermissionState>
 }
 
-type MountResult = Extract<KernelEvent, { type: 'mount-result' }>
+type ArchiveResult = Extract<KernelEvent, { type: 'archive-result' }>
+type ArchiveMode = Extract<KernelCommand, { type: 'archive-link' }>['mode']
+
+/** 보관 폴더를 고른 결과. needs-choice면 어느 쪽 내용을 살릴지 사용자가 정해야 한다. */
+export type LinkOutcome = 'linked' | 'needs-choice' | 'cancelled'
 
 type DirectoryPicker = (options: object) => Promise<FileSystemDirectoryHandle>
 
@@ -107,10 +114,13 @@ export function createSystem() {
   /** 파일시스템이 바뀔 때마다 증가한다. 읽으면 변경을 구독하게 된다. */
   const [fsVersion, setFsVersion] = createSignal(0)
   const fsCalls = new Map<number, { resolve(result: FsResult): void; reject(error: FsError): void }>()
-  const [mounts, setMounts] = createStore<Mount[]>([])
+  const [archive, setArchive] = createStore<ArchiveStatus>({ state: 'none' })
   const [storage, setStorage] = createStore<StorageStatus>({})
-  const mountCalls = new Map<number, (result: MountResult) => void>()
-  const handles = new Map<string, FileSystemDirectoryHandle>()
+  const archiveCalls = new Map<number, (result: ArchiveResult) => void>()
+  /** 연결했거나 기억하고 있는 보관 폴더 */
+  let archiveHandle: FileSystemDirectoryHandle | undefined
+  /** 방금 골랐지만 어느 쪽 내용을 살릴지 아직 정하지 않은 폴더 */
+  let chosenHandle: FileSystemDirectoryHandle | undefined
 
   const kernel = new Worker(new URL('../kernel/kernel.worker.ts', import.meta.url), { type: 'module', name: 'kernel' })
   const send = (cmd: KernelCommand) => kernel.postMessage(cmd)
@@ -126,12 +136,12 @@ export function createSystem() {
         return log({ time: performance.now(), msg: ev.msg, error: true })
       case 'ready':
         setReady(true)
-        return void restoreMounts()
-      case 'mount-result':
-        mountCalls.get(ev.id)?.(ev)
-        return mountCalls.delete(ev.id)
-      case 'mount-error':
-        return setMounts((m) => m.name === ev.name, 'error', '실제 파일에 저장하지 못했습니다. 폴더가 옮겨졌거나 권한이 취소됐을 수 있습니다.')
+        return void restoreArchive()
+      case 'archive-result':
+        archiveCalls.get(ev.id)?.(ev)
+        return archiveCalls.delete(ev.id)
+      case 'archive-error':
+        return setArchive('error', '보관 폴더에 저장하지 못했습니다. 폴더가 옮겨졌거나 권한이 취소됐을 수 있습니다.')
       case 'spawn':
         return setProcs(produce((p) => p.push({ pid: ev.pid, ppid: ev.ppid, name: ev.argv.join(' ') })))
       case 'exit':
@@ -140,8 +150,8 @@ export function createSystem() {
         return tracers.forEach((listener) => listener(ev.records, ev.dropped))
       case 'flushed':
         return flushed?.()
-      case 'storage-reset':
-        // 메모리에 남은 파일까지 버리고 첫 방문 상태로 다시 시작한다.
+      case 'restart':
+        // 저장된 내용이 통째로 바뀌었다. 메모리에 남은 것을 버리고 저장소에서 다시 시작한다.
         return location.reload()
       case 'fs-change':
         return setFsVersion((v) => v + 1)
@@ -204,101 +214,131 @@ export function createSystem() {
   if (navigator.userAgent.includes('Firefox')) void refreshStorage()
   else void protectStorage()
 
-  // ───────────── 로컬 폴더 연결 ─────────────
+  // ───────────── 보관 폴더 ─────────────
 
-  const mountPath = (name: string) => `/mnt/${name}`
+  const ARCHIVE_KEY = 'archive'
 
-  /** 커널에 연결을 요청하고 결과를 기다린다. 실패하면 사용자에게 보여 줄 문장으로 거부된다. */
-  async function attach(name: string, handle: FileSystemDirectoryHandle): Promise<string> {
+  /** 커널에 보관 폴더 작업을 요청하고 결과를 기다린다. 실패하면 사용자에게 보여 줄 문장으로 거부된다. */
+  async function requestArchive(handle: FileSystemDirectoryHandle, mode: ArchiveMode): Promise<'ok' | 'needs-choice'> {
     const limit = mountLimit()
-    const result = await new Promise<MountResult>((resolve) => {
+    const result = await new Promise<ArchiveResult>((resolve) => {
       const id = nextRef++
-      mountCalls.set(id, resolve)
-      send({ type: 'mount', id, name, handle, maxFiles: limit.maxFiles, maxBytes: limit.maxBytes })
+      archiveCalls.set(id, resolve)
+      send({ type: 'archive-link', id, handle, mode, maxFiles: limit.maxFiles, maxBytes: limit.maxBytes })
     })
-    if (result.ok) {
-      setMounts((m) => m.filter((x) => x.name !== name).concat({ name, path: result.path, state: 'connected' }))
-      return result.path
+    if (result.ok) return 'ok'
+    switch (result.reason) {
+      case 'needs-choice':
+        return 'needs-choice'
+      case 'not-empty':
+        throw new Error('빈 폴더를 골라 주세요. 다른 파일이 들어 있는 폴더는 내용이 섞이거나 지워질 수 있어 받지 않습니다.')
+      case 'too-large':
+        throw new Error(
+          `폴더가 너무 큽니다 (파일 ${result.files.toLocaleString()}개 이상, ${formatSize(result.bytes)} 이상). ` +
+            `지금 한도는 ${limit.name}입니다. 아래에서 한도를 올릴 수 있습니다.`,
+        )
+      case 'failed':
+        throw new Error(`폴더를 연결하지 못했습니다: ${result.msg}`)
     }
-    if (result.reason === 'too-large') {
-      throw new Error(
-        `폴더가 너무 큽니다 (파일 ${result.files.toLocaleString()}개 이상, ${formatSize(result.bytes)} 이상). ` +
-          `지금 한도는 ${limit.name}입니다. 전용 폴더를 새로 만들어 연결하거나, 설정에서 한도를 올려 주세요.`,
-      )
-    }
-    throw new Error(`폴더를 연결하지 못했습니다: ${result.msg}`)
   }
 
-  /** 지난 방문 때 연결했던 폴더들을 되살린다. 권한이 남아 있으면 바로 연결하고, 아니면 목록에만 올린다. */
-  async function restoreMounts() {
+  /** 연결을 확정한다: 상태를 바꾸고, 다음 방문 때 다시 고르지 않도록 폴더를 기억해 둔다. */
+  async function linked(handle: FileSystemDirectoryHandle) {
+    archiveHandle = handle
+    chosenHandle = undefined
+    setArchive({ state: 'linked', name: handle.name, error: undefined })
+    await saveHandle(ARCHIVE_KEY, handle).catch(() => {})
+  }
+
+  /** 지난 방문 때 연결한 보관 폴더를 다시 잇는다. 권한이 남아 있지 않으면 사용자가 눌러 줄 때까지 기다린다. */
+  async function restoreArchive() {
     if (!pickDirectory) return
     try {
-      for (const [name, handle] of await savedHandles()) {
-        handles.set(name, handle)
-        const granted = (await (handle as PermissionedHandle).queryPermission({ mode: 'readwrite' })) === 'granted'
-        setMounts((m) => m.concat({ name, path: mountPath(name), state: 'remembered' }))
-        if (granted) await attach(name, handle).catch((e) => setMounts((m) => m.name === name, 'error', String(e.message)))
-      }
-    } catch {
-      // 기억해 둔 폴더를 읽지 못해도 나머지 기능에는 지장이 없다.
+      const handle = (await savedHandles()).get(ARCHIVE_KEY)
+      if (!handle) return
+      archiveHandle = handle
+      setArchive({ state: 'paused', name: handle.name })
+      if ((await (handle as PermissionedHandle).queryPermission({ mode: 'readwrite' })) !== 'granted') return
+      await requestArchive(handle, 'attach')
+      await linked(handle)
+    } catch (e) {
+      setArchive('error', e instanceof Error ? e.message : String(e))
     }
   }
 
-  const mountApi = {
-    /** 이 브라우저가 로컬 폴더 연결을 지원하는가 (데스크톱 Chromium 계열) */
+  const archiveApi = {
+    /** 이 브라우저가 로컬 폴더를 다룰 수 있는가 (데스크톱 Chromium 계열) */
     supported: pickDirectory !== undefined,
-    list: mounts,
+    status: archive,
 
     /**
-     * 폴더 선택 창을 띄워 고른 폴더를 연결하고, 연결된 경로를 돌려준다.
-     * 사용자가 선택을 취소하면 null. 반드시 클릭 같은 사용자 동작 안에서 불러야 한다.
+     * 폴더 선택 창을 띄워 보관 폴더를 고른다. 반드시 클릭 같은 사용자 동작 안에서 불러야 한다.
+     * 빈 폴더면 지금 내용을 내보내며 연결하고, 예전에 쓰던 보관 폴더면 needs-choice를 돌려준다.
      */
-    async connect(): Promise<string | null> {
-      if (!pickDirectory) throw new Error('이 브라우저는 로컬 폴더 연결을 지원하지 않습니다.')
+    async pick(): Promise<LinkOutcome> {
+      if (!pickDirectory) throw new Error('이 브라우저는 로컬 폴더를 다룰 수 없습니다.')
       let handle: FileSystemDirectoryHandle
       try {
-        handle = await pickDirectory({ mode: 'readwrite', id: 'webos-mount' })
+        handle = await pickDirectory({ mode: 'readwrite', id: 'webos-archive' })
       } catch (e) {
-        if (e instanceof DOMException && e.name === 'AbortError') return null
+        if (e instanceof DOMException && e.name === 'AbortError') return 'cancelled'
         throw e
       }
-      // 이미 알고 있는 폴더를 다시 골랐으면 같은 이름으로 연결한다.
-      let name: string | undefined
-      for (const [known, saved] of handles) if (await saved.isSameEntry(handle)) name = known
-      if (name && mounts.some((m) => m.name === name && m.state === 'connected')) return mountPath(name)
-      if (!name) {
-        const base = handle.name.replaceAll('/', '_') || '폴더'
-        name = base
-        for (let n = 2; handles.has(name); n++) name = `${base} ${n}`
+      if ((await requestArchive(handle, 'auto')) === 'needs-choice') {
+        chosenHandle = handle
+        return 'needs-choice'
       }
-      const path = await attach(name, handle)
-      handles.set(name, handle)
-      await saveHandle(name, handle).catch(() => {})
-      return path
+      await linked(handle)
+      return 'linked'
     },
 
-    /** 기억해 둔 폴더의 권한을 다시 받아 연결한다. 사용자 동작 안에서 불러야 한다. */
-    async reconnect(name: string): Promise<string> {
-      const handle = handles.get(name) as PermissionedHandle | undefined
-      if (!handle) throw new Error('기억하고 있는 폴더가 아닙니다.')
+    /**
+     * 예전 보관 폴더를 골랐을 때의 선택.
+     *  - export: 지금 브라우저의 내용으로 폴더를 덮어쓴다.
+     *  - import: 폴더의 내용을 불러온다. 지금 브라우저의 내용은 사라지고 페이지가 다시 열린다.
+     */
+    async resolve(choice: 'export' | 'import' | 'cancel'): Promise<void> {
+      const handle = chosenHandle
+      chosenHandle = undefined
+      if (!handle || choice === 'cancel') return
+      if (choice === 'import') {
+        // 다시 열린 뒤에 이어서 연결되도록 먼저 기억해 둔다.
+        await saveHandle(ARCHIVE_KEY, handle).catch(() => {})
+        try {
+          await requestArchive(handle, 'import')
+        } catch (e) {
+          await forgetHandle(ARCHIVE_KEY).catch(() => {})
+          throw e
+        }
+        return
+      }
+      await requestArchive(handle, 'export')
+      await linked(handle)
+    },
+
+    /** 기억해 둔 보관 폴더의 권한을 다시 받아 잇는다. 사용자 동작 안에서 불러야 한다. */
+    async resume(): Promise<void> {
+      const handle = archiveHandle as PermissionedHandle | undefined
+      if (!handle) return
       if ((await handle.requestPermission({ mode: 'readwrite' })) !== 'granted') {
         throw new Error('폴더를 읽고 쓸 권한을 받지 못했습니다.')
       }
-      return attach(name, handle)
+      await requestArchive(handle, 'attach')
+      await linked(handle)
     },
 
-    /** 연결을 끊고 잊는다. 실제 폴더와 그 안의 파일은 그대로 남는다. */
-    async disconnect(name: string): Promise<void> {
-      if (mounts.some((m) => m.name === name && m.state === 'connected')) {
-        await new Promise<MountResult>((resolve) => {
+    /** 연결을 끊고 잊는다. 폴더와 그 안의 파일은 그대로 남는다. */
+    async unlink(): Promise<void> {
+      if (archive.state === 'linked') {
+        await new Promise<ArchiveResult>((resolve) => {
           const id = nextRef++
-          mountCalls.set(id, resolve)
-          send({ type: 'unmount', id, name })
+          archiveCalls.set(id, resolve)
+          send({ type: 'archive-unlink', id })
         })
       }
-      handles.delete(name)
-      await forgetHandle(name).catch(() => {})
-      setMounts((m) => m.filter((x) => x.name !== name))
+      archiveHandle = undefined
+      await forgetHandle(ARCHIVE_KEY).catch(() => {})
+      setArchive({ state: 'none', name: undefined, error: undefined })
     },
   }
 
@@ -316,8 +356,8 @@ export function createSystem() {
     fsVersion,
     /** 브라우저 저장소의 사용량과 보호 여부 */
     storage: { status: storage, refresh: refreshStorage, protect: protectStorage },
-    /** 사용자가 고른 로컬 폴더를 /mnt 아래에 연결한다. */
-    mounts: mountApi,
+    /** 파일시스템 전체를 함께 저장해 두는 사용자의 로컬 폴더 */
+    archive: archiveApi,
     /** 파일 작업. 경로는 모두 절대 경로이며, 실패하면 FsError로 거부된다. */
     fs: {
       list: async (path: string): Promise<FsEntry[]> => (await fsCall({ op: 'list', path })).entries ?? [],
@@ -340,8 +380,14 @@ export function createSystem() {
         if (tracers.size === 0) send({ type: 'trace', on: false })
       }
     },
-    /** 브라우저에 저장된 /home 을 지우고 처음 상태로 다시 시작한다. */
-    resetStorage: () => send({ type: 'storage-reset' }),
+    /**
+     * 브라우저에 저장된 내용을 지우고 처음 상태로 다시 시작한다.
+     * 보관 폴더와의 연결도 끊는다 (그대로 두면 다음에 폴더의 예전 내용이 되살아난다). 폴더의 파일은 남는다.
+     */
+    async resetStorage() {
+      await archiveApi.unlink().catch(() => {})
+      send({ type: 'storage-reset' })
+    },
 
     /** 새 터미널 장치를 만들고 셸을 띄운다. */
     openTerminal(
