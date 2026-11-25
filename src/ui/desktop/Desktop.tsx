@@ -12,10 +12,13 @@ export function Desktop(props: { system: System }) {
   let layer!: HTMLDivElement
   let origin = { left: 0, top: 0 }
 
-  function launch(app: AppDef) {
-    const existing = app.single && wm.state.windows.find((w) => w.app === app.id)
+  function launch(app: AppDef, args: Record<string, string> = {}) {
+    // 창을 하나만 띄우는 앱이거나 같은 파일을 이미 열어 둔 경우에는 그 창을 앞으로 가져온다.
+    const existing = wm.state.windows.find(
+      (w) => w.app === app.id && (app.single || (args.path !== undefined && w.args.path === args.path)),
+    )
     if (existing) wm.focus(existing.id)
-    else wm.open(app.id, app.name, app.size)
+    else wm.open(app.id, app.name, app.size, args)
   }
 
   onMount(() => {
@@ -89,7 +92,16 @@ export function Desktop(props: { system: System }) {
           )}
         </Show>
         <For each={wm.state.windows}>
-          {(win) => <Window win={win} app={appById(win.app)} wm={wm} system={props.system} origin={() => origin} />}
+          {(win) => (
+            <Window
+              win={win}
+              app={appById(win.app)}
+              wm={wm}
+              system={props.system}
+              launch={(id, args) => launch(appById(id), args)}
+              origin={() => origin}
+            />
+          )}
         </For>
       </div>
     </div>

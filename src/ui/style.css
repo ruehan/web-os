@@ -537,3 +537,308 @@ button {
   background: var(--surface);
   text-decoration: underline;
 }
+
+/* ───────────── 도구 막대와 상태 줄 (앱 공통) ───────────── */
+
+.toolbar,
+.statusbar,
+.promptbar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+}
+
+.toolbar {
+  border-bottom: 1px solid var(--line);
+}
+
+.statusbar,
+.promptbar {
+  min-height: 36px;
+  border-top: 1px solid var(--line);
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.promptbar {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.promptbar input {
+  flex: 1;
+  min-width: 0;
+}
+
+.prompt-text,
+.status-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.status-error {
+  flex: 1;
+  color: var(--danger);
+}
+
+.tool {
+  flex: none;
+  padding: 3px 9px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-s);
+  background: var(--surface);
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.tool:hover:not(:disabled) {
+  border-color: var(--line-strong);
+  background: var(--hover);
+}
+
+.tool:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.tool.icon {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+}
+
+.tool.primary {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.tool.danger {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+input {
+  padding: 3px 7px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-s);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+}
+
+/* ───────────── 파일 탐색기 ───────────── */
+
+.files,
+.editor {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.files.dropping {
+  outline: 2px dashed var(--accent);
+  outline-offset: -6px;
+}
+
+.crumbs {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+}
+
+.crumb {
+  flex: none;
+  padding: 2px 6px;
+  border: 0;
+  border-radius: var(--radius-s);
+  background: none;
+  font: 12.5px var(--mono);
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.crumb:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.crumb:last-child {
+  color: var(--text);
+}
+
+.crumb + .crumb::before {
+  content: '›';
+  margin-right: 10px;
+  color: var(--muted);
+}
+
+.file-list {
+  flex: 1;
+  min-height: 0;
+  margin: 0;
+  padding: 6px;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.file-list:focus-visible {
+  outline-offset: -2px;
+}
+
+.file-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border-radius: var(--radius-s);
+  cursor: default;
+  user-select: none;
+}
+
+.file-row:hover {
+  background: var(--hover);
+}
+
+.file-row[aria-selected='true'] {
+  background: var(--accent-soft);
+}
+
+.file-icon {
+  display: grid;
+  color: var(--muted);
+}
+
+.file-icon.dir {
+  color: var(--accent);
+}
+
+.file-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.file-rename {
+  flex: 1;
+  min-width: 0;
+}
+
+.file-size {
+  flex: none;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+
+.file-empty {
+  padding: 28px 16px;
+  text-align: center;
+  color: var(--muted);
+}
+
+/* ───────────── 편집기 ───────────── */
+
+.editor-text {
+  flex: 1;
+  min-height: 0;
+  padding: 12px 14px;
+  border: 0;
+  outline: 0;
+  resize: none;
+  background: var(--surface);
+  color: var(--text);
+  font: 13px/1.6 var(--mono);
+  tab-size: 2;
+}
+
+.editor-note {
+  margin: auto;
+  padding: 24px;
+  text-align: center;
+  line-height: 1.8;
+  color: var(--muted);
+}
+
+/* ───────────── 설정 ───────────── */
+
+.settings {
+  display: grid;
+  align-content: start;
+  gap: 22px;
+  padding: 18px 20px;
+}
+
+.settings h2 {
+  margin: 0 0 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.segmented {
+  display: inline-flex;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-m);
+  background: var(--surface-2);
+}
+
+.segmented button {
+  padding: 4px 14px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  cursor: pointer;
+}
+
+.segmented button[aria-pressed='true'] {
+  background: var(--surface);
+  box-shadow: 0 0 0 1px var(--line), 0 1px 2px rgb(0 0 0 / 0.08);
+  font-weight: 600;
+}
+
+.swatches {
+  display: flex;
+  gap: 10px;
+}
+
+.swatch {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: var(--swatch);
+  cursor: pointer;
+}
+
+.swatch[aria-pressed='true'] {
+  box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--swatch);
+}
+
+.facts {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 16px;
+  margin: 0;
+}
+
+.facts dt {
+  color: var(--muted);
+}
+
+.facts dd {
+  margin: 0;
+}

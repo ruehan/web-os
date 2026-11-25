@@ -60,3 +60,37 @@ export const CloseIcon = () => (
     <path d="M5.5 5.5l9 9M14.5 5.5l-9 9" />
   </Icon>
 )
+
+export const FolderIcon = () => (
+  <Icon>
+    <path d="M2.5 6a2 2 0 0 1 2-2h3l2 2h6a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2h-11a2 2 0 0 1-2-2z" />
+  </Icon>
+)
+
+export const FileIcon = () => (
+  <Icon>
+    <path d="M5 4.5a2 2 0 0 1 2-2h4l4 4v9a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2z" />
+    <path d="M11 2.5v4h4" />
+  </Icon>
+)
+
+export const EditorIcon = () => (
+  <Icon>
+    <path d="M3.5 16.5l.8-3.6 8.9-8.9a1.6 1.6 0 0 1 2.3 0l.5.5a1.6 1.6 0 0 1 0 2.3l-8.9 8.9z" />
+    <path d="M11.5 5.7l2.8 2.8" />
+  </Icon>
+)
+
+export const SettingsIcon = () => (
+  <Icon>
+    <path d="M3 6h7M14 6h3M3 14h3M10 14h7" />
+    <circle cx="12" cy="6" r="2" />
+    <circle cx="8" cy="14" r="2" />
+  </Icon>
+)
+
+export const UpIcon = () => (
+  <Icon size={16}>
+    <path d="M10 15.5v-11M5.5 9L10 4.5 14.5 9" />
+  </Icon>
+)

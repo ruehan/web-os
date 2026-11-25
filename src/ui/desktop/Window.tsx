@@ -22,6 +22,7 @@ export function Window(props: {
   app: AppDef
   wm: WindowManager
   system: System
+  launch(app: string, args?: Record<string, string>): void
   /** 바탕 화면 영역의 화면상 위치 (포인터 좌표를 바탕 화면 기준으로 바꾸는 데 쓴다) */
   origin: () => { left: number; top: number }
 }) {
@@ -117,7 +118,7 @@ export function Window(props: {
               <MaximizeIcon />
             </Show>
           </button>
-          <button class="close" aria-label="닫기" onClick={() => wm.close(win.id)}>
+          <button class="close" aria-label="닫기" onClick={() => wm.requestClose(win.id)}>
             <CloseIcon />
           </button>
         </div>
@@ -125,7 +126,10 @@ export function Window(props: {
       <div class="window-body">
         <props.app.component
           system={props.system}
+          args={win.args}
           focused={focused}
+          launch={props.launch}
+          guardClose={(guard) => wm.setGuard(win.id, guard)}
           close={() => wm.close(win.id)}
           setTitle={(title) => wm.setTitle(win.id, title)}
         />

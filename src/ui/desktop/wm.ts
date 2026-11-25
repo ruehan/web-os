@@ -7,6 +7,8 @@ export interface WindowState {
   id: number
   app: string
   title: string
+  /** 앱에 넘기는 시작 인자 (예: 열 파일의 경로) */
+  args: Record<string, string>
   /** normal 상태일 때의 자리. 최대화하거나 붙여도 유지되어 되돌릴 때 쓴다. */
   rect: Rect
   mode: Mode
@@ -25,6 +27,8 @@ export function createWindowManager() {
   let nextId = 1
   let topZ = 0
   let opened = 0
+  /** 창을 닫아도 되는지 앱에 묻는 함수 (저장하지 않은 변경 확인 등) */
+  const guards = new Map<number, () => boolean>()
 
   const find = (id: number) => state.windows.find((w) => w.id === id)
   const update = (id: number, patch: Partial<WindowState>) => setState('windows', (w) => w.id === id, patch)
@@ -41,15 +45,27 @@ export function createWindowManager() {
     focused,
     frame: (w: WindowState) => frameFor(w.mode, w.rect, state.desk),
 
-    open(app: string, title: string, size: Size): number {
+    open(app: string, title: string, size: Size, args: Record<string, string> = {}): number {
       const id = nextId++
       const rect = placeNew(opened++, size, state.desk)
-      setState('windows', state.windows.length, { id, app, title, rect, mode: 'normal', minimized: false, z: ++topZ })
+      const win: WindowState = { id, app, title, args, rect, mode: 'normal', minimized: false, z: ++topZ }
+      setState('windows', state.windows.length, win)
       return id
     },
 
     close(id: number) {
+      guards.delete(id)
       setState('windows', (ws) => ws.filter((w) => w.id !== id))
+    },
+
+    /** 사용자가 닫기를 눌렀을 때. 앱이 막으면(false) 닫지 않는다. */
+    requestClose(id: number) {
+      if (guards.get(id)?.() === false) return
+      this.close(id)
+    },
+
+    setGuard(id: number, guard: () => boolean) {
+      guards.set(id, guard)
     },
 
     focus(id: number) {
