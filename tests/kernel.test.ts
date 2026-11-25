@@ -134,12 +134,12 @@ describe('shell', () => {
 
   it('lists many entries across multiple readdir calls', async () => {
     const r = await start().sh('ls /bin | wc -l; ls /bin | head -n 2; ls /bin | tail -n 1')
-    expect(r.stdout).toBe('26\ncat\nclear\nyes\n')
+    expect(r.stdout).toBe('28\ncat\nclear\nyes\n')
   })
 
   it('runs script files, directly and via sh', async () => {
     const { sh } = start()
-    const expected = '안녕하세요, guest 님\n현재 위치: /home/guest\n26\n'
+    const expected = '안녕하세요, guest 님\n현재 위치: /home/guest\n28\n'
     expect((await sh('sh hello.sh')).stdout).toBe(expected)
     expect((await start().sh('./hello.sh')).stdout).toBe(expected)
   })
@@ -590,5 +590,291 @@ describe('line editor', () => {
     term.type('echo kept\x0c')
     await os.until(() => term.screen() === `${P} echo kept`, 'cleared screen with the line kept')
     expect(term.emu.cy).toBe(0)
+  })
+})
+
+describe('waiting for input with a time limit', () => {
+  it('top refreshes on its own while no key is pressed', async () => {
+    const term = await start().terminal(60, 12)
+    term.type('top\r')
+    await term.waitFor('프로세스 2개')
+    // 그사이 다른 터미널에서 프로세스가 생기면 다음 갱신 때 나타난다.
+    os.kernel.spawn('/bin/spin', ['spin'])
+    await os.until(() => term.screen().includes('프로세스 3개') && term.screen().includes('spin'), 'top to show the new process', 3000)
+    term.type('q')
+    await term.waitForLine('guest@webos:~$')
+  })
+
+  it('a pending wait is cancelled when the process is killed', async () => {
+    const term = await start().terminal(60, 12)
+    term.type('top\r')
+    await term.waitFor('프로세스 2개')
+    const top = os.kernel.pids().at(-1)!
+    os.kernel.kill(top)
+    await term.waitForLine('guest@webos:~$')
+    // 죽은 프로세스의 타이머가 나중에 터져도 문제가 없어야 한다.
+    await new Promise((r) => setTimeout(r, 1200))
+    expect(await term.exec('echo ok')).toBe('ok')
+  })
+})
+
+describe('full-screen programs', () => {
+  const UP = '\x1b[A'
+  const DOWN = '\x1b[B'
+  const ESC = '\x1b'
+  const P = 'guest@webos:~$'
+
+  describe('top', () => {
+    it('takes over the screen and gives it back on exit', async () => {
+      const term = await start().terminal(60, 12)
+      await term.exec('echo before')
+      const before = term.screen()
+
+      term.type('top\r')
+      await term.waitFor('COMMAND')
+      expect(term.emu.alternate).toBe(true)
+      expect(term.emu.cursorVisible).toBe(false)
+      const rows = term.emu.screenText()
+      expect(rows[0]).toMatch(/^가동 \d+초 · 프로세스 2개 \(실행 1, 대기 1\)$/)
+      expect(rows[2]).toBe('  PID  PPID S TTY     TIME COMMAND')
+      expect(rows[3]).toMatch(/^\s+1\s+0 S 1\s+[\d.]+ sh$/)
+      expect(rows[4]).toMatch(/^\s+\d+\s+1 R 1\s+[\d.]+ top$/)
+      expect(rows.at(-1)).toBe('↑↓ 선택   x 선택한 프로세스 종료   q 나가기')
+      // 머리줄은 화면 폭 전체가 반전되어 있다.
+      expect(term.emu.lines[2]!.cells.filter((c) => c.inverse).length).toBe(60)
+
+      term.type('q')
+      await term.waitForLine(P)
+      expect(term.emu.alternate).toBe(false)
+      expect(term.emu.cursorVisible).toBe(true)
+      expect(term.screen()).toBe(`${before} top\n${P}`)
+    })
+
+    it('selects with the arrow keys and kills the selected process', async () => {
+      const term = await start().terminal(60, 12)
+      await term.exec('sleep 30 &')
+      term.type('top\r')
+      await term.waitFor('sleep 30')
+      const selected = () => term.emu.lines.findIndex((l, i) => i > 2 && l.cells.some((c) => c.inverse))
+      // 처음에는 top 자신이 선택되어 있다.
+      await os.until(() => term.emu.screenText()[selected()]?.endsWith('top'), 'top to be selected')
+
+      term.type(UP)
+      await os.until(() => term.emu.screenText()[selected()]?.endsWith('sleep 30'), 'sleep to be selected')
+      term.type('x')
+      await term.waitFor('번 프로세스(sleep 30)를 종료했습니다.')
+      await os.until(() => !term.screen().includes('TIME COMMAND\n') || !/sleep 30$/m.test(term.emu.screenText().slice(3, -1).join('\n')), 'sleep to leave the list')
+      term.type('q')
+      await term.waitForLine(P)
+      expect(os.kernel.pids().length).toBe(1)
+    })
+
+    it('prints once when its output is not a terminal', async () => {
+      const r = await start().sh('top | cat')
+      const lines = r.stdout.split('\n')
+      expect(lines[0]).toMatch(/^가동 \d+초 · 프로세스 3개/)
+      expect(lines[1]).toBe('  PID  PPID S TTY     TIME COMMAND')
+      expect(lines.slice(2, 5).map((l) => l.split(/\s+/).at(-1))).toEqual(['cat', 'cat', 'cat'].map((_, i) => ['top | cat', 'top', 'cat'][i]!.split(' ').at(-1)))
+      expect(r.stdout).not.toContain('\x1b')
+    })
+  })
+
+  describe('vi', () => {
+    /** vi를 띄우고 화면이 그려질 때까지 기다린다. */
+    async function vi(args = '', cols = 40, rows = 10) {
+      const term = await start().terminal(cols, rows)
+      term.type(`vi ${args}\r`)
+      await os.until(() => term.emu.alternate && term.emu.screenText().some((l) => l.startsWith('~') || l.length > 0), 'vi to draw')
+      const status = () => term.emu.screenText().at(-2)!
+      const bottom = () => term.emu.screenText().at(-1)!
+      const body = () => term.emu.screenText().slice(0, -2)
+      const press = async (keys: string, until: () => boolean, what: string) => {
+        term.type(keys)
+        await os.until(until, what)
+      }
+      const file = (path: string) => new TextDecoder().decode(os.kernel.fs.readFile(path))
+      return { term, status, bottom, body, press, file }
+    }
+
+    it('opens a file and shows it with a status line', async () => {
+      const { term, status, bottom, body } = await vi('hello.sh')
+      await os.until(() => bottom().includes('hello.sh'), 'the open message')
+      expect(body()[0]).toBe('# 셸 스크립트 예제')
+      expect(body()[1]).toBe('NAME=${USER}')
+      expect(body().at(-1)).toBe('~')
+      expect(status()).toMatch(/^ hello\.sh\s+1:1 {2}5줄$/)
+      expect(bottom()).toBe('"hello.sh" 5줄')
+      expect([term.emu.cx, term.emu.cy]).toEqual([0, 0])
+      expect(term.emu.cursorVisible).toBe(true)
+    })
+
+    it('inserts text, saves and quits back to the shell', async () => {
+      const { term, status, bottom, press, file } = await vi('/tmp/new.txt')
+      await os.until(() => bottom() === '"/tmp/new.txt" [새 파일]', 'the new-file message')
+
+      await press('i', () => bottom() === '-- 입력 --', 'insert mode')
+      await press('첫 줄\r둘째 줄', () => term.emu.screenText()[1] === '둘째 줄', 'typed text')
+      expect(status()).toMatch(/new\.txt \[\+\]\s+2:5 {2}2줄$/)
+      // 2칸 글자 뒤에 커서가 정확히 놓인다.
+      expect([term.emu.cx, term.emu.cy]).toEqual([7, 1])
+
+      await press(ESC, () => bottom() === '', 'normal mode')
+      await press(':w\r', () => bottom().includes('저장'), 'the save message')
+      expect(bottom()).toBe('"/tmp/new.txt" 2줄, 19바이트 저장')
+      expect(file('/tmp/new.txt')).toBe('첫 줄\n둘째 줄\n')
+      expect(status()).not.toContain('[+]')
+
+      term.type(':q\r')
+      await term.waitForLine(P)
+      expect(term.emu.alternate).toBe(false)
+      expect(await term.exec('cat /tmp/new.txt')).toBe('첫 줄\n둘째 줄')
+    })
+
+    it('moves, deletes, copies, pastes and undoes in normal mode', async () => {
+      os = boot()
+      os.kernel.fs.writeFile('/tmp/t', new TextEncoder().encode('one two three\nsecond\nthird\n'))
+      const term = await os.terminal(40, 10)
+      term.type('vi /tmp/t\r')
+      const body = () => term.emu.screenText().slice(0, 3)
+      const cursor = () => [term.emu.cx, term.emu.cy]
+      const at = (x: number, y: number) => () => cursor().join() === `${x},${y}`
+      await os.until(() => term.emu.alternate && body()[2] === 'third', 'vi to draw')
+      const press = async (keys: string, until: () => boolean, what: string) => {
+        term.type(keys)
+        await os.until(until, what)
+      }
+
+      await press('w', at(4, 0), 'w to reach "two"')
+      await press('w', at(8, 0), 'w to reach "three"')
+      await press('b', at(4, 0), 'b to return to "two"')
+      await press('$', at(12, 0), '$ to reach the end')
+      await press('0', at(0, 0), '0 to reach the start')
+      await press('G', at(0, 2), 'G to reach the last line')
+      await press('gg', at(0, 0), 'gg to reach the first line')
+      await press('jl', at(1, 1), 'j and l to move')
+
+      await press('x', () => body()[1] === 'scond', 'x to delete a character')
+      await press('dd', () => body().join('|') === 'one two three|third|~', 'dd to delete the line')
+      await press('p', () => body().join('|') === 'one two three|third|scond', 'p to paste it below')
+      await press('ggyyP'.replace('P', 'p'), () => term.emu.screenText()[1] === 'one two three', 'yy and p to duplicate')
+      await press('u', () => term.emu.screenText().slice(0, 3).join('|') === 'one two three|third|scond', 'u to undo the paste')
+      await press('uuu', () => body().join('|') === 'one two three|second|third', 'u to undo everything')
+      await press('u', () => term.emu.screenText().at(-1) === '더 되돌릴 것이 없습니다', 'the nothing-to-undo message')
+
+      // 되돌리기는 커서도 그때 자리로 돌려놓으므로, 첫 줄로 올라간 뒤 이어서 고친다.
+      await press('ggA!' + ESC + 'ofour' + ESC, () => term.emu.screenText().slice(0, 2).join('|') === 'one two three!|four', 'A and o')
+      await press('Ozero' + ESC, () => term.emu.screenText().slice(0, 3).join('|') === 'one two three!|zero|four', 'O')
+      await press(':wq\r', () => !term.emu.alternate, 'vi to exit')
+      expect(new TextDecoder().decode(os.kernel.fs.readFile('/tmp/t'))).toBe('one two three!\nzero\nfour\nsecond\nthird\n')
+    })
+
+    it('joins and splits lines while inserting', async () => {
+      os = boot()
+      os.kernel.fs.writeFile('/tmp/t', new TextEncoder().encode('abcd\nef\n'))
+      const term = await os.terminal(40, 10)
+      term.type('vi /tmp/t\r')
+      const text = () => term.emu.screenText().slice(0, 3).join('|')
+      await os.until(() => term.emu.alternate && text() === 'abcd|ef|~', 'vi to draw')
+      term.type('lli\r')
+      await os.until(() => text() === 'ab|cd|ef', 'Enter to split the line')
+      term.type('\x7f')
+      await os.until(() => text() === 'abcd|ef|~', 'Backspace to join it again')
+      term.type('\tX' + ESC + ':wq\r')
+      await os.until(() => !term.emu.alternate, 'vi to exit')
+      expect(new TextDecoder().decode(os.kernel.fs.readFile('/tmp/t'))).toBe('ab\tXcd\nef\n')
+    })
+
+    it('searches forward and wraps around', async () => {
+      const { term, bottom, press } = await vi('README.md', 60, 12)
+      await os.until(() => bottom().includes('README.md'), 'the open message')
+      const cursorLine = () => term.emu.screenText()[term.emu.cy]!
+      await press('/프로세스', () => bottom() === '/프로세스', 'the search prompt')
+      await press('\r', () => cursorLine().includes('프로세스') && bottom() === '', 'the first match')
+      const first = term.emu.cy
+      await press('n', () => term.emu.cy !== first || bottom() !== '', 'the next match')
+      await press('nnnn', () => bottom() === '끝까지 찾아 처음부터 다시 찾았습니다', 'the wrap-around message')
+      await press('/없는말\r', () => bottom() === '찾을 수 없습니다: 없는말', 'the not-found message')
+      term.type(':q\r')
+      await term.waitForLine(P)
+    })
+
+    it('scrolls to keep the cursor visible, vertically and horizontally', async () => {
+      os = boot()
+      const long = 'x'.repeat(30) + '한글' + 'y'.repeat(30)
+      const lines = Array.from({ length: 30 }, (_, i) => `line ${i + 1}`)
+      os.kernel.fs.writeFile('/tmp/t', new TextEncoder().encode([long, ...lines].join('\n') + '\n'))
+      const term = await os.terminal(20, 8)
+      term.type('vi /tmp/t\r')
+      await os.until(() => term.emu.alternate && term.emu.screenText()[1] === 'line 1', 'vi to draw')
+
+      term.type('$')
+      await os.until(() => term.emu.screenText()[0] === 'y'.repeat(20), 'the view to follow the cursor right')
+      expect(term.emu.cx).toBe(19)
+      term.type('0')
+      await os.until(() => term.emu.screenText()[0] === 'x'.repeat(20), 'the view to return left')
+
+      term.type('G')
+      await os.until(() => term.emu.screenText().slice(0, 6).at(-1) === 'line 30', 'the view to follow the cursor down')
+      expect(term.emu.screenText()[0]).toBe('line 25')
+      term.type(':3\r')
+      await os.until(() => term.emu.screenText()[0] === 'line 2', 'jumping to a line number')
+      term.type(':q\r')
+      await os.until(() => !term.emu.alternate, 'vi to exit')
+    })
+
+    it('refuses to quit with unsaved changes unless forced', async () => {
+      const { term, bottom, press, file } = await vi('hello.sh')
+      await press('dd', () => term.emu.screenText()[0] === 'NAME=${USER}', 'dd')
+      await press(':q\r', () => bottom().startsWith('저장하지 않은 변경이 있습니다'), 'the warning')
+      expect(term.emu.alternate).toBe(true)
+      await press(':nope\r', () => bottom() === '모르는 명령입니다: nope', 'the unknown-command message')
+      term.type(':q!\r')
+      await term.waitForLine(P)
+      expect(file('/home/guest/hello.sh')).toMatch(/^# 셸 스크립트 예제\n/)
+    })
+
+    it('saves under a new name and needs one for an unnamed buffer', async () => {
+      const { term, bottom, press, file } = await vi('', 80)
+      await press('ihi' + ESC + ':w\r', () => bottom() === '파일 이름이 없습니다 (:w 이름)', 'the missing-name message')
+      await press(':w /tmp/named.txt\r', () => bottom().includes('저장'), 'the save message')
+      expect(file('/tmp/named.txt')).toBe('hi\n')
+      await press(':w /nowhere/x\r', () => bottom().includes('저장하지 못했습니다'), 'the failure message')
+      expect(bottom()).toBe('"/nowhere/x" 에 저장하지 못했습니다: No such file or directory')
+      term.type(':q\r')
+      await term.waitForLine(P)
+    })
+
+    it('Escape cancels a command, and Backspace on an empty prompt leaves it', async () => {
+      const { bottom, press } = await vi('hello.sh')
+      await press(':wq', () => bottom() === ':wq', 'the prompt')
+      await press(ESC, () => bottom() === '', 'Escape to cancel')
+      await press(':x', () => bottom() === ':x', 'the prompt again')
+      await press('\x7f', () => bottom() === ':', 'Backspace to erase')
+      await press('\x7f', () => bottom() === '', 'Backspace to leave the prompt')
+    })
+
+    it('will not start without a terminal', async () => {
+      const r = await start().sh('echo | vi')
+      expect(r.stderr).toBe('vi: 터미널에서만 실행할 수 있습니다\n')
+      expect(r.code).toBe(1)
+    })
+  })
+
+  it('the shell restores the terminal after a full-screen program is killed', async () => {
+    const term = await start().terminal(60, 12)
+    await term.exec('echo before')
+    term.type('vi\r')
+    await os.until(() => term.emu.alternate, 'vi to take over the screen')
+    os.kernel.kill(os.kernel.pids().at(-1)!)
+    await term.waitForLine(P)
+    expect(term.emu.alternate).toBe(false)
+    expect(term.emu.cursorVisible).toBe(true)
+    expect(term.screen()).toContain('before')
+    // 키 단위 입력 모드로 남아 있지 않아서, 다음 프로그램이 평소처럼 줄 단위로 입력받는다.
+    term.type('cat\r')
+    term.type('ab\x7fc\r')
+    await term.waitFor('ac\nac')
+    term.type('\x04')
+    await term.waitForLine(P)
   })
 })

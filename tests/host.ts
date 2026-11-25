@@ -88,19 +88,24 @@ export function boot() {
     const emu = new Emulator(cols, rows)
     const decoder = new TextDecoder()
     let consumed = 0
-    const screen = () => {
+    /** 그동안 쌓인 터미널 출력을 에뮬레이터에 반영한다. */
+    const pump = () => {
       for (; consumed < events.length; consumed++) {
         const e = events[consumed]!
         if (e.type === 'tty-output' && e.tty === id) emu.write(decoder.decode(e.data, { stream: true }))
       }
-      return emu.lines.map(lineText).join('\n').trimEnd()
+      return emu
     }
+    const screen = () => pump().lines.map(lineText).join('\n').trimEnd()
     const lastLine = () => screen().split('\n').at(-1)!
     const atPrompt = () => PROMPT.test(lastLine())
     await until(atPrompt, 'first prompt')
     return {
       id,
-      emu,
+      /** 최신 출력까지 반영된 에뮬레이터 (커서 위치, 화면 전환 상태 등을 볼 때 쓴다) */
+      get emu() {
+        return pump()
+      },
       screen,
       lastLine,
       type: (keys: string) => kernel.ttyInput(id, keys),

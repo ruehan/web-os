@@ -6,6 +6,12 @@ const TRY: { title: string; command: string; note?: string }[] = [
   { title: '어떤 프로그램이 있는지 보기', command: 'ls -l /bin' },
   { title: '프로그램 두 개를 파이프로 잇기', command: 'yes | head -n 3', note: 'head가 끝나면 yes도 함께 종료됩니다.' },
   { title: '실행 중인 프로세스 보기', command: 'ps' },
+  { title: '프로세스를 실시간으로 지켜보기', command: 'top', note: '화면 전체를 쓰는 프로그램입니다. q로 나갑니다.' },
+  {
+    title: '터미널에서 파일 고치기',
+    command: 'vi README.md',
+    note: 'i로 입력을 시작하고 Esc로 마칩니다. :wq 는 저장하고 나가기, :q! 는 버리고 나가기입니다.',
+  },
   {
     title: '멈추지 않는 프로그램 돌리기',
     command: 'spin',
