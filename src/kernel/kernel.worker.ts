@@ -1,7 +1,7 @@
 // 커널 Worker 진입점. 메인 스레드의 명령을 받고, 프로세스 Worker를 직접 띄운다.
-import type { KernelCommand, KernelEvent, SysReq } from './abi'
-import { KernelError } from './errno'
-import { Kernel } from './kernel'
+import type { KernelCommand, KernelEvent, SysReq } from './abi.ts'
+import { KernelError } from './errno.ts'
+import { Kernel } from './kernel.ts'
 
 const emit = (event: KernelEvent) => self.postMessage(event)
 
@@ -20,21 +20,37 @@ const kernel: Kernel = new Kernel({
   },
 })
 
+interface Initrd {
+  bin: string[]
+  files: string[]
+}
+
+/** 빌드 때 만들어 둔 초기 파일들(실행 파일과 기본 문서)을 메모리 파일시스템에 올린다. */
+async function loadInitrd(): Promise<Initrd> {
+  const base = import.meta.env.BASE_URL
+  const fetchBytes = async (url: string) => {
+    const res = await fetch(base + url)
+    if (!res.ok) throw new Error(`failed to load ${url}: HTTP ${res.status}`)
+    return new Uint8Array(await res.arrayBuffer())
+  }
+  const initrd: Initrd = JSON.parse(new TextDecoder().decode(await fetchBytes('initrd.json')))
+  await Promise.all([
+    ...initrd.bin.map(async (name) => kernel.fs.writeFile(`/bin/${name}`, await fetchBytes(`bin/${name}.wasm`))),
+    ...initrd.files.map(async (path) => {
+      const data = await fetchBytes(`rootfs/${path}`)
+      kernel.fs.mkdirp(`/${path}`.slice(0, `/${path}`.lastIndexOf('/')))
+      kernel.fs.writeFile(`/${path}`, data)
+    }),
+  ])
+  return initrd
+}
+
 async function boot(): Promise<void> {
   kernel.log('kernel: booting')
   kernel.log(`kernel: cross-origin isolated = ${self.crossOriginIsolated}`)
   kernel.log('vfs: mounted memfs on /')
-
-  const base = import.meta.env.BASE_URL
-  const names: string[] = await (await fetch(`${base}bin/manifest.json`)).json()
-  await Promise.all(
-    names.map(async (name) => {
-      const res = await fetch(`${base}bin/${name}.wasm`)
-      if (!res.ok) throw new Error(`failed to load /bin/${name}: HTTP ${res.status}`)
-      kernel.fs.writeFile(`/bin/${name}`, new Uint8Array(await res.arrayBuffer()))
-    }),
-  )
-  kernel.log(`initrd: installed ${names.length} programs in /bin (${names.join(', ')})`)
+  const initrd = await loadInitrd()
+  kernel.log(`initrd: ${initrd.bin.length} programs in /bin, ${initrd.files.length} files`)
   kernel.log('kernel: ready')
   emit({ type: 'ready' })
 }
@@ -42,7 +58,8 @@ async function boot(): Promise<void> {
 self.onmessage = (e: MessageEvent<KernelCommand>) => {
   const cmd = e.data
   try {
-    if (cmd.type === 'spawn') kernel.spawn(cmd.path, cmd.argv, cmd.env)
+    if (cmd.type === 'tty-open') kernel.openTerminal()
+    else if (cmd.type === 'tty-input') kernel.ttyInput(cmd.tty, cmd.text)
     else kernel.kill(cmd.pid)
   } catch (err) {
     if (!(err instanceof KernelError)) throw err

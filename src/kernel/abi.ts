@@ -2,7 +2,8 @@
 //
 // 요청: 프로세스 Worker가 커널로 postMessage(SysReq).
 // 응답: 커널이 프로세스별 SharedArrayBuffer에 결과를 쓰고 Atomics.notify.
-//       프로세스는 그동안 Atomics.wait로 실제로 멈춰 있다.
+//       프로세스는 그동안 Atomics.wait로 실제로 멈춰 있다. 커널이 응답을 미루면
+//       (빈 파이프 읽기, 자식 종료 대기 등) 프로세스는 그만큼 멈춰 있게 된다.
 
 export const Sys = {
   write: 1, // args [fd], data            -> ret 쓴 바이트 수
@@ -17,6 +18,15 @@ export const Sys = {
   mkdir: 10, // args [dirfd], path
   unlink: 11, // args [dirfd], path
   exit: 12, // args [code]                -> 응답 없음
+  readdir: 13, // args [fd, cookie, maxLen]  -> data WASI dirent 나열 (maxLen에서 잘림)
+  rmdir: 14, // args [dirfd], path
+  // 여기부터는 WASI에 없는 자체 확장 ("webos" 임포트 모듈)
+  spawn: 15, // args [stdin, stdout, stderr, pgid, foreground], path, argv, env -> ret pid
+  wait: 16, // args [pid | -1, flags]     -> ret pid (NOHANG이고 없으면 0), data i32 종료 코드
+  pipe: 17, //                            -> data u32 읽기 fd, u32 쓰기 fd
+  setfg: 18, // args [pgid]                터미널의 전경 프로세스 그룹 지정
+  getpid: 19, //                            -> ret pid
+  kill: 20, // args [pid]
 } as const
 
 export interface SysReq {
@@ -24,6 +34,8 @@ export interface SysReq {
   args: number[]
   path?: string
   data?: Uint8Array
+  argv?: string[]
+  env?: Record<string, string>
 }
 
 export interface SysRes {
@@ -36,6 +48,12 @@ export const FileType = { UNKNOWN: 0, CHAR_DEVICE: 2, DIRECTORY: 3, REGULAR: 4 }
 export const OFlags = { CREAT: 1, DIRECTORY: 2, EXCL: 4, TRUNC: 8 } as const
 export const FdFlags = { APPEND: 1 } as const
 export const Whence = { SET: 0, CUR: 1, END: 2 } as const
+export const WaitFlags = { NOHANG: 1 } as const
+/** spawn의 pgid 인자: 새 그룹을 만들거나 부모 그룹을 물려받는다. 양수면 그 그룹에 합류한다. */
+export const Pgid = { NEW: 0, INHERIT: -1 } as const
+
+/** 종료 코드 관례: 128 + 시그널 번호 */
+export const ExitStatus = { HANGUP: 129, INTERRUPT: 130, ABORT: 134, KILLED: 137, PIPE: 141, TERMINATED: 143 } as const
 
 // 채널 메모리 배치: i32 state | i32 errno | i64 ret | i32 dataLen | (padding) | payload
 const STATE = 0
@@ -96,12 +114,17 @@ export interface ProcessInit {
 export type KernelEvent =
   | { type: 'klog'; time: number; msg: string }
   | { type: 'ready' }
-  | { type: 'spawn'; pid: number; argv: string[] }
-  | { type: 'tty'; pid: number; fd: number; data: Uint8Array }
-  | { type: 'exit'; pid: number; code: number }
   | { type: 'error'; msg: string }
+  | { type: 'spawn'; pid: number; ppid: number; argv: string[] }
+  | { type: 'exit'; pid: number; code: number }
+  /** 터미널에 붙지 않은 프로세스의 표준 출력·오류 */
+  | { type: 'stdio'; pid: number; fd: number; data: Uint8Array }
+  | { type: 'tty-open'; tty: number; pid: number }
+  | { type: 'tty-output'; tty: number; data: Uint8Array }
+  | { type: 'tty-close'; tty: number }
 
 /** 메인 스레드 → 커널 명령. */
 export type KernelCommand =
-  | { type: 'spawn'; path: string; argv: string[]; env?: Record<string, string> }
+  | { type: 'tty-open' }
+  | { type: 'tty-input'; tty: number; text: string }
   | { type: 'kill'; pid: number }

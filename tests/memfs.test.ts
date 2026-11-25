@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { Errno, KernelError } from '../src/kernel/errno'
-import { MemFs } from '../src/kernel/vfs/memfs'
+import { Errno, KernelError } from '../src/kernel/errno.ts'
+import { MemFs } from '../src/kernel/vfs/memfs.ts'
 
 const text = (b: Uint8Array) => new TextDecoder().decode(b)
 const bytes = (s: string) => new TextEncoder().encode(s)

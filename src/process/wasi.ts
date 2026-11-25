@@ -1,7 +1,7 @@
 // WASI preview1 구현. WASM 프로그램의 메모리에서 인자를 꺼내 커널 시스템 콜로 바꾸고,
 // 결과를 다시 메모리에 써 준다. 정책(파일, 권한, 프로세스)은 전부 커널에 있다.
-import { FileType, PAYLOAD_MAX, Sys, type SysReq, type SysRes } from '../kernel/abi'
-import { Errno } from '../kernel/errno'
+import { ExitStatus, FileType, PAYLOAD_MAX, Sys, type SysReq, type SysRes } from '../kernel/abi.ts'
+import { Errno } from '../kernel/errno.ts'
 
 export interface SyscallTransport {
   /** 응답이 올 때까지 멈춘다. */
@@ -14,8 +14,11 @@ export interface SyscallTransport {
 class ExitSignal {}
 
 const WASI = 'wasi_snapshot_preview1'
+const WEBOS = 'webos'
 const ALL_RIGHTS = 0x1fffffffn
-const ABORT_STATUS = 134
+// 터미널 같은 문자 장치는 탐색(seek/tell) 권한이 없어야 libc의 isatty가 참이 된다.
+const TTY_RIGHTS = ALL_RIGHTS & ~((1n << 2n) | (1n << 5n))
+const DIRENT_HEADER = 24
 
 export function runWasi(
   module: WebAssembly.Module,
@@ -129,9 +132,11 @@ export function runWasi(
       if (res.errno) return res.errno
       bytes().fill(0, ptr, ptr + 24)
       const v = view()
-      v.setUint8(ptr, res.ret ?? FileType.UNKNOWN)
-      v.setBigUint64(ptr + 8, ALL_RIGHTS, true)
-      v.setBigUint64(ptr + 16, ALL_RIGHTS, true)
+      const type = res.ret ?? FileType.UNKNOWN
+      const rights = type === FileType.CHAR_DEVICE ? TTY_RIGHTS : ALL_RIGHTS
+      v.setUint8(ptr, type)
+      v.setBigUint64(ptr + 8, rights, true)
+      v.setBigUint64(ptr + 16, rights, true)
       return 0
     },
 
@@ -188,17 +193,126 @@ export function runWasi(
     path_unlink_file: (dirfd: number, pathPtr: number, pathLen: number) =>
       sys.call({ nr: Sys.unlink, args: [dirfd], path: readString(pathPtr, pathLen) }).errno,
 
+    path_remove_directory: (dirfd: number, pathPtr: number, pathLen: number) =>
+      sys.call({ nr: Sys.rmdir, args: [dirfd], path: readString(pathPtr, pathLen) }).errno,
+
+    fd_readdir(fd: number, buf: number, bufLen: number, cookie: bigint, usedPtr: number) {
+      let used = 0
+      let next = Number(cookie)
+      while (used < bufLen) {
+        const want = Math.min(bufLen - used, PAYLOAD_MAX)
+        const res = sys.call({ nr: Sys.readdir, args: [fd, next, want] })
+        if (res.errno) return res.errno
+        const data = res.data!
+        bytes().set(data, buf + used)
+        // 끝까지 읽었거나, 호출자의 버퍼가 가득 찼다 (잘린 항목은 호출자가 다시 요청한다).
+        if (data.length < want || want === bufLen - used) {
+          used += data.length
+          break
+        }
+        // 채널 용량 때문에 잘린 경우: 온전한 항목까지만 채택하고 이어서 읽는다.
+        const dv = new DataView(data.buffer, data.byteOffset, data.length)
+        let off = 0
+        while (off + DIRENT_HEADER <= data.length) {
+          const size = DIRENT_HEADER + dv.getUint32(off + 16, true)
+          if (off + size > data.length) break
+          next = Number(dv.getBigUint64(off, true))
+          off += size
+        }
+        if (off === 0) break
+        used += off
+      }
+      view().setUint32(usedPtr, used, true)
+      return 0
+    },
+
+    // 시계 대기만 지원한다 (sleep). 스레드를 실제로 재운다.
+    poll_oneoff(subsPtr: number, eventsPtr: number, count: number, neventsPtr: number) {
+      const v = view()
+      let soonest = -1
+      let waitMs = Infinity
+      for (let i = 0; i < count; i++) {
+        const sub = subsPtr + i * 48
+        if (v.getUint8(sub + 8) !== 0) return Errno.NOSYS // 시계 구독이 아님
+        let ms = Number(v.getBigUint64(sub + 24, true)) / 1e6
+        if (v.getUint16(sub + 40, true) & 1) {
+          // 절대 시각
+          ms -= v.getUint32(sub + 16, true) === 0 ? Date.now() : performance.now()
+        }
+        if (ms < waitMs) {
+          waitMs = ms
+          soonest = sub
+        }
+      }
+      if (soonest < 0) return Errno.INVAL
+      if (waitMs > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, waitMs)
+      bytes().fill(0, eventsPtr, eventsPtr + 32)
+      const out = view()
+      out.setBigUint64(eventsPtr, out.getBigUint64(soonest, true), true) // userdata
+      out.setUint32(neventsPtr, 1, true)
+      return 0
+    },
+
     proc_exit(code: number): never {
       sys.send({ nr: Sys.exit, args: [code] })
       throw new ExitSignal()
     },
   }
 
-  // 아직 구현하지 않은 WASI 함수는 링크 오류 대신 ENOSYS를 돌려준다.
+  // WASI에 없는 기능(프로세스 생성, 파이프 등)을 위한 자체 확장.
+  // 반환값이 음수면 -errno다.
+  const webos: Record<string, (...args: any[]) => number> = {
+    // 요청 형식: i32 stdin, stdout, stderr, pgid, foreground | u32 argc, envc | (u32 길이 + 바이트) × (경로, 인자들, 환경 변수들)
+    spawn(ptr: number, len: number) {
+      const v = new DataView(memory.buffer, ptr, len)
+      const args = [0, 4, 8, 12, 16].map((off) => v.getInt32(off, true))
+      const argc = v.getUint32(20, true)
+      const envc = v.getUint32(24, true)
+      let off = 28
+      const next = () => {
+        const n = v.getUint32(off, true)
+        const s = readString(ptr + off + 4, n)
+        off += 4 + n
+        return s
+      }
+      const path = next()
+      const childArgv = Array.from({ length: argc }, next)
+      const childEnv: Record<string, string> = {}
+      for (let i = 0; i < envc; i++) {
+        const pair = next()
+        const eq = pair.indexOf('=')
+        childEnv[pair.slice(0, eq)] = pair.slice(eq + 1)
+      }
+      const res = sys.call({ nr: Sys.spawn, args, path, argv: childArgv, env: childEnv })
+      return res.errno ? -res.errno : (res.ret ?? 0)
+    },
+
+    wait(pid: number, flags: number, statusPtr: number) {
+      const res = sys.call({ nr: Sys.wait, args: [pid, flags] })
+      if (res.errno) return -res.errno
+      const d = res.data!
+      if (d.length >= 4) view().setInt32(statusPtr, new DataView(d.buffer, d.byteOffset, 4).getInt32(0, true), true)
+      return res.ret ?? 0
+    },
+
+    pipe(fdsPtr: number) {
+      const res = sys.call({ nr: Sys.pipe, args: [] })
+      if (res.errno) return -res.errno
+      bytes().set(res.data!.subarray(0, 8), fdsPtr)
+      return 0
+    },
+
+    setfg: (pgid: number) => -sys.call({ nr: Sys.setfg, args: [pgid] }).errno,
+    getpid: () => sys.call({ nr: Sys.getpid, args: [] }).ret ?? 0,
+    kill: (pid: number) => -sys.call({ nr: Sys.kill, args: [pid] }).errno,
+  }
+
+  // 아직 구현하지 않은 함수는 링크 오류 대신 ENOSYS를 돌려준다.
+  const modules: Record<string, Record<string, (...args: any[]) => number>> = { [WASI]: impl, [WEBOS]: webos }
   const imports: Record<string, Record<string, WebAssembly.ImportValue>> = {}
   for (const imp of WebAssembly.Module.imports(module)) {
     if (imp.kind !== 'function') continue
-    const known = imp.module === WASI ? impl[imp.name] : undefined
+    const known = modules[imp.module]?.[imp.name]
     ;(imports[imp.module] ??= {})[imp.name] = known ?? (() => Errno.NOSYS)
   }
 
@@ -212,6 +326,6 @@ export function runWasi(
     // 트랩(unreachable, 범위 밖 메모리 접근 등)이나 잘못된 바이너리
     const msg = enc.encode(`${argv[0] ?? 'process'}: ${e instanceof Error ? e.message : String(e)}\n`)
     sys.call({ nr: Sys.write, args: [2], data: msg })
-    sys.send({ nr: Sys.exit, args: [ABORT_STATUS] })
+    sys.send({ nr: Sys.exit, args: [ExitStatus.ABORT] })
   }
 }
