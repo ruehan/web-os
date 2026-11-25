@@ -149,6 +149,8 @@ export type KernelEvent =
   | { type: 'fs-result'; id: number; result?: FsResult; errno?: number }
   /** 파일시스템 내용이 바뀌었다 (짧은 시간에 여러 번 바뀌면 한 번으로 묶인다). */
   | { type: 'fs-change' }
+  /** 영구 저장소를 비웠다. 화면은 페이지를 다시 불러와 처음 상태로 시작한다. */
+  | { type: 'storage-reset' }
 
 /** 메인 스레드 → 커널 명령. */
 export type KernelCommand =
@@ -158,3 +160,4 @@ export type KernelCommand =
   | { type: 'tty-input'; tty: number; text: string }
   | { type: 'kill'; pid: number }
   | { type: 'fs'; id: number; request: FsRequest }
+  | { type: 'storage-reset' }
