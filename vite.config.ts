@@ -10,6 +10,11 @@ const isolation = {
 export default defineConfig({
   plugins: [solid()],
   worker: { format: 'es' },
+  build: {
+    // light-dark()를 그대로 내보낸다. 구형 브라우저용으로 변환되면 시스템 설정만 따르게 되어
+    // 설정 앱의 밝게/어둡게 전환이 먹지 않는다. (SharedArrayBuffer 요건상 어차피 최신 브라우저만 지원한다.)
+    cssTarget: ['chrome123', 'firefox120', 'safari17.5'],
+  },
   server: { headers: isolation },
   preview: { headers: isolation },
   test: { include: ['tests/**/*.test.ts'], environment: 'node' },
