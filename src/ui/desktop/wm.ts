@@ -1,0 +1,102 @@
+// 창 관리자의 상태: 어떤 창이 열려 있고, 어디에 있으며, 어느 것이 맨 위인가.
+import { batch, createMemo } from 'solid-js'
+import { createStore } from 'solid-js/store'
+import { clampMove, frameFor, placeNew, type Mode, type Rect, type Size } from './geometry.ts'
+
+export interface WindowState {
+  id: number
+  app: string
+  title: string
+  /** normal 상태일 때의 자리. 최대화하거나 붙여도 유지되어 되돌릴 때 쓴다. */
+  rect: Rect
+  mode: Mode
+  minimized: boolean
+  /** 쌓이는 순서. 클수록 위다. */
+  z: number
+}
+
+export function createWindowManager() {
+  const [state, setState] = createStore({
+    windows: [] as WindowState[],
+    desk: { w: 1280, h: 720 } as Size,
+    /** 창을 끌어 가장자리에 댔을 때 미리 보여 주는 자리 */
+    snapPreview: null as Mode | null,
+  })
+  let nextId = 1
+  let topZ = 0
+  let opened = 0
+
+  const find = (id: number) => state.windows.find((w) => w.id === id)
+  const update = (id: number, patch: Partial<WindowState>) => setState('windows', (w) => w.id === id, patch)
+
+  /** 최소화되지 않은 창 중 맨 위의 것이 입력을 받는다. */
+  const focused = createMemo(() => {
+    let top: WindowState | undefined
+    for (const w of state.windows) if (!w.minimized && (!top || w.z > top.z)) top = w
+    return top?.id ?? 0
+  })
+
+  return {
+    state,
+    focused,
+    frame: (w: WindowState) => frameFor(w.mode, w.rect, state.desk),
+
+    open(app: string, title: string, size: Size): number {
+      const id = nextId++
+      const rect = placeNew(opened++, size, state.desk)
+      setState('windows', state.windows.length, { id, app, title, rect, mode: 'normal', minimized: false, z: ++topZ })
+      return id
+    },
+
+    close(id: number) {
+      setState('windows', (ws) => ws.filter((w) => w.id !== id))
+    },
+
+    focus(id: number) {
+      const w = find(id)
+      if (!w || (w.z === topZ && !w.minimized)) return
+      update(id, { z: ++topZ, minimized: false })
+    },
+
+    minimize(id: number) {
+      update(id, { minimized: true })
+    },
+
+    /** 창 목록에서 눌렀을 때: 맨 위에 있으면 접고, 아니면 앞으로 가져온다. */
+    toggle(id: number) {
+      if (focused() === id) update(id, { minimized: true })
+      else this.focus(id)
+    },
+
+    setMode(id: number, mode: Mode) {
+      update(id, { mode })
+    },
+
+    toggleMaximize(id: number) {
+      const w = find(id)
+      if (w) update(id, { mode: w.mode === 'normal' ? 'max' : 'normal' })
+    },
+
+    setRect(id: number, rect: Rect) {
+      update(id, { rect })
+    },
+
+    setTitle(id: number, title: string) {
+      update(id, { title })
+    },
+
+    setSnapPreview(mode: Mode | null) {
+      if (state.snapPreview !== mode) setState('snapPreview', mode)
+    },
+
+    /** 바탕 화면 크기가 바뀌면 화면 밖으로 밀려난 창을 다시 잡을 수 있는 곳으로 옮긴다. */
+    setDesk(desk: Size) {
+      batch(() => {
+        setState('desk', desk)
+        for (const w of state.windows) update(w.id, { rect: clampMove(w.rect, desk) })
+      })
+    },
+  }
+}
+
+export type WindowManager = ReturnType<typeof createWindowManager>
