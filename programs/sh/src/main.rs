@@ -121,7 +121,10 @@ impl Shell {
         if let Ok(motd) = fs::read_to_string("/etc/motd") {
             print!("{motd}");
         }
-        let mut editor = Editor::default();
+        let mut editor = match self.vars.get("HOME") {
+            Some(home) => Editor::with_history(format!("{home}/.sh_history")),
+            None => Editor::default(),
+        };
         loop {
             while let Some((pid, code)) = webos::try_wait_any() {
                 println!("[{pid}] done ({code})");

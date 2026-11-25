@@ -2,6 +2,7 @@
 //! 커서 이동, 명령 이력, 탭 자동완성을 처리한다.
 
 use std::collections::VecDeque;
+use std::fs::{self, OpenOptions};
 use std::io::{self, Read, Write};
 
 pub enum Input {
@@ -33,9 +34,14 @@ enum Key {
 /// (단어, 명령어 자리인가) → 그 단어를 대체할 수 있는 후보들
 pub type Completer<'a> = &'a dyn Fn(&str, bool) -> Vec<String>;
 
+/// 이력 파일에서 불러오는 최대 줄 수
+const HISTORY_LIMIT: usize = 500;
+
 #[derive(Default)]
 pub struct Editor {
     history: Vec<String>,
+    /// 이력을 남기는 파일. 없으면 이번 세션 동안만 기억한다.
+    history_file: Option<String>,
     /// 읽었지만 아직 처리하지 않은 입력 (붙여넣은 여러 줄 등)
     pending: VecDeque<u8>,
 }
@@ -50,14 +56,34 @@ struct View<'a> {
 }
 
 impl Editor {
+    /// 지난 세션의 이력을 파일에서 불러오고, 앞으로의 명령도 같은 파일에 남긴다.
+    pub fn with_history(path: String) -> Self {
+        let lines: Vec<String> = fs::read_to_string(&path)
+            .map(|text| text.lines().filter(|l| !l.is_empty()).map(str::to_string).collect())
+            .unwrap_or_default();
+        let skip = lines.len().saturating_sub(HISTORY_LIMIT);
+        Editor { history: lines.into_iter().skip(skip).collect(), history_file: Some(path), ..Editor::default() }
+    }
+
+    fn remember(&mut self, line: &str) {
+        if line.trim().is_empty() || self.history.last().map(String::as_str) == Some(line) {
+            return;
+        }
+        self.history.push(line.to_string());
+        if let Some(path) = &self.history_file {
+            // 기록하지 못해도 셸 사용에는 지장이 없으므로 실패는 무시한다.
+            if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
+                let _ = writeln!(file, "{line}");
+            }
+        }
+    }
+
     pub fn read_line(&mut self, prompt: &str, complete: Completer) -> Input {
         let _ = webos::set_raw(true);
         let result = self.edit(prompt, complete);
         let _ = webos::set_raw(false);
         if let Input::Line(line) = &result {
-            if !line.trim().is_empty() && self.history.last() != Some(line) {
-                self.history.push(line.clone());
-            }
+            self.remember(line);
         }
         result
     }
