@@ -54,3 +54,21 @@ export async function drag(page: Page, from: { x: number; y: number }, dx: numbe
   await page.mouse.move(from.x + dx, from.y + dy, { steps: 4 })
   if (release) await page.mouse.up()
 }
+
+/** 지정한 터미널 창을 앞으로 가져와 한 줄을 입력한다. */
+export async function typeIn(page: Page, win: Locator, line: string) {
+  await win.locator('.terminal textarea').focus()
+  await page.keyboard.type(line)
+  await page.keyboard.press('Enter')
+}
+
+/** 다른 창에 가려진 창을 레일의 창 목록에서 골라 앞으로 가져온다. */
+export async function raise(page: Page, title: string) {
+  const tab = page.getByRole('button', { name: `창: ${title}`, exact: true })
+  if (!(await tab.evaluate((el) => el.classList.contains('active')))) await tab.click()
+}
+
+export const appWindow = (page: Page, app: string) => page.locator(`.window[data-app="${app}"]`)
+
+export const fileRow = (page: Page, name: string) =>
+  appWindow(page, 'files').locator('.file-row').filter({ has: page.locator('.file-name', { hasText: new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`) }) })

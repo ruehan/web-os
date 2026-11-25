@@ -7,7 +7,7 @@ test.beforeEach(({ page }) => boot(page))
 test('boots into a desktop with a shell', async ({ page }) => {
   expect(await page.evaluate(() => crossOriginIsolated)).toBe(true)
   const text = await screen(page)
-  expect(text).toContain('Web OS 0.2')
+  expect(text).toContain('Web OS 0.4')
   expect(text.endsWith(PROMPT)).toBe(true)
 
   await launch(page, '시스템 로그')
