@@ -160,7 +160,9 @@ test('loading from the folder brings back everything after the browser data is l
 
   // 브라우저의 데이터가 지워진 상황: 저장된 파일과, 폴더를 기억해 둔 것까지 모두 사라진다.
   await page.evaluate(async () => {
-    await (await navigator.storage.getDirectory()).removeEntry('root', { recursive: true })
+    const origin = await navigator.storage.getDirectory()
+      await origin.removeEntry('root', { recursive: true })
+      await origin.removeEntry('ready')
     indexedDB.deleteDatabase('webos')
   })
   await page.reload()

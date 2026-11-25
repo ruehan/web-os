@@ -175,10 +175,28 @@ test('a home saved by the previous storage layout is carried over', async ({ pag
   await reload(page)
   await type(page, 'cat old.txt')
   await expectScreen(page).toContain('cat old.txt\nfrom the old layout\n')
-  expect(await page.evaluate(async () => {
-    const names: string[] = []
-    const origin = (await navigator.storage.getDirectory()) as unknown as { keys(): AsyncIterable<string> }
-    for await (const name of origin.keys()) names.push(name)
-    return names
-  })).toEqual(['root'])
+  expect(
+    await page.evaluate(async () => {
+      const names: string[] = []
+      const origin = (await navigator.storage.getDirectory()) as unknown as { keys(): AsyncIterable<string> }
+      for await (const name of origin.keys()) names.push(name)
+      return names.sort()
+    }),
+  ).toEqual(['ready', 'root'])
+})
+
+test('a reload right after the very first start still gets the default files', async ({ page }) => {
+  // 첫 저장이 끝나기 전에 닫힌 상황: 저장소 폴더는 생겼지만 내용도, 완료 표시도 없다.
+  await page.evaluate(async () => {
+    const origin = await navigator.storage.getDirectory()
+    await origin.removeEntry('ready')
+    await origin.removeEntry('root', { recursive: true })
+    await origin.getDirectoryHandle('root', { create: true })
+  })
+  await page.reload()
+  await expectScreen(page).toMatch(/\$$/)
+  await type(page, 'ls')
+  await expectScreen(page).toContain('ls\nREADME.md  hello.sh\n')
+  // 저장된 적이 없으므로 "저장해 둔 것이 사라졌다"고 알리지 않는다.
+  await expect(page.getByRole('alert')).toHaveCount(0)
 })
