@@ -99,6 +99,32 @@ const pickDirectory: DirectoryPicker | undefined =
     ? (options) => (window as unknown as { showDirectoryPicker: DirectoryPicker }).showDirectoryPicker(options)
     : undefined
 
+/** 이 브라우저에서 OS를 쓴 적이 있다는 표시 */
+const SEEN = 'webos.seen'
+const LAST_BACKUP = 'webos.lastBackup'
+
+// 브라우저 저장소를 쓸 수 없는 환경(사생활 보호 모드 등)에서는 조용히 넘어간다.
+function readNumber(key: string): number | undefined {
+  try {
+    const value = Number(localStorage.getItem(key) ?? NaN)
+    return Number.isFinite(value) ? value : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function remember(key: string, value: number): void {
+  try {
+    localStorage.setItem(key, String(value))
+  } catch {}
+}
+
+function forget(key: string): void {
+  try {
+    localStorage.removeItem(key)
+  } catch {}
+}
+
 export function createSystem() {
   const [procs, setProcs] = createStore<Proc[]>([])
   const [logs, setLogs] = createStore<LogLine[]>([])
@@ -116,6 +142,10 @@ export function createSystem() {
   const fsCalls = new Map<number, { resolve(result: FsResult): void; reject(error: FsError): void }>()
   const [archive, setArchive] = createStore<ArchiveStatus>({ state: 'none' })
   const [storage, setStorage] = createStore<StorageStatus>({})
+  /** 예전에 쓴 흔적은 있는데 저장된 것이 없어 처음 상태로 시작했다 (브라우저가 데이터를 지웠을 가능성) */
+  const [dataLost, setDataLost] = createSignal(false)
+  const [lastBackup, setLastBackup] = createSignal<number | undefined>(readNumber(LAST_BACKUP))
+  const backupCalls = new Map<number, { resolve(data: Uint8Array): void; reject(error: Error): void }>()
   const archiveCalls = new Map<number, (result: ArchiveResult) => void>()
   /** 연결했거나 기억하고 있는 보관 폴더 */
   let archiveHandle: FileSystemDirectoryHandle | undefined
@@ -135,8 +165,25 @@ export function createSystem() {
       case 'error':
         return log({ time: performance.now(), msg: ev.msg, error: true })
       case 'ready':
+        // 이 브라우저에서 쓴 적이 있는데 저장된 것이 없다면, 사용자가 모르는 사이에 지워진 것이다.
+        if (ev.fresh && readNumber(SEEN) !== undefined) setDataLost(true)
+        // 저장된 상태에서 시작한 적이 있어야 "쓰던 브라우저"다. 첫 방문만으로는 표시하지 않는다
+        // (첫 저장이 끝나기 전에 닫혔다가 다시 열린 경우를 유실로 오해하지 않기 위해).
+        if (ev.persistent && !ev.fresh) remember(SEEN, Date.now())
         setReady(true)
         return void restoreArchive()
+      case 'backup-data':
+        backupCalls.get(ev.id)?.resolve(ev.data)
+        return backupCalls.delete(ev.id)
+      case 'backup-failed': {
+        const limit = mountLimit()
+        const message =
+          ev.reason === 'too-large'
+            ? `백업이 너무 큽니다. 지금 한도는 ${limit.name}입니다. 위에서 한도를 올릴 수 있습니다.`
+            : 'Web OS의 백업 파일이 아니거나 파일이 손상됐습니다.'
+        backupCalls.get(ev.id)?.reject(new Error(message))
+        return backupCalls.delete(ev.id)
+      }
       case 'archive-result':
         archiveCalls.get(ev.id)?.(ev)
         return archiveCalls.delete(ev.id)
@@ -358,6 +405,41 @@ export function createSystem() {
     storage: { status: storage, refresh: refreshStorage, protect: protectStorage },
     /** 파일시스템 전체를 함께 저장해 두는 사용자의 로컬 폴더 */
     archive: archiveApi,
+    dataLost,
+    dismissDataLost: () => setDataLost(false),
+    /** 파일시스템 전체를 파일 하나로 내보내고 되살린다. 어느 브라우저에서나 된다. */
+    backup: {
+      /** 마지막으로 백업 파일을 내려받은 시각 (밀리초). 없으면 undefined. */
+      last: lastBackup,
+
+      /** tar 형식의 백업 묶음을 만든다. */
+      export(): Promise<Uint8Array> {
+        return new Promise((resolve, reject) => {
+          const id = nextRef++
+          backupCalls.set(id, { resolve, reject })
+          send({ type: 'backup-export', id })
+        })
+      },
+
+      /** 사용자가 백업 파일을 실제로 내려받았음을 기록한다. */
+      markSaved() {
+        remember(LAST_BACKUP, Date.now())
+        setLastBackup(Date.now())
+      },
+
+      /**
+       * 백업 묶음의 내용으로 지금 내용을 통째로 바꾼다. 성공하면 페이지가 다시 열리므로 돌아오지 않고,
+       * 받을 수 없는 파일이면 이유와 함께 거부된다 (그때 지금 내용은 그대로다).
+       */
+      import(data: Uint8Array): Promise<never> {
+        const limit = mountLimit()
+        return new Promise<never>((_, reject) => {
+          const id = nextRef++
+          backupCalls.set(id, { resolve() {}, reject })
+          send({ type: 'backup-import', id, data, maxFiles: limit.maxFiles, maxBytes: limit.maxBytes })
+        })
+      },
+    },
     /** 파일 작업. 경로는 모두 절대 경로이며, 실패하면 FsError로 거부된다. */
     fs: {
       list: async (path: string): Promise<FsEntry[]> => (await fsCall({ op: 'list', path })).entries ?? [],
@@ -385,6 +467,8 @@ export function createSystem() {
      * 보관 폴더와의 연결도 끊는다 (그대로 두면 다음에 폴더의 예전 내용이 되살아난다). 폴더의 파일은 남는다.
      */
     async resetStorage() {
+      // 일부러 지우는 것이므로, 다음에 "데이터가 사라졌다"고 알리지 않게 한다.
+      forget(SEEN)
       await archiveApi.unlink().catch(() => {})
       send({ type: 'storage-reset' })
     },

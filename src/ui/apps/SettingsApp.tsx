@@ -22,6 +22,49 @@ export function SettingsApp(props: AppProps) {
     attempt(() => archive.resolve(choice))
   }
   const storage = props.system.storage
+  const backup = props.system.backup
+  const [backupError, setBackupError] = createSignal('')
+  /** 복원하려고 고른 백업 파일. 확인을 받은 뒤에 실제로 바꾼다. */
+  const [chosenBackup, setChosenBackup] = createSignal<File>()
+  let filePicker!: HTMLInputElement
+
+  async function downloadBackup() {
+    setBackupError('')
+    try {
+      const data = await backup.export()
+      const stamp = new Date().toISOString().slice(0, 16).replace(/[-:]/g, '').replace('T', '-')
+      const link = document.createElement('a')
+      link.href = URL.createObjectURL(new Blob([data as Uint8Array<ArrayBuffer>], { type: 'application/x-tar' }))
+      link.download = `webos-backup-${stamp}.tar`
+      link.click()
+      URL.revokeObjectURL(link.href)
+      backup.markSaved()
+    } catch (e) {
+      setBackupError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  async function restoreBackup() {
+    const file = chosenBackup()
+    setChosenBackup(undefined)
+    setBackupError('')
+    if (!file) return
+    try {
+      await backup.import(new Uint8Array(await file.arrayBuffer()))
+    } catch (e) {
+      setBackupError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  /** "3일 전" 같은 표기 */
+  function ago(time: number | undefined): string {
+    if (time === undefined) return '아직 없음'
+    const minutes = Math.floor((Date.now() - time) / 60_000)
+    if (minutes < 1) return '방금 전'
+    if (minutes < 60) return `${minutes}분 전`
+    if (minutes < 60 * 24) return `${Math.floor(minutes / 60)}시간 전`
+    return `${Math.floor(minutes / 60 / 24)}일 전`
+  }
   const [protectDenied, setProtectDenied] = createSignal(false)
 
   // 창을 열 때와 파일이 바뀔 때마다 사용량을 다시 읽는다.
@@ -191,6 +234,62 @@ export function SettingsApp(props: AppProps) {
               )}
             </For>
           </div>
+        </Show>
+      </section>
+
+      <section>
+        <h2>백업 파일</h2>
+        <p class="hint">
+          모든 디렉터리(<code>/proc</code> 제외)를 파일 하나로 내려받아 두었다가, 나중에 올려서 되살릴 수 있습니다. 어느
+          브라우저에서나 되고, 내려받은 파일은 일반 tar 묶음이라 다른 프로그램으로도 열 수 있습니다.
+        </p>
+        <dl class="facts storage-facts" aria-label="백업 상태">
+          <dt>마지막 백업</dt>
+          <dd>{ago(backup.last())}</dd>
+        </dl>
+        <Show
+          when={chosenBackup()}
+          fallback={
+            <div class="button-row">
+              <button class="tool" onClick={downloadBackup}>
+                백업 파일 내려받기
+              </button>
+              <button class="tool" onClick={() => filePicker.click()}>
+                백업 파일에서 되살리기…
+              </button>
+            </div>
+          }
+        >
+          {(file) => (
+            <div class="confirm" role="alertdialog" aria-label="백업에서 되살리기">
+              <span>
+                “{file().name}”의 내용으로 바꿉니다. 지금 있는 파일은 모두 사라지고 화면이 다시 열립니다.
+              </span>
+              <button class="tool danger" onClick={restoreBackup}>
+                되살리기
+              </button>
+              <button class="tool" onClick={() => setChosenBackup(undefined)}>
+                취소
+              </button>
+            </div>
+          )}
+        </Show>
+        <input
+          ref={filePicker}
+          type="file"
+          accept=".tar,application/x-tar"
+          aria-label="백업 파일"
+          hidden
+          onChange={(e) => {
+            setBackupError('')
+            setChosenBackup(e.currentTarget.files?.[0])
+            e.currentTarget.value = '' // 같은 파일을 다시 고를 수 있게 한다
+          }}
+        />
+        <Show when={backupError()}>
+          <p class="status-error mount-error" role="alert">
+            {backupError()}
+          </p>
         </Show>
       </section>
 

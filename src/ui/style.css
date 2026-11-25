@@ -1271,3 +1271,31 @@ input {
   flex: 1 1 100%;
   margin: 0;
 }
+
+/* ───────────── 알림과 버튼 줄 ───────────── */
+
+.button-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* 창을 가리지 않도록 오른쪽 아래 구석에 띄운다. */
+.toast {
+  position: absolute;
+  right: 16px;
+  bottom: 16px;
+  z-index: 1000000;
+  width: min(360px, calc(100% - 32px));
+  padding: 14px 16px;
+  border: 1px solid var(--danger);
+  border-radius: var(--radius-l);
+  background: var(--surface);
+  box-shadow: var(--shadow-raised);
+  line-height: 1.6;
+}
+
+.toast p {
+  margin: 4px 0 12px;
+  color: var(--muted);
+}

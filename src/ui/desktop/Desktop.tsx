@@ -115,6 +115,29 @@ export function Desktop(props: { system: System }) {
             />
           )}
         </Show>
+        <Show when={props.system.dataLost()}>
+          <div class="toast" role="alert">
+            <strong>저장해 둔 파일을 찾을 수 없습니다</strong>
+            <p>
+              예전에 쓰던 내용이 없어 처음 상태로 시작했습니다. 브라우저가 데이터를 지웠을 수 있습니다. 보관 폴더나 백업
+              파일이 있으면 설정에서 되살릴 수 있습니다.
+            </p>
+            <div class="button-row">
+              <button
+                class="tool primary"
+                onClick={() => {
+                  props.system.dismissDataLost()
+                  launch(appById('settings'))
+                }}
+              >
+                설정 열기
+              </button>
+              <button class="tool" onClick={props.system.dismissDataLost}>
+                닫기
+              </button>
+            </div>
+          </div>
+        </Show>
         <For each={wm.state.windows}>
           {(win) => (
             <Window
