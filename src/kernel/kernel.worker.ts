@@ -6,6 +6,8 @@ import { KernelError } from './errno.ts'
 import { Kernel } from './kernel.ts'
 import { clearOpfs, openOpfs } from './opfs.ts'
 import { Persister } from './persist.ts'
+import { packTar, unpackTar, type TarEntry } from './tar.ts'
+import type { DirNode } from './vfs/memfs.ts'
 
 /** 보관 폴더임을 알리는 표시 파일. 폴더의 맨 위에 두며, OS의 파일로는 취급하지 않는다. */
 const MARKER = '.webos'
@@ -14,6 +16,8 @@ const EXCLUDE = ['proc', MARKER]
 
 /** 파일시스템을 브라우저 저장소(OPFS)와 맞춰 두는 동기화기. 저장소를 쓸 수 없으면 없다. */
 let persister: Persister | undefined
+/** 첫 저장이 끝났음을 저장소에 기록한다 (저장소를 쓸 수 있을 때만 있다). */
+let markStorageReady: (() => Promise<void>) | undefined
 /** 파일시스템을 사용자의 보관 폴더와 맞춰 두는 동기화기. 연결돼 있을 때만 있다. */
 let archive: Persister | undefined
 
@@ -52,12 +56,13 @@ interface Initrd {
 
 /**
  * 지난 방문 때의 파일시스템을 되살린다.
- * 돌려주는 값은 "기본 파일을 새로 깔아야 하는가"다 (첫 방문이거나 저장소를 쓸 수 없을 때).
+ * fresh는 저장된 것이 없어 기본 파일을 새로 깔아야 한다는 뜻이다 (첫 방문이거나 저장소를 쓸 수 없을 때).
  */
-async function restoreFiles(): Promise<boolean> {
+async function restoreFiles(): Promise<{ fresh: boolean; persistent: boolean }> {
   try {
     const store = await openOpfs()
     persister = new Persister(kernel.fs, '/', store, EXCLUDE)
+    markStorageReady = store.markReady
     persister.onError = (e) => kernel.log(`storage: failed to save: ${describe(e)}`)
     const files = await persister.restore()
     if (store.legacyHome) {
@@ -70,10 +75,10 @@ async function restoreFiles(): Promise<boolean> {
     }
     kernel.mounts.add('opfs')
     kernel.log(store.fresh ? 'storage: created persistent storage' : `storage: restored ${files} files`)
-    return store.fresh
+    return { fresh: store.fresh, persistent: true }
   } catch (e) {
     kernel.log(`storage: unavailable, files will not survive a reload (${describe(e)})`)
-    return true
+    return { fresh: true, persistent: false }
   }
 }
 
@@ -119,13 +124,17 @@ async function boot(): Promise<void> {
   kernel.log('kernel: booting')
   kernel.log(`kernel: cross-origin isolated = ${self.crossOriginIsolated}`)
   kernel.log('vfs: mounted memfs on /')
-  const installDefaults = await restoreFiles()
-  const initrd = await loadInitrd(installDefaults)
+  const storage = await restoreFiles()
+  const initrd = await loadInitrd(storage.fresh)
   clearTmp()
   kernel.log(`initrd: ${initrd.bin.length} programs in /bin, ${initrd.files.length} default files`)
-  persister?.schedule()
+  // 부팅을 기다리게 하지 않고 뒤에서 첫 저장을 한다. 끝나야 비로소 "저장된 상태"가 된다.
+  void persister
+    ?.sync()
+    .then(() => markStorageReady?.())
+    .catch((e) => kernel.log(`storage: failed to save: ${describe(e)}`))
   kernel.log('kernel: ready')
-  emit({ type: 'ready' })
+  emit({ type: 'ready', ...storage })
 }
 
 // ───────────── 저장 ─────────────
@@ -188,16 +197,73 @@ async function mirrorTo(root: Dir): Promise<void> {
   kernel.log(`archive: mirroring to local folder "${root.name}"`)
 }
 
-/** 폴더의 내용으로 파일시스템을 통째로 바꾼다. 실행 중인 프로그램이 있으므로 곧바로 다시 시작해야 한다. */
-async function loadFrom(root: Dir): Promise<void> {
-  await stopArchive()
+/** 파일시스템의 내용을 모두 지운다 (보존하지 않는 /proc 은 그대로 둔다). */
+function clearTree(): void {
   for (const name of [...kernel.fs.root.entries.keys()]) {
     if (!EXCLUDE.includes(name)) kernel.fs.removeTree(kernel.fs.root, name)
   }
+}
+
+/** 폴더의 내용으로 파일시스템을 통째로 바꾼다. 실행 중인 프로그램이 있으므로 곧바로 다시 시작해야 한다. */
+async function loadFrom(root: Dir): Promise<void> {
+  await stopArchive()
+  clearTree()
   await new Persister(kernel.fs, '/', directoryStore(root, writeLocal), EXCLUDE).restore()
   // 다시 시작하면 브라우저 저장소에서 부팅하므로, 불러온 내용을 먼저 거기에 반영해 둔다.
   await persister?.sync()
   kernel.log(`archive: loaded from local folder "${root.name}"`)
+}
+
+// ───────────── 백업 파일 ─────────────
+
+/** 파일시스템 전체를 묶음에 넣을 항목으로 나열한다. 부모가 자식보다 먼저 나온다. */
+function treeEntries(): TarEntry[] {
+  const out: TarEntry[] = []
+  const walk = (dir: DirNode, prefix: string) => {
+    for (const [name, node] of dir.entries) {
+      if (prefix === '' && EXCLUDE.includes(name)) continue
+      const path = prefix + name
+      if (node.kind === 'dir') {
+        out.push({ path })
+        walk(node, `${path}/`)
+      } else {
+        out.push({ path, data: node.buf.subarray(0, node.size) })
+      }
+    }
+  }
+  walk(kernel.fs.root, '')
+  return out
+}
+
+async function importBackup(cmd: Extract<KernelCommand, { type: 'backup-import' }>): Promise<void> {
+  const fail = (reason: 'invalid' | 'too-large', msg: string) => emit({ type: 'backup-failed', id: cmd.id, reason, msg })
+  let entries: TarEntry[]
+  try {
+    entries = unpackTar(cmd.data)
+  } catch (e) {
+    return fail('invalid', describe(e))
+  }
+  // 아무 파일이나 골랐을 때 지금 내용을 날리지 않도록, 이 OS의 백업처럼 생겼는지 확인한다.
+  if (!entries.some((e) => !e.data && e.path === 'home')) return fail('invalid', 'archive has no /home directory')
+  const files = entries.filter((e) => e.data)
+  const bytes = files.reduce((n, e) => n + e.data!.length, 0)
+  if (files.length > cmd.maxFiles || bytes > cmd.maxBytes) return fail('too-large', `${files.length} files, ${bytes} bytes`)
+
+  clearTree()
+  for (const entry of entries) {
+    if (EXCLUDE.includes(entry.path.split('/', 1)[0]!)) continue
+    if (entry.data) {
+      kernel.fs.mkdirp(`/${entry.path}`.slice(0, `/${entry.path}`.lastIndexOf('/')) || '/')
+      kernel.fs.writeFile(`/${entry.path}`, entry.data)
+    } else {
+      kernel.fs.mkdirp(`/${entry.path}`)
+    }
+  }
+  // 다시 시작하면 브라우저 저장소에서 부팅하므로 먼저 반영해 둔다. 보관 폴더가 연결돼 있으면 거기에도.
+  await persister?.sync()
+  await archive?.sync()
+  kernel.log(`backup: restored ${files.length} files from a backup file`)
+  emit({ type: 'restart' })
 }
 
 async function linkArchive(cmd: Extract<KernelCommand, { type: 'archive-link' }>): Promise<void> {
@@ -260,6 +326,10 @@ self.onmessage = (e: MessageEvent<KernelCommand>) => {
         return void linkArchive(cmd)
       case 'archive-unlink':
         return void unlinkArchive(cmd.id)
+      case 'backup-export':
+        return emit({ type: 'backup-data', id: cmd.id, data: packTar(treeEntries()) })
+      case 'backup-import':
+        return void importBackup(cmd)
     }
   } catch (err) {
     if (!(err instanceof KernelError)) throw err

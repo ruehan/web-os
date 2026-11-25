@@ -141,7 +141,8 @@ export interface ProcessInit {
 /** 커널 → 메인 스레드 이벤트. */
 export type KernelEvent =
   | { type: 'klog'; time: number; msg: string }
-  | { type: 'ready' }
+  /** fresh: 저장된 것이 없어 처음 상태로 시작했다. persistent: 브라우저 저장소를 쓸 수 있다. */
+  | { type: 'ready'; fresh: boolean; persistent: boolean }
   | { type: 'error'; msg: string }
   | { type: 'spawn'; pid: number; ppid: number; argv: string[] }
   | { type: 'exit'; pid: number; code: number }
@@ -164,6 +165,10 @@ export type KernelEvent =
   | { type: 'archive-result'; id: number; ok: false; reason: 'needs-choice' | 'not-empty' }
   | { type: 'archive-result'; id: number; ok: false; reason: 'too-large'; files: number; bytes: number }
   | { type: 'archive-result'; id: number; ok: false; reason: 'failed'; msg: string }
+  /** 백업 내보내기의 결과: tar 형식의 파일 묶음 */
+  | { type: 'backup-data'; id: number; data: Uint8Array }
+  /** 백업 가져오기에 실패했다. 성공하면 대신 restart가 온다. */
+  | { type: 'backup-failed'; id: number; reason: 'invalid' | 'too-large'; msg: string }
   /** 보관 폴더에 저장하지 못했다 (권한이 취소됐거나 폴더가 사라진 경우 등) */
   | { type: 'archive-error'; msg: string }
   /** 추적 중에 일어난 시스템 콜들. 너무 많으면 일부를 버리고 그 수를 dropped에 적는다. */
@@ -194,6 +199,10 @@ export type KernelCommand =
       maxBytes: number
     }
   | { type: 'archive-unlink'; id: number }
+  /** 파일시스템 전체(/proc 제외)를 tar 묶음으로 내보낸다. */
+  | { type: 'backup-export'; id: number }
+  /** tar 묶음의 내용으로 파일시스템을 통째로 바꾼 뒤 다시 시작한다. */
+  | { type: 'backup-import'; id: number; data: Uint8Array; maxFiles: number; maxBytes: number }
   /** 아직 저장하지 않은 변경을 지금 모두 저장한다. 끝나면 flushed 이벤트가 온다. */
   | { type: 'flush' }
   /** 시스템 콜 추적을 켜거나 끈다. */
