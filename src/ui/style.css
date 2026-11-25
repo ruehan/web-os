@@ -1,80 +1,457 @@
+/* ───────────── 디자인 토큰 ───────────── */
+
 :root {
   color-scheme: light dark;
-  --bg: light-dark(#f4f4f2, #111214);
-  --panel: light-dark(#ffffff, #1a1b1f);
-  --line: light-dark(#dcdcd8, #2c2e34);
-  --text: light-dark(#1c1d20, #e6e6e3);
-  --muted: light-dark(#6d6f76, #8b8e97);
-  --accent: light-dark(#2d5bd8, #7ea2ff);
-  --err: light-dark(#b3261e, #ff8a80);
+
+  /* 면 */
+  --wall: light-dark(#e9eaf0, #0d0e12);
+  --surface: light-dark(#ffffff, #17181d);
+  --surface-2: light-dark(#f4f5f8, #1e2026);
+  --hover: light-dark(rgb(20 22 40 / 0.06), rgb(255 255 255 / 0.07));
+  --line: light-dark(rgb(20 22 40 / 0.12), rgb(255 255 255 / 0.1));
+  --line-strong: light-dark(rgb(20 22 40 / 0.22), rgb(255 255 255 / 0.18));
+
+  /* 글자 */
+  --text: light-dark(#191a20, #e8e8ec);
+  --muted: light-dark(#6b6e7b, #8d909c);
+
+  /* 강조와 상태 */
+  --accent: light-dark(#4553d6, #8e9bff);
+  --accent-soft: light-dark(rgb(69 83 214 / 0.12), rgb(142 155 255 / 0.16));
+  --danger: light-dark(#c2332a, #ff8f85);
+  --danger-soft: light-dark(rgb(194 51 42 / 0.12), rgb(255 143 133 / 0.16));
+
+  /* 모양 */
+  --radius-s: 6px;
+  --radius-m: 10px;
+  --radius-l: 14px;
+  --shadow-rest: 0 1px 2px rgb(0 0 0 / 0.06), 0 6px 18px rgb(0 0 0 / 0.1);
+  --shadow-raised: 0 2px 4px rgb(0 0 0 / 0.08), 0 18px 48px rgb(0 0 0 / 0.24);
+
+  /* 글꼴 */
+  --sans: system-ui, -apple-system, 'Apple SD Gothic Neo', 'Noto Sans KR', sans-serif;
   --mono: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+
+  --rail-width: 52px;
+  --title-height: 38px;
 }
 
 * {
   box-sizing: border-box;
 }
 
+html,
+body,
+#root {
+  height: 100%;
+}
+
 body {
   margin: 0;
-  background: var(--bg);
+  overflow: hidden;
+  background: var(--wall);
   color: var(--text);
-  font: 14px/1.5 system-ui, -apple-system, 'Apple SD Gothic Neo', sans-serif;
-}
-
-main {
-  max-width: 960px;
-  margin: 0 auto;
-  padding: 32px 16px;
-  display: grid;
-  gap: 16px;
-}
-
-header {
-  display: flex;
-  align-items: baseline;
-  gap: 12px;
-}
-
-h1 {
-  margin: 0;
-  font-size: 20px;
-  font-weight: 650;
-}
-
-h2 {
-  margin: 0 0 8px;
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--muted);
-}
-
-.phase,
-.empty {
-  color: var(--muted);
-}
-
-.empty {
-  margin: 0;
+  font: 13px/1.5 var(--sans);
+  -webkit-font-smoothing: antialiased;
 }
 
 button {
-  font: 13px var(--mono);
-  padding: 6px 12px;
+  font: inherit;
+  color: inherit;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.button {
+  padding: 3px 10px;
   border: 1px solid var(--line);
-  border-radius: 6px;
-  background: var(--panel);
-  color: var(--text);
+  border-radius: var(--radius-s);
+  background: var(--surface);
+  font-size: 12px;
+  white-space: nowrap;
   cursor: pointer;
 }
 
-button:hover:not(:disabled) {
-  border-color: var(--accent);
+.button:hover {
+  border-color: var(--danger);
+  color: var(--danger);
+  background: var(--danger-soft);
 }
 
-button:disabled {
-  opacity: 0.5;
-  cursor: default;
+/* ───────────── 부팅 화면 ───────────── */
+
+.boot {
+  height: 100%;
+  padding: 24px;
+  font: 12px/1.7 var(--mono);
+  color: var(--muted);
 }
+
+.boot-error {
+  color: var(--danger);
+}
+
+/* ───────────── 바탕 화면 ───────────── */
+
+.desktop {
+  height: 100%;
+  display: grid;
+  grid-template-columns: var(--rail-width) 1fr;
+  /* 강조색이 은은하게 번지는 배경 위에 점 격자를 깔았다. */
+  background:
+    radial-gradient(circle at 1px 1px, var(--line) 1px, transparent 1.5px) 0 0 / 24px 24px,
+    radial-gradient(60% 50% at 85% 10%, var(--accent-soft), transparent 70%),
+    radial-gradient(50% 45% at 10% 95%, light-dark(rgb(20 150 140 / 0.1), rgb(80 220 200 / 0.08)), transparent 70%),
+    var(--wall);
+}
+
+.rail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 0;
+  border-right: 1px solid var(--line);
+  background: color-mix(in srgb, var(--surface) 72%, transparent);
+  backdrop-filter: blur(16px);
+}
+
+.rail-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.rail-windows {
+  flex: 1;
+  width: 100%;
+  align-items: center;
+  min-height: 0;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+
+.rail-windows:empty {
+  border-top-color: transparent;
+}
+
+.rail-button {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-m);
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.rail-button:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.window-tab.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+/* 열린 창임을 알리는 표시. 맨 위 창은 길게, 접힌 창은 흐리게 보인다. */
+.window-tab::before {
+  content: '';
+  position: absolute;
+  left: -8px;
+  width: 3px;
+  height: 8px;
+  border-radius: 0 3px 3px 0;
+  background: var(--muted);
+}
+
+.window-tab.active::before {
+  height: 18px;
+  background: var(--accent);
+}
+
+.window-tab.minimized {
+  opacity: 0.55;
+}
+
+.clock {
+  font: 11px var(--mono);
+  color: var(--muted);
+}
+
+.window-layer {
+  position: relative;
+  overflow: hidden;
+}
+
+.snap-preview {
+  position: absolute;
+  top: 0;
+  left: 0;
+  border: 1.5px solid var(--accent);
+  border-radius: var(--radius-l);
+  background: var(--accent-soft);
+  pointer-events: none;
+}
+
+/* ───────────── 창 ───────────── */
+
+.window {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-l);
+  background: var(--surface);
+  box-shadow: var(--shadow-rest);
+  animation: window-in 0.14s ease-out;
+}
+
+.window.focused {
+  border-color: var(--line-strong);
+  box-shadow: var(--shadow-raised);
+}
+
+.window.minimized {
+  display: none;
+}
+
+@keyframes window-in {
+  from {
+    opacity: 0;
+    scale: 0.98;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .window {
+    animation: none;
+  }
+}
+
+.titlebar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: var(--title-height);
+  padding: 0 6px 0 12px;
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  user-select: none;
+  touch-action: none;
+}
+
+.title-icon {
+  display: grid;
+  transform: scale(0.8);
+}
+
+.window.focused .title-icon {
+  color: var(--accent);
+}
+
+.title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 12.5px;
+  font-weight: 550;
+}
+
+.window.focused .title {
+  color: var(--text);
+}
+
+.controls {
+  display: flex;
+  gap: 2px;
+}
+
+.controls button {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-s);
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.controls button:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.controls .close:hover {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.window-body {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  border-radius: 0 0 var(--radius-l) var(--radius-l);
+}
+
+/* 크기 조절 손잡이: 테두리에 걸쳐 놓아 창 바깥쪽에서도 잡힌다. */
+.resize {
+  position: absolute;
+  touch-action: none;
+}
+
+.resize.n,
+.resize.s {
+  left: 10px;
+  right: 10px;
+  height: 8px;
+  cursor: ns-resize;
+}
+
+.resize.e,
+.resize.w {
+  top: 10px;
+  bottom: 10px;
+  width: 8px;
+  cursor: ew-resize;
+}
+
+.resize.n {
+  top: -4px;
+}
+
+.resize.s {
+  bottom: -4px;
+}
+
+.resize.e {
+  right: -4px;
+}
+
+.resize.w {
+  left: -4px;
+}
+
+.resize.ne,
+.resize.nw,
+.resize.se,
+.resize.sw {
+  width: 14px;
+  height: 14px;
+}
+
+.resize.ne {
+  top: -4px;
+  right: -4px;
+  cursor: nesw-resize;
+}
+
+.resize.nw {
+  top: -4px;
+  left: -4px;
+  cursor: nwse-resize;
+}
+
+.resize.se {
+  bottom: -4px;
+  right: -4px;
+  cursor: nwse-resize;
+}
+
+.resize.sw {
+  bottom: -4px;
+  left: -4px;
+  cursor: nesw-resize;
+}
+
+/* ───────────── 앱 공통 ───────────── */
+
+.app-pane {
+  height: 100%;
+  overflow: auto;
+  padding: 12px 14px;
+}
+
+.app-summary {
+  margin: 0 0 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.proc-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--mono);
+  font-size: 12.5px;
+}
+
+.proc-table th {
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--line);
+  font: 500 11px var(--sans);
+  color: var(--muted);
+  text-align: left;
+}
+
+.proc-table td {
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--line);
+}
+
+.proc-table .num {
+  width: 1%;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.proc-table td.num {
+  color: var(--muted);
+}
+
+.proc-table .action {
+  width: 1%;
+  text-align: right;
+}
+
+.log-pane {
+  font: 12px/1.7 var(--mono);
+}
+
+.log-line {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.log-line.error {
+  color: var(--danger);
+}
+
+.log-time {
+  margin-right: 10px;
+  color: var(--muted);
+  white-space: pre;
+}
+
+/* ───────────── 터미널 ───────────── */
 
 .terminal {
   /* 터미널 16색. 밝은 배경과 어두운 배경 양쪽에서 읽히도록 각각 맞췄다. */
@@ -95,18 +472,12 @@ button:disabled {
   --t14: light-dark(#1894a6, #8fdfe9);
   --t15: light-dark(#1c1d20, #ffffff);
 
-  height: min(62vh, 560px);
+  height: 100%;
   overflow-y: auto;
-  padding: 12px 14px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: var(--panel);
+  padding: 10px 12px;
+  background: var(--surface);
   font: 13px/18px var(--mono);
   cursor: text;
-}
-
-.terminal.focused {
-  border-color: var(--accent);
 }
 
 .terminal .screen {
@@ -133,7 +504,7 @@ button:disabled {
 .terminal.focused .cursor {
   outline: none;
   background: var(--text);
-  color: var(--panel);
+  color: var(--surface);
 }
 
 .terminal .probe {
@@ -163,31 +534,6 @@ button:disabled {
 .terminal textarea.composing {
   width: 24ch;
   color: var(--text);
-  background: var(--panel);
+  background: var(--surface);
   text-decoration: underline;
-}
-
-.procs {
-  padding: 12px 14px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: var(--panel);
-}
-
-.proc {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 4px 0;
-  font-family: var(--mono);
-}
-
-.proc .pid {
-  width: 3ch;
-  color: var(--muted);
-  text-align: right;
-}
-
-.proc .name {
-  flex: 1;
 }
