@@ -2,7 +2,7 @@
 import { readFileSync } from 'node:fs'
 import { expect, test, type Page } from '@playwright/test'
 import { unpackTar } from '../src/kernel/tar.ts'
-import { appWindow, boot, expectScreen, launch, raise, typeIn } from './helpers.ts'
+import { appWindow, boot, expectScreen, launch, raise, removeSaved, typeIn } from './helpers.ts'
 
 const term = (page: Page) => appWindow(page, 'terminal')
 const settings = (page: Page) => appWindow(page, 'settings')
@@ -140,11 +140,7 @@ test.describe('when saved data has disappeared', () => {
     await page.waitForTimeout(600)
     await page.reload()
     await expectScreen(page, term(page)).toMatch(/\$$/)
-    await page.evaluate(async () => {
-      const origin = await navigator.storage.getDirectory()
-      await origin.removeEntry('root', { recursive: true })
-      await origin.removeEntry('ready')
-    })
+    await removeSaved(page, ['root', 'ready'])
   }
 
   test('says so instead of silently starting over, and points to the way back', async ({ page }) => {

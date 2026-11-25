@@ -2,7 +2,7 @@
 // 운영체제의 폴더 선택 창은 자동화할 수 없으므로, 선택 창이 브라우저 저장소 안의 폴더를 돌려주도록
 // 바꿔치기한다. 돌려받는 핸들의 종류와 쓰는 방법은 실제 로컬 폴더와 같다.
 import { expect, test, type Page } from '@playwright/test'
-import { appWindow, boot, expectScreen, launch, raise, typeIn } from './helpers.ts'
+import { appWindow, boot, expectScreen, launch, raise, removeSaved, typeIn } from './helpers.ts'
 
 const term = (page: Page) => appWindow(page, 'terminal')
 const settings = (page: Page) => appWindow(page, 'settings')
@@ -159,12 +159,8 @@ test('loading from the folder brings back everything after the browser data is l
   await expect.poll(async () => (await onDisk(page, 'backup')).files['home/guest/thesis.txt']).toBe('irreplaceable\n')
 
   // 브라우저의 데이터가 지워진 상황: 저장된 파일과, 폴더를 기억해 둔 것까지 모두 사라진다.
-  await page.evaluate(async () => {
-    const origin = await navigator.storage.getDirectory()
-      await origin.removeEntry('root', { recursive: true })
-      await origin.removeEntry('ready')
-    indexedDB.deleteDatabase('webos')
-  })
+  await removeSaved(page, ['root', 'ready'])
+  await page.evaluate(() => indexedDB.deleteDatabase('webos'))
   await page.reload()
   await expectScreen(page, term(page)).toMatch(/\$$/)
   await typeIn(page, term(page), 'ls')

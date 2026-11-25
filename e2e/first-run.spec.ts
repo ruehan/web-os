@@ -4,7 +4,8 @@ import { appWindow, boot, expectScreen, launch } from './helpers.ts'
 
 test.describe('boot screen', () => {
   test('shows the kernel log line by line, then the desktop', async ({ page }) => {
-    await page.goto('/')
+    // 부팅 화면은 1초 남짓이면 지나가므로, 페이지가 다 불러와지기를 기다리지 않고 바로 살핀다.
+    await page.goto('/', { waitUntil: 'commit' })
     const log = page.getByRole('log')
     await expect(log).toContainText('kernel: booting')
     // 한 줄씩 드러나므로 처음에는 마지막 줄이 아직 없다.
@@ -18,7 +19,7 @@ test.describe('boot screen', () => {
   })
 
   test('any key skips the wait', async ({ page }) => {
-    await page.goto('/')
+    await page.goto('/', { waitUntil: 'commit' })
     await expect(page.getByRole('log')).toContainText('kernel: booting')
     await page.keyboard.press('Space')
     await expect(page.locator('.desktop')).toBeVisible()

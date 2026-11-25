@@ -1,6 +1,6 @@
 // 영구 저장: /home 은 새로고침해도 남고, 나머지는 처음 상태로 돌아간다.
 import { expect, test } from '@playwright/test'
-import { appWindow, boot, expectScreen, fileRow, launch, screen, type } from './helpers.ts'
+import { appWindow, boot, expectScreen, fileRow, launch, removeSaved, screen, type } from './helpers.ts'
 
 test.beforeEach(({ page }) => boot(page))
 
@@ -159,9 +159,9 @@ test('shipped programs are refreshed on every start, even if the saved copy diff
 
 test('a home saved by the previous storage layout is carried over', async ({ page }) => {
   // 예전에는 /home 의 내용만 "home" 이라는 이름으로 저장했다.
+  await removeSaved(page, ['root'])
   await page.evaluate(async () => {
     const origin = await navigator.storage.getDirectory()
-    await origin.removeEntry('root', { recursive: true })
     const guest = await (await origin.getDirectoryHandle('home', { create: true })).getDirectoryHandle('guest', { create: true })
     const writable = await (await guest.getFileHandle('old.txt', { create: true })).createWritable()
     await writable.write('from the old layout\n')
@@ -187,12 +187,8 @@ test('a home saved by the previous storage layout is carried over', async ({ pag
 
 test('a reload right after the very first start still gets the default files', async ({ page }) => {
   // 첫 저장이 끝나기 전에 닫힌 상황: 저장소 폴더는 생겼지만 내용도, 완료 표시도 없다.
-  await page.evaluate(async () => {
-    const origin = await navigator.storage.getDirectory()
-    await origin.removeEntry('ready')
-    await origin.removeEntry('root', { recursive: true })
-    await origin.getDirectoryHandle('root', { create: true })
-  })
+  await removeSaved(page, ['ready', 'root'])
+  await page.evaluate(async () => void (await (await navigator.storage.getDirectory()).getDirectoryHandle('root', { create: true })))
   await page.reload()
   await expectScreen(page).toMatch(/\$$/)
   await type(page, 'ls')

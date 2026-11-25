@@ -76,3 +76,24 @@ export const appWindow = (page: Page, app: string) => page.locator(`.window[data
 
 export const fileRow = (page: Page, name: string) =>
   appWindow(page, 'files').locator('.file-row').filter({ has: page.locator('.file-name', { hasText: new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`) }) })
+
+/**
+ * 브라우저 저장소의 맨 위 항목들을 지운다 (브라우저가 데이터를 지운 상황을 흉내 낼 때 쓴다).
+ * 커널이 마침 그 파일에 쓰고 있으면 브라우저가 삭제를 거절하므로, 끝날 때까지 잠깐씩 기다리며 다시 시도한다.
+ */
+export const removeSaved = (page: Page, names: string[]) =>
+  page.evaluate(async (names) => {
+    const origin = await navigator.storage.getDirectory()
+    for (const name of names) {
+      for (let attempt = 0; ; attempt++) {
+        try {
+          await origin.removeEntry(name, { recursive: true })
+          break
+        } catch (e) {
+          if (e instanceof DOMException && e.name === 'NotFoundError') break
+          if (attempt >= 30) throw e
+          await new Promise((resolve) => setTimeout(resolve, 100))
+        }
+      }
+    }
+  }, names)
