@@ -23,8 +23,6 @@ const SIDE_ROW: f32 = 48.0;
 const NAV_ROW: f32 = 32.0;
 const TRACK_ROW: f32 = 46.0;
 const BAR_H: f32 = 78.0;
-/// 플레이어의 가로세로 비율 (16:9)
-const RATIO: f32 = 9.0 / 16.0;
 const NO_ARTIST: &str = "아티스트 미상";
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -631,11 +629,7 @@ impl App {
         let theme = ui.theme;
         let narrow = self.narrow();
         let pad = if narrow { 12.0 } else { 22.0 };
-        // 영상은 "표지" 자리에 보인다. 약관에 따라 숨기지 않고, 충분한 크기로 둔다.
-        let video_w = if narrow { area.w - pad * 2.0 } else { 356.0 };
-        let video = Rect::new(area.x + pad, area.y + pad, video_w, (video_w * RATIO).round());
-        self.draw_video(ui, video);
-
+        // 머리: 갈래, 이름, 덧붙이는 말과 재생 단추. 영상은 여기가 아니라 아래 재생 막대의 그림 자리에서 나온다.
         let (kind, name, sub) = self.heading();
         let playable = !self.songs_of(&self.view).is_empty();
         let play = |ui: &mut Ui<Action>, x: f32, y: f32| {
@@ -649,7 +643,7 @@ impl App {
             ui.target(rect, Role::Button, false, "모두 재생", Action::PlayAll);
         };
         let mut top = if narrow {
-            let y = video.bottom() + 12.0;
+            let y = area.y + 12.0;
             // 좁은 화면에서는 왼쪽의 보관함이 없으므로, 이름이 볼 것을 고르는 단추다.
             let label = ui.fit(&name, 12.0, Style::PLAIN, area.w - 150.0);
             ui.tool(area.x + pad, y + 5.0, &format!("{label} ▾"), Tool::Plain, false, Some(Action::ViewMenu));
@@ -658,16 +652,26 @@ impl App {
             }
             y + 46.0
         } else {
-            let x = video.right() + 22.0;
-            let room = (area.right() - pad - x).max(60.0);
-            ui.text(x, video.y + 16.0, 11.5, theme.muted, Style::BOLD, kind);
-            ui.label(x, video.y + 48.0, 26.0, theme.text, Style::BOLD, room, &name);
-            ui.label(x, video.y + 80.0, 12.5, theme.muted, Style::PLAIN, room, &sub);
+            let (x, y) = (area.x + pad, area.y + pad);
+            let room = (area.w - pad * 2.0 - if playable { 112.0 } else { 0.0 }).max(60.0);
+            ui.text(x, y + 8.0, 11.5, theme.muted, Style::BOLD, kind);
+            ui.label(x, y + 36.0, 24.0, theme.text, Style::BOLD, room, &name);
+            ui.label(x, y + 64.0, 12.5, theme.muted, Style::PLAIN, room, &sub);
             if playable {
-                play(ui, x, video.bottom() - 36.0);
+                play(ui, area.right() - pad - 92.0, y + 20.0);
             }
-            video.bottom() + 16.0
+            y + 84.0
         };
+        if self.unsupported {
+            // 이 브라우저에는 플레이어를 놓을 수 없다: 알리고, 유튜브에서 여는 길을 준다.
+            ui.f.rect(area.x + pad, top, area.w - pad * 2.0, 34.0, RADIUS, theme.hover);
+            let open = if self.current().is_some() { ui.tool_width("유튜브에서 열기") + 8.0 } else { 0.0 };
+            ui.label(area.x + pad + 12.0, top + 17.0, 12.5, theme.text, Style::PLAIN, area.w - pad * 2.0 - 24.0 - open, "이 브라우저에서는 여기서 틀 수 없습니다. Chrome이나 Edge에서 열어 보세요.");
+            if open > 0.0 {
+                ui.tool(area.right() - pad - open, top + 4.0, "유튜브에서 열기", Tool::Plain, false, Some(Action::OpenOnYouTube));
+            }
+            top += 44.0;
+        }
 
         if matches!(self.view, View::Songs | View::Artist(_) | View::Album(_)) {
             // 곡 목록의 머리줄
@@ -903,28 +907,6 @@ impl App {
         }
     }
 
-    /// 플레이어의 자리. 아직 틀기 전이거나 플레이어를 놓을 수 없으면 그 자리에 안내를 그린다.
-    fn draw_video(&self, ui: &mut Ui<Action>, rect: Rect) {
-        ui.f.rect(rect.x, rect.y, rect.w, rect.h, RADIUS, Color::rgb(16, 17, 20));
-        let (cx, cy) = (rect.x + rect.w / 2.0, rect.mid_y());
-        let quiet = Color::rgb(160, 163, 175);
-        if self.unsupported {
-            ui.f.styled(cx, cy - 22.0, 13.0, Color::rgb(232, 232, 236), Align::Center, Style::PLAIN, "이 브라우저에서는 여기서 틀 수 없습니다.");
-            ui.f.styled(cx, cy - 2.0, 12.0, quiet, Align::Center, Style::PLAIN, "Chrome이나 Edge에서 열어 보세요.");
-            if self.current().is_some() {
-                let w = ui.tool_width("유튜브에서 열기");
-                ui.tool(cx - w / 2.0, cy + 16.0, "유튜브에서 열기", Tool::Plain, false, Some(Action::OpenOnYouTube));
-            }
-        } else if !self.loaded {
-            ui.f.circle(cx, cy - 12.0, 22.0, Color::rgba(255, 255, 255, 28));
-            ui.f.polygon(&[(cx - 6.0, cy - 21.0), (cx + 9.0, cy - 12.0), (cx - 6.0, cy - 3.0)], quiet);
-            ui.f.styled(cx, cy + 26.0, 12.5, quiet, Align::Center, Style::PLAIN, "곡을 고르면 여기서 재생됩니다.");
-        } else {
-            // 영상과 소리는 화면 쪽이 이 자리에 놓는 유튜브의 플레이어가 낸다.
-            ui.f.player(rect.x, rect.y, rect.w, rect.h);
-        }
-    }
-
     /// 테두리 없는 둥근 단추의 바탕과 자리 알림. 그림을 그릴 가운데 자리와 색을 돌려준다.
     fn glyph(&self, ui: &mut Ui<Action>, cx: f32, cy: f32, name: &str, pressed: bool, action: Action) -> Color {
         let theme = ui.theme;
@@ -952,9 +934,15 @@ impl App {
         let mid = bar.mid_y();
 
         // 왼쪽: 지금 곡
-        let left_w = if narrow { bar.w - 116.0 } else { (bar.w * 0.28).clamp(170.0, 300.0) };
-        let cover = if narrow { Rect::new(bar.x + 12.0, mid - 16.0, 57.0, 32.0) } else { Rect::new(bar.x + 16.0, mid - 20.0, 71.0, 40.0) };
-        self.cover(ui, cover, track.map(|t| t.id.as_str()));
+        let left_w = if narrow { bar.w - 116.0 } else { (bar.w * 0.3).clamp(210.0, 330.0) };
+        let cover = if narrow { Rect::new(bar.x + 10.0, mid - 24.0, 85.0, 48.0) } else { Rect::new(bar.x + 14.0, mid - 30.0, 107.0, 60.0) };
+        if self.loaded && !self.unsupported {
+            // 영상과 소리는 화면 쪽이 이 그림 자리에 놓는 유튜브의 플레이어가 낸다.
+            ui.f.rect(cover.x, cover.y, cover.w, cover.h, 4.0, Color::rgb(16, 17, 20));
+            ui.f.player(cover.x, cover.y, cover.w, cover.h);
+        } else {
+            self.cover(ui, cover, track.map(|t| t.id.as_str()));
+        }
         let text_x = cover.right() + 12.0;
         let text_w = bar.x + left_w - text_x;
         let title = track.map_or("고른 곡이 없습니다", |t| self.title(t));

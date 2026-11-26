@@ -72,7 +72,7 @@ describe('music', () => {
     expect(all('gui-open', app.pid)[0]).toMatchObject({ title: '음악', w: 980, h: 640 })
     // 글이 없으면 곡 목록부터 보여 준다. 가운데에 곡들, 왼쪽에 보관함.
     expect(app.labels('option')).toEqual(['하나', '둘', '셋', ...NAV])
-    expect(app.texts()).toEqual(expect.arrayContaining(['고른 곡이 없습니다', '곡을 고르면 여기서 재생됩니다.', '모든 곡', '3곡', '가', '나', '첫 앨범']))
+    expect(app.texts()).toEqual(expect.arrayContaining(['고른 곡이 없습니다', '모든 곡', '3곡', '가', '나', '첫 앨범']))
     // 아직 플레이어를 놓지 않았고, 시킨 일도 없다.
     expect(app.player()).toBeUndefined()
     expect(app.commands()).toEqual([])
@@ -145,9 +145,10 @@ describe('music', () => {
     const app = await openMusic()
     app.press('둘')
     await app.until(() => app.player(), 'the player')
-    // 플레이어의 자리는 16:9이고, 영상의 번호만 넘긴다. 처음 놓을 때 소리 크기도 맞춘다.
+    // 플레이어는 아래 재생 막대의 그림 자리에 놓이고(16:9), 영상의 번호만 넘긴다. 처음 놓을 때 소리 크기도 맞춘다.
     const place = app.player()!
-    expect(place.h).toBe(Math.round(place.w * 9 / 16))
+    expect(place).toMatchObject({ w: 107, h: 60 })
+    expect(place.y).toBeGreaterThan(640 - 78)
     expect(app.commands()).toEqual([
       { op: 'playerCommand', command: PlayerCommand.load, value: 1, id: 'aaaaaaaaaa2' },
       { op: 'playerCommand', command: PlayerCommand.volume, value: 80, id: '' },
@@ -277,7 +278,7 @@ describe('music', () => {
     app.press('셋')
     await app.until(() => app.player(), 'the player')
     app.send(GuiEvent.playerError, PLAYER_UNSUPPORTED)
-    await app.until(() => app.texts().includes('이 브라우저에서는 여기서 틀 수 없습니다.'), 'the notice')
+    await app.until(() => app.texts().some((t) => t.startsWith('이 브라우저에서는 여기서 틀 수 없습니다.')), 'the notice')
     expect(app.player()).toBeUndefined()
     app.press('유튜브에서 열기')
     await app.until(() => app.latest().some((op) => op.op === 'open'), 'the link')
@@ -339,18 +340,19 @@ describe('music', () => {
 
     app.press('모두 재생')
     await app.until(() => app.loaded().join() === 'aaaaaaaaaa1', 'the first song of the list')
-    // 아래의 재생 막대에도 지금 곡의 그림과 제목이 나온다.
-    await app.until(() => covers().length === 2, 'the cover in the bar')
+    // 아래의 재생 막대에는 지금 곡의 제목이 나오고, 그림 자리에는 플레이어가 놓인다.
+    await app.until(() => app.player(), 'the player in the bar')
+    expect(covers()).toHaveLength(1)
     expect(app.texts().filter((t) => t === '하나')).toHaveLength(2)
     delete PAGES['https://i.ytimg.com/vi/aaaaaaaaaa1/mqdefault.jpg']
   })
 
-  it('stacks the player above the list on a narrow screen', async () => {
+  it('keeps a short bar and a menu of views on a narrow screen', async () => {
     library(THREE)
     const app = await openMusic()
     app.send(GuiEvent.resize, 390, 700, 0)
     app.press('하나')
-    await app.until(() => app.player()?.w === 390 - 24, 'the player across the width')
+    await app.until(() => app.player()?.w === 85, 'the player in the bar')
     // 왼쪽의 보관함 대신 목록을 고르는 단추가 있고, 아래의 막대에는 재생과 다음만 남는다.
     expect(app.labels('option')).toEqual(['하나', '둘', '셋'])
     expect(app.region('다음 곡')).toBeDefined()
