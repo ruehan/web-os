@@ -101,7 +101,7 @@ export function keyCode(key: string): number | undefined {
 
 // ───────────── 그리기 명령 ─────────────
 
-const Op = { clear: 1, rect: 2, frame: 3, line: 4, circle: 5, text: 6, clip: 7, unclip: 8, field: 9, region: 10, menu: 11, select: 12, overlay: 13, image: 14, pick: 15, copy: 16, open: 17, title: 18, launch: 19, player: 20, playerCommand: 21 } as const
+const Op = { clear: 1, rect: 2, frame: 3, line: 4, circle: 5, text: 6, clip: 7, unclip: 8, field: 9, region: 10, menu: 11, select: 12, overlay: 13, image: 14, pick: 15, copy: 16, open: 17, title: 18, launch: 19, player: 20, playerCommand: 21, polygon: 22 } as const
 
 /** playerCommand 명령의 종류 */
 export const PlayerCommand = { load: 1, play: 2, pause: 3, seek: 4, volume: 5 } as const
@@ -138,6 +138,8 @@ export type DrawOp =
   /** 점들을 잇는 선 (끝과 꺾이는 곳은 둥글다). points는 x, y가 번갈아 온다. */
   | { op: 'line'; points: number[]; color: string; width: number }
   | { op: 'circle'; x: number; y: number; r: number; color: string }
+  /** 점들을 이은 안쪽을 채운 도형 (재생 단추의 삼각형 등). points는 x, y가 번갈아 온다. */
+  | { op: 'polygon'; points: number[]; color: string }
   /** y는 글자의 세로 가운데다. */
   | {
       op: 'text'; x: number; y: number; size: number; color: string; align: 'left' | 'center' | 'right'; text: string
@@ -298,6 +300,16 @@ export function decodeDrawList(data: Uint8Array): DrawOp[] {
       case Op.circle:
         ops.push({ op: 'circle', x: f32(), y: f32(), r: f32(), color: cssColor(u32()) })
         break
+      case Op.polygon: {
+        const color = cssColor(u32())
+        const count = u32()
+        if (count > MAX_POINTS) throw new RangeError('draw list has a polygon with too many points')
+        need(count * 8)
+        const points: number[] = []
+        for (let i = 0; i < count * 2; i++) points.push(f32())
+        ops.push({ op: 'polygon', points, color })
+        break
+      }
       case Op.text: {
         const [x, y, size] = [f32(), f32(), f32()]
         const color = cssColor(u32())

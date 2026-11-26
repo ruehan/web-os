@@ -60,6 +60,15 @@ function paint(ctx: CanvasRenderingContext2D, ops: DrawOp[], width: number, heig
         for (let i = 2; i < op.points.length; i += 2) ctx.lineTo(op.points[i]!, op.points[i + 1]!)
         ctx.stroke()
         break
+      case 'polygon':
+        if (op.points.length < 6) break
+        ctx.fillStyle = op.color
+        ctx.beginPath()
+        ctx.moveTo(op.points[0]!, op.points[1]!)
+        for (let i = 2; i < op.points.length; i += 2) ctx.lineTo(op.points[i]!, op.points[i + 1]!)
+        ctx.closePath()
+        ctx.fill()
+        break
       case 'circle':
         ctx.fillStyle = op.color
         ctx.beginPath()

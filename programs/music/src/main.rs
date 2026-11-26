@@ -11,11 +11,14 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::{env, fs, process};
 use webos::gui::{Align, Color, Event, Frame, Key, MenuItem, PlayerState, Role, Style, Window, PLAYER_UNSUPPORTED};
-use webos::ui::{Rect, Tool, Ui, Widths, DARK, LIGHT, RADIUS, TOOL_H};
+use webos::ui::{Rect, Tool, Ui, Widths, DARK, LIGHT, RADIUS};
 
 const LIBRARY: &str = "/usr/share/music/library.txt";
-const SIDE: f32 = 200.0;
-const ROW: f32 = 30.0;
+const SIDE: f32 = 220.0;
+/// 보관함의 한 줄, 곡 목록의 한 줄, 아래 재생 막대의 높이
+const SIDE_ROW: f32 = 48.0;
+const TRACK_ROW: f32 = 46.0;
+const BAR_H: f32 = 78.0;
 /// 플레이어의 가로세로 비율 (16:9)
 const RATIO: f32 = 9.0 / 16.0;
 
@@ -46,6 +49,8 @@ enum Action {
     OpenOnYouTube,
     /// 좁은 화면에서 목록을 고르는 메뉴
     ListMenu,
+    /// 보이는 목록을 처음부터 (섞기가 켜져 있으면 아무 곡부터) 튼다
+    PlayList,
 }
 
 /// 플레이어에 시킬 일 (다음에 그릴 때 보낸다)
@@ -85,6 +90,10 @@ struct App {
     failures: usize,
     /// 유튜브에서 받아 온 제목과 작성자: 영상 번호 → (제목, 작성자). 받아 오지 못한 것은 None.
     meta: HashMap<String, Option<(String, String)>>,
+    /// 받아 둔 곡의 작은 그림: 영상 번호 → 그림 파일의 경로. 받지 못한 것은 None.
+    thumbs: HashMap<String, Option<String>>,
+    /// 틀어 봐서 알게 된 곡의 길이 (초)
+    lengths: HashMap<String, f32>,
     /// 섞어 틀 때 지나온 곡들 (이전 곡으로 돌아갈 때 쓴다)
     history: Vec<(usize, usize)>,
     /// 섞기에 쓰는 난수의 상태
@@ -149,6 +158,32 @@ impl App {
         self.current().into_iter().chain(shown).find(|track| track.title.is_none() && !self.meta.contains_key(&track.id)).map(|track| track.id.clone())
     }
 
+    /// 그림을 아직 준비하지 않은 곡 하나 (틀고 있는 곡, 보이는 목록의 곡들, 목록들의 첫 곡 가운데)
+    fn uncovered(&self) -> Option<String> {
+        let shown = self.lists.get(self.shown).map(|list| list.tracks.iter()).into_iter().flatten();
+        let firsts = self.lists.iter().filter_map(|list| list.tracks.first());
+        self.current().into_iter().chain(shown).chain(firsts).find(|track| !self.thumbs.contains_key(&track.id)).map(|track| track.id.clone())
+    }
+
+    /// 곡의 작은 그림을 준비한다: 받아 둔 파일이 있으면 그것을, 없으면 유튜브에서 받아 와 적어 둔다.
+    /// 그림은 화면 쪽이 파일을 읽어 그리므로, 그릴 수 있는 그림인지(크기를 물어) 확인해 둔다.
+    fn fetch_cover(&mut self, id: &str) {
+        let file = home().join(format!(".cache/music/covers/{id}.jpg"));
+        if !file.exists() {
+            let fetched = webos::fetch(&format!("https://i.ytimg.com/vi/{id}/mqdefault.jpg"), false).ok().filter(|r| r.status == 200).and_then(|mut response| {
+                let mut bytes = Vec::new();
+                std::io::Read::read_to_end(&mut response.body, &mut bytes).ok()?;
+                Some(bytes)
+            });
+            if let Some(bytes) = fetched {
+                let _ = file.parent().map_or(Ok(()), fs::create_dir_all).and_then(|_| fs::write(&file, bytes));
+            }
+        }
+        let path = file.to_string_lossy().into_owned();
+        let usable = file.exists() && self.window.image_size(&path).is_some();
+        self.thumbs.insert(id.to_string(), usable.then_some(path));
+    }
+
     /// 유튜브에 그 영상의 제목과 작성자를 묻는다 (커널이 받아 온다). 받은 것은 다음을 위해 적어 둔다.
     fn fetch_meta(&mut self, id: &str) {
         let url = format!("https://www.youtube.com/oembed?format=json&url=https://www.youtube.com/watch?v={id}");
@@ -195,9 +230,9 @@ impl App {
         if at.0 != self.shown {
             return;
         }
-        let (top, room) = (at.1 as f32 * ROW, self.bars.2.h - 12.0);
-        if room > ROW {
-            self.scroll = self.scroll.clamp((top + ROW - room).max(0.0), top);
+        let (top, room) = (at.1 as f32 * TRACK_ROW, self.bars.2.h - 12.0);
+        if room > TRACK_ROW {
+            self.scroll = self.scroll.clamp((top + TRACK_ROW - room).max(0.0), top);
         }
     }
 
@@ -313,13 +348,16 @@ impl App {
     }
 
     // ───────────── 화면 ─────────────
+    //
+    // 음악 서비스의 플레이어들이 흔히 쓰는 구성이다: 왼쪽에 보관함(재생 목록들), 가운데에 고른 목록과 그 곡들,
+    // 아래에 늘 보이는 재생 막대(지금 곡, 재생 단추들과 진행 막대, 소리). 영상은 가운데 위의 "표지" 자리에 보인다.
 
     fn narrow(&self) -> bool {
         self.w < 620.0
     }
 
     fn list_height(&self) -> f32 {
-        self.lists.get(self.shown).map_or(0.0, |list| list.tracks.len() as f32 * ROW) + 12.0
+        self.lists.get(self.shown).map_or(0.0, |list| list.tracks.len() as f32 * TRACK_ROW) + 12.0
     }
 
     fn max_scroll(&self) -> f32 {
@@ -331,12 +369,14 @@ impl App {
         let mut ui: Ui<Action> = Ui::new(self.window, std::mem::take(&mut self.widths), theme, self.mouse);
         ui.f.clear(theme.surface);
         let narrow = self.narrow();
-        let x0 = if narrow { 0.0 } else { SIDE };
+        let side = if narrow { 0.0 } else { SIDE };
+        let bar_h = if narrow { 64.0 } else { BAR_H };
+        let list = self.draw_main(&mut ui, Rect::new(side, 0.0, self.w - side, (self.h - bar_h).max(0.0)));
         if !narrow {
-            self.draw_side(&mut ui);
+            self.draw_side(&mut ui, Rect::new(0.0, 0.0, side, (self.h - bar_h).max(0.0)));
         }
-        let bars = self.draw_main(&mut ui, x0);
-        self.bars = bars;
+        let (seek, volume) = self.draw_bar(&mut ui, Rect::new(0.0, self.h - bar_h, self.w, bar_h));
+        self.bars = (seek, volume, list);
 
         // 플레이어에 시킬 일들. 영상을 불러오라는 것이 여럿이면 마지막 것만 보낸다.
         let commands = std::mem::take(&mut self.commands);
@@ -363,56 +403,98 @@ impl App {
         ui.f
     }
 
-    /// 왼쪽: 재생 목록들
-    fn draw_side(&self, ui: &mut Ui<Action>) {
-        let theme = ui.theme;
-        ui.f.rect(0.0, 0.0, SIDE, self.h, 0.0, theme.surface2);
-        ui.vline(SIDE - 1.0, 0.0, self.h);
-        ui.text(14.0, 22.0, 12.0, theme.muted, Style::BOLD, "재생 목록");
-        if self.lists.is_empty() {
-            ui.text(14.0, 54.0, 12.0, theme.muted, Style::PLAIN, "목록이 없습니다.");
+    /// 곡의 작은 그림 (유튜브의 썸네일). 받아 둔 것이 없으면 빈 칸을 그린다.
+    fn cover(&self, ui: &mut Ui<Action>, rect: Rect, id: Option<&str>) {
+        ui.f.rect(rect.x, rect.y, rect.w, rect.h, 4.0, ui.theme.hover);
+        match id.and_then(|id| self.thumbs.get(id)).and_then(|path| path.as_deref()) {
+            Some(path) => ui.f.image(rect.x, rect.y, rect.w, rect.h, path),
+            None => {
+                // 음표
+                let (cx, cy, ink) = (rect.x + rect.w / 2.0, rect.mid_y(), ui.theme.muted);
+                ui.f.line(&[(cx - 2.0, cy + 4.0), (cx - 2.0, cy - 5.0), (cx + 4.0, cy - 6.5), (cx + 4.0, cy + 2.5)], ink, 1.4);
+                ui.f.circle(cx - 3.8, cy + 4.2, 2.0, ink);
+                ui.f.circle(cx + 2.2, cy + 2.7, 2.0, ink);
+            }
         }
+    }
+
+    /// 왼쪽: 보관함 (재생 목록들)
+    fn draw_side(&self, ui: &mut Ui<Action>, area: Rect) {
+        let theme = ui.theme;
+        ui.f.rect(area.x, area.y, area.w, area.h, 0.0, theme.surface2);
+        ui.vline(area.right() - 1.0, area.y, area.h);
+        ui.text(18.0, 26.0, 11.5, theme.muted, Style::BOLD, "보관함");
+        if self.lists.is_empty() {
+            ui.text(18.0, 60.0, 12.0, theme.muted, Style::PLAIN, "목록이 없습니다.");
+        }
+        ui.clip(Rect::new(area.x, 44.0, area.w - 1.0, (area.h - 44.0).max(0.0)));
         for (i, list) in self.lists.iter().enumerate() {
-            let rect = Rect::new(6.0, 40.0 + i as f32 * ROW, SIDE - 13.0, ROW);
+            let rect = Rect::new(8.0, 46.0 + i as f32 * SIDE_ROW, area.w - 17.0, SIDE_ROW - 4.0);
             let selected = i == self.shown;
             if selected {
                 ui.f.rect(rect.x, rect.y, rect.w, rect.h, RADIUS, theme.accent_soft);
             } else if ui.hot(rect) {
                 ui.f.rect(rect.x, rect.y, rect.w, rect.h, RADIUS, theme.hover);
             }
-            let count = list.tracks.len().to_string();
-            let count_w = ui.width(&count, 11.5, Style::PLAIN);
-            ui.f.styled(rect.right() - 10.0, rect.mid_y(), 11.5, theme.muted, Align::Right, Style::PLAIN, &count);
-            // 틀고 있는 곡이 든 목록은 강조색으로
-            let ink = if self.playing.is_some_and(|(at, _)| at == i) { theme.accent } else { theme.text };
-            ui.label(rect.x + 10.0, rect.mid_y(), 13.0, ink, Style::PLAIN, rect.w - 30.0 - count_w, &list.name);
+            // 목록의 표지: 첫 곡의 그림
+            let first = list.tracks.first().map(|t| t.id.as_str());
+            self.cover(ui, Rect::new(rect.x + 6.0, rect.y + 6.0, 57.0, 32.0), first);
+            let playing = self.playing.is_some_and(|(at, _)| at == i);
+            ui.label(rect.x + 72.0, rect.y + 15.0, 13.0, if playing { theme.accent } else { theme.text }, Style::PLAIN, rect.w - 80.0, &list.name);
+            ui.label(rect.x + 72.0, rect.y + 31.0, 11.5, theme.muted, Style::PLAIN, rect.w - 80.0, &format!("{}곡", list.tracks.len()));
             ui.target(rect, Role::Option, selected, &list.name, Action::List(i));
         }
+        ui.unclip();
     }
 
-    /// 플레이어, 지금 곡과 단추들, 곡 목록. (진행 막대, 소리 막대, 곡 목록)의 자리를 돌려준다.
-    fn draw_main(&self, ui: &mut Ui<Action>, x0: f32) -> (Rect, Rect, Rect) {
-        let width = self.w - x0;
+    /// 가운데: 고른 목록의 머리(영상과 목록 이름, 재생 단추)와 곡들. 곡 목록의 자리를 돌려준다.
+    fn draw_main(&self, ui: &mut Ui<Action>, area: Rect) -> Rect {
+        let theme = ui.theme;
         let narrow = self.narrow();
-        // 좁은 화면에서는 플레이어가 폭을 다 쓰고, 정보와 단추가 그 아래로 간다.
-        let video = if narrow {
-            Rect::new(x0 + 12.0, 12.0, width - 24.0, ((width - 24.0) * RATIO).round())
-        } else {
-            let w = (width * 0.46).clamp(260.0, 420.0).round();
-            Rect::new(x0 + 16.0, 16.0, w, (w * RATIO).round())
-        };
+        let pad = if narrow { 12.0 } else { 22.0 };
+        // 영상은 목록의 "표지" 자리에 보인다. 약관에 따라 숨기지 않고, 충분한 크기로 둔다.
+        let video_w = if narrow { area.w - pad * 2.0 } else { (area.w * 0.48).clamp(288.0, 400.0).round() };
+        let video = Rect::new(area.x + pad, area.y + pad, video_w, (video_w * RATIO).round());
         self.draw_video(ui, video);
-        let info = if narrow {
-            Rect::new(x0 + 12.0, video.bottom() + 10.0, width - 24.0, 118.0)
-        } else {
-            Rect::new(video.right() + 18.0, video.y, (x0 + width - 16.0 - video.right() - 18.0).max(120.0), video.h)
+
+        let list = self.lists.get(self.shown);
+        let name = list.map_or("음악", |l| l.name.as_str());
+        let count = format!("재생 목록 · {}곡", list.map_or(0, |l| l.tracks.len()));
+        let play = |ui: &mut Ui<Action>, x: f32, y: f32| {
+            // 목록을 처음부터 트는 큰 단추
+            let rect = Rect::new(x, y, 92.0, 36.0);
+            let hot = ui.hot(rect);
+            ui.f.rect(rect.x, rect.y, rect.w, rect.h, 18.0, if hot { theme.accent.alpha(225) } else { theme.accent });
+            let (cx, cy) = (rect.x + 30.0, rect.mid_y());
+            ui.f.polygon(&[(cx - 5.0, cy - 6.5), (cx + 6.0, cy), (cx - 5.0, cy + 6.5)], theme.surface);
+            ui.text(rect.x + 44.0, cy, 13.0, theme.surface, Style::BOLD, "재생");
+            ui.target(rect, Role::Button, false, "이 목록 재생", Action::PlayList);
         };
-        let (seek, volume) = self.draw_info(ui, info);
-        let top = if narrow { info.bottom() + 6.0 } else { video.bottom() + 16.0 };
-        ui.hline(x0, top, width);
-        let list = Rect::new(x0, top + 1.0, width, (self.h - top - 1.0).max(0.0));
-        self.draw_tracks(ui, list);
-        (seek, volume, list)
+        let top = if narrow {
+            let y = video.bottom() + 12.0;
+            // 좁은 화면에서는 왼쪽의 보관함이 없으므로, 목록의 이름이 목록을 고르는 단추다.
+            let label = ui.fit(name, 12.0, Style::PLAIN, area.w - 150.0);
+            ui.tool(area.x + pad, y + 5.0, &format!("{label} ▾"), Tool::Plain, false, Some(Action::ListMenu));
+            play(ui, area.right() - pad - 92.0, y);
+            y + 46.0
+        } else {
+            let x = video.right() + 22.0;
+            let room = (area.right() - pad - x).max(60.0);
+            ui.text(x, video.y + 16.0, 11.5, theme.muted, Style::BOLD, "지금 보는 목록");
+            ui.label(x, video.y + 48.0, 26.0, theme.text, Style::BOLD, room, name);
+            ui.label(x, video.y + 80.0, 12.5, theme.muted, Style::PLAIN, room, &count);
+            play(ui, x, video.bottom() - 36.0);
+            video.bottom() + 18.0
+        };
+
+        // 곡 목록의 머리줄
+        ui.text(area.x + pad + 6.0, top + 12.0, 11.5, theme.muted, Style::PLAIN, "#");
+        ui.text(area.x + pad + 36.0, top + 12.0, 11.5, theme.muted, Style::PLAIN, "제목");
+        ui.f.styled(area.right() - pad - 6.0, top + 12.0, 11.5, theme.muted, Align::Right, Style::PLAIN, "길이");
+        ui.hline(area.x + pad, top + 25.0, area.w - pad * 2.0);
+        let tracks = Rect::new(area.x, top + 26.0, area.w, (area.bottom() - top - 26.0).max(0.0));
+        self.draw_tracks(ui, tracks, pad);
+        tracks
     }
 
     /// 플레이어의 자리. 아직 틀기 전이거나 플레이어를 놓을 수 없으면 그 자리에 안내를 그린다.
@@ -428,124 +510,17 @@ impl App {
                 ui.tool(cx - w / 2.0, cy + 16.0, "유튜브에서 열기", Tool::Plain, false, Some(Action::OpenOnYouTube));
             }
         } else if !self.loaded {
-            ui.f.styled(cx, cy, 13.0, quiet, Align::Center, Style::PLAIN, "곡을 고르면 여기서 재생됩니다.");
+            ui.f.circle(cx, cy - 12.0, 22.0, Color::rgba(255, 255, 255, 28));
+            ui.f.polygon(&[(cx - 6.0, cy - 21.0), (cx + 9.0, cy - 12.0), (cx - 6.0, cy - 3.0)], quiet);
+            ui.f.styled(cx, cy + 26.0, 12.5, quiet, Align::Center, Style::PLAIN, "곡을 고르면 여기서 재생됩니다.");
         } else {
             // 영상과 소리는 화면 쪽이 이 자리에 놓는 유튜브의 플레이어가 낸다.
             ui.f.player(rect.x, rect.y, rect.w, rect.h);
         }
     }
 
-    /// 지금 곡의 제목, 단추들, 진행 막대와 소리 막대
-    fn draw_info(&self, ui: &mut Ui<Action>, rect: Rect) -> (Rect, Rect) {
-        let theme = ui.theme;
-        let track = self.current();
-        let title = track.map_or("고른 곡이 없습니다", |t| self.title(t));
-        let trouble = track.and_then(|t| self.broken.get(&t.id)).copied();
-        let artist = match (trouble, track) {
-            (Some(reason), _) => reason,
-            (None, Some(t)) => self.artist(t),
-            (None, None) => "",
-        };
-        ui.label(rect.x, rect.y + 12.0, 15.0, theme.text, Style::BOLD, rect.w, title);
-        ui.label(rect.x, rect.y + 34.0, 12.5, if trouble.is_some() { theme.danger } else { theme.muted }, Style::PLAIN, rect.w, artist);
-
-        // 진행 막대와 시간
-        let bar_y = rect.y + 58.0;
-        let times = format!("{} / {}", clock(self.position), if self.duration > 0.0 { clock(self.duration) } else { "-:--".into() });
-        let times_w = ui.width(&times, 11.5, Style::MONO);
-        let seek = Rect::new(rect.x, bar_y - 8.0, (rect.w - times_w - 12.0).max(40.0), 16.0);
-        let done = if self.duration > 0.0 { (self.position / self.duration).clamp(0.0, 1.0) } else { 0.0 };
-        self.slider(ui, seek, done, "재생 위치", Action::Seek);
-        ui.f.styled(rect.right(), bar_y, 11.5, theme.muted, Align::Right, Style::MONO, &times);
-
-        // 단추들
-        let y = rect.y + 76.0;
-        let playing = matches!(self.state, PlayerState::Playing | PlayerState::Buffering) && self.playing.is_some();
-        let mut x = rect.x;
-        for (name, action, pressed) in [
-            ("이전 곡", Action::Previous, false),
-            (if playing { "일시정지" } else { "재생" }, Action::Toggle, false),
-            ("다음 곡", Action::Next, false),
-            ("섞기", Action::Shuffle, self.shuffle),
-            (
-                match self.repeat {
-                    Repeat::Off => "반복",
-                    Repeat::All => "반복: 목록 전체",
-                    Repeat::One => "반복: 한 곡",
-                },
-                Action::Repeat,
-                self.repeat != Repeat::Off,
-            ),
-        ] {
-            let button = Rect::new(x, y, 34.0, 30.0);
-            let hot = ui.hot(button);
-            if pressed {
-                ui.f.rect(button.x, button.y, button.w, button.h, RADIUS, theme.accent_soft);
-            } else if hot {
-                ui.f.rect(button.x, button.y, button.w, button.h, RADIUS, theme.hover);
-            }
-            ui.f.frame(button.x, button.y, button.w, button.h, RADIUS, if hot { theme.line_strong } else { theme.line }, 1.0);
-            let ink = if pressed { theme.accent } else { theme.text };
-            let (cx, cy) = (button.x + 17.0, button.mid_y());
-            match &action {
-                Action::Previous => {
-                    ui.f.line(&[(cx - 6.0, cy - 6.0), (cx - 6.0, cy + 6.0)], ink, 1.6);
-                    ui.f.line(&[(cx + 6.0, cy - 6.0), (cx - 3.0, cy), (cx + 6.0, cy + 6.0), (cx + 6.0, cy - 6.0)], ink, 1.6);
-                }
-                Action::Next => {
-                    ui.f.line(&[(cx + 6.0, cy - 6.0), (cx + 6.0, cy + 6.0)], ink, 1.6);
-                    ui.f.line(&[(cx - 6.0, cy - 6.0), (cx + 3.0, cy), (cx - 6.0, cy + 6.0), (cx - 6.0, cy - 6.0)], ink, 1.6);
-                }
-                Action::Toggle if playing => {
-                    ui.f.rect(cx - 5.5, cy - 6.5, 4.0, 13.0, 1.0, ink);
-                    ui.f.rect(cx + 1.5, cy - 6.5, 4.0, 13.0, 1.0, ink);
-                }
-                Action::Toggle => ui.f.line(&[(cx - 4.5, cy - 7.0), (cx + 6.5, cy), (cx - 4.5, cy + 7.0), (cx - 4.5, cy - 7.0)], ink, 1.6),
-                Action::Shuffle => {
-                    // 엇갈리는 두 줄
-                    ui.f.line(&[(cx - 7.0, cy - 4.0), (cx - 3.0, cy - 4.0), (cx + 3.0, cy + 4.0), (cx + 7.0, cy + 4.0)], ink, 1.5);
-                    ui.f.line(&[(cx - 7.0, cy + 4.0), (cx - 3.0, cy + 4.0), (cx + 3.0, cy - 4.0), (cx + 7.0, cy - 4.0)], ink, 1.5);
-                }
-                _ => {
-                    // 돌아오는 고리. 한 곡 반복이면 가운데에 1을 적는다.
-                    ui.f.line(&[(cx + 4.0, cy - 5.0), (cx - 4.0, cy - 5.0), (cx - 7.0, cy - 2.0), (cx - 7.0, cy + 2.0), (cx - 4.0, cy + 5.0), (cx + 4.0, cy + 5.0), (cx + 7.0, cy + 2.0), (cx + 7.0, cy - 1.0)], ink, 1.5);
-                    ui.f.line(&[(cx + 4.5, cy - 2.5), (cx + 7.0, cy - 0.5), (cx + 9.5, cy - 2.5)], ink, 1.5);
-                    if self.repeat == Repeat::One {
-                        ui.f.styled(cx, cy + 0.5, 9.0, ink, Align::Center, Style::BOLD, "1");
-                    }
-                }
-            }
-            ui.target(button, Role::Button, pressed, name, action);
-            x += 38.0;
-        }
-
-        // 소리 크기
-        let volume = Rect::new(x + 14.0, y + 7.0, (rect.right() - x - 14.0).clamp(40.0, 110.0), 16.0);
-        self.slider(ui, volume, self.volume / 100.0, "소리 크기", Action::Volume);
-
-        // 좁은 화면에서는 왼쪽의 목록이 없으므로, 목록을 고르는 단추를 둔다.
-        if self.narrow() {
-            let name = self.lists.get(self.shown).map_or("목록", |l| l.name.as_str());
-            let label = ui.fit(name, 12.0, Style::PLAIN, rect.w - 40.0);
-            ui.tool(rect.x, rect.bottom() - TOOL_H, &format!("{label} ▾"), Tool::Plain, false, Some(Action::ListMenu));
-        }
-        (seek, volume)
-    }
-
-    /// 누르거나 끌어서 값을 정하는 가로 막대
-    fn slider(&self, ui: &mut Ui<Action>, rect: Rect, fraction: f32, name: &str, action: Action) {
-        let theme = ui.theme;
-        let mid = rect.mid_y();
-        ui.f.rect(rect.x, mid - 2.0, rect.w, 4.0, 2.0, theme.line_strong);
-        ui.f.rect(rect.x, mid - 2.0, rect.w * fraction, 4.0, 2.0, theme.accent);
-        if ui.hot(rect) || self.dragging.as_ref() == Some(&action) {
-            ui.f.circle(rect.x + rect.w * fraction, mid, 5.5, theme.accent);
-        }
-        ui.target(rect, Role::Button, false, &format!("{name} {}%", (fraction * 100.0).round()), action);
-    }
-
     /// 펼쳐 둔 목록의 곡들
-    fn draw_tracks(&self, ui: &mut Ui<Action>, area: Rect) {
+    fn draw_tracks(&self, ui: &mut Ui<Action>, area: Rect, pad: f32) {
         let theme = ui.theme;
         let Some(list) = self.lists.get(self.shown) else {
             ui.f.styled(area.x + area.w / 2.0, area.y + 40.0, 13.0, theme.muted, Align::Center, Style::PLAIN, "틀 곡이 없습니다. 목록 파일에 유튜브 주소를 적어 주세요.");
@@ -554,31 +529,41 @@ impl App {
         let scroll = self.scroll.min((self.list_height() - area.h).max(0.0));
         ui.clip(area);
         for (i, track) in list.tracks.iter().enumerate() {
-            let rect = Rect::new(area.x + 6.0, area.y + 6.0 + i as f32 * ROW - scroll, area.w - 12.0, ROW);
+            let rect = Rect::new(area.x + pad - 6.0, area.y + 4.0 + i as f32 * TRACK_ROW - scroll, area.w - pad * 2.0 + 12.0, TRACK_ROW - 2.0);
             if rect.bottom() < area.y || rect.y > area.bottom() {
                 continue;
             }
             let current = self.playing == Some((self.shown, i));
+            let hot = ui.hot(rect);
             if current {
                 ui.f.rect(rect.x, rect.y, rect.w, rect.h, RADIUS, theme.accent_soft);
-            } else if ui.hot(rect) {
+            } else if hot {
                 ui.f.rect(rect.x, rect.y, rect.w, rect.h, RADIUS, theme.hover);
             }
             let broken = self.broken.contains_key(&track.id);
             let ink = if broken { theme.muted } else if current { theme.accent } else { theme.text };
-            // 틀고 있는 곡은 번호 대신 재생 표시
+            let (cx, cy) = (rect.x + 16.0, rect.mid_y());
             if current && matches!(self.state, PlayerState::Playing | PlayerState::Buffering) {
-                let (cx, cy) = (rect.x + 18.0, rect.mid_y());
-                ui.f.line(&[(cx - 3.5, cy - 5.0), (cx + 4.5, cy), (cx - 3.5, cy + 5.0), (cx - 3.5, cy - 5.0)], theme.accent, 1.5);
+                // 틀고 있는 곡: 소리 막대 세 개
+                for (k, height) in [9.0f32, 14.0, 6.0].into_iter().enumerate() {
+                    ui.f.rect(cx - 6.0 + k as f32 * 4.5, cy + 7.0 - height, 3.0, height, 1.0, theme.accent);
+                }
+            } else if hot && !broken {
+                // 포인터를 올린 줄: 누르면 튼다는 표시
+                ui.f.polygon(&[(cx - 4.0, cy - 5.5), (cx + 5.0, cy), (cx - 4.0, cy + 5.5)], theme.text);
             } else {
-                ui.f.styled(rect.x + 24.0, rect.mid_y(), 11.5, theme.muted, Align::Right, Style::MONO, &(i + 1).to_string());
+                ui.f.styled(cx + 5.0, cy, 12.0, if current { theme.accent } else { theme.muted }, Align::Right, Style::MONO, &(i + 1).to_string());
             }
+            self.cover(ui, Rect::new(rect.x + 36.0, rect.y + 7.0, 53.0, 30.0), Some(&track.id));
+            let length = self.lengths.get(&track.id).map_or(String::new(), |seconds| clock(*seconds));
+            let length_w = ui.width("0:00:00", 11.5, Style::MONO);
+            ui.f.styled(rect.right() - 12.0, cy, 11.5, theme.muted, Align::Right, Style::MONO, &length);
             let (title, artist) = (self.title(track), self.artist(track));
-            let artist_room = (rect.w * 0.34).min(220.0);
+            let room = rect.w - 100.0 - length_w - 24.0;
             let style = Style { strike: broken, ..Style::PLAIN };
-            ui.label(rect.x + 36.0, rect.mid_y(), 13.0, ink, style, rect.w - 56.0 - artist_room, title);
-            let fitted = ui.fit(artist, 12.0, Style::PLAIN, artist_room);
-            ui.f.styled(rect.right() - 10.0, rect.mid_y(), 12.0, theme.muted, Align::Right, Style::PLAIN, &fitted);
+            ui.label(rect.x + 100.0, cy - 8.5, 13.0, ink, style, room, title);
+            let note = self.broken.get(&track.id).copied().unwrap_or(artist);
+            ui.label(rect.x + 100.0, cy + 9.0, 11.5, theme.muted, Style::PLAIN, room, note);
             ui.target(rect, Role::Option, current, title, Action::Play(self.shown, i));
         }
         let total = self.list_height();
@@ -588,6 +573,129 @@ impl App {
             ui.f.rect(area.right() - 5.0, top, 3.0, thumb, 1.5, theme.line_strong);
         }
         ui.unclip();
+    }
+
+    /// 테두리 없는 둥근 단추의 바탕과 자리 알림. 그림을 그릴 가운데 자리와 색을 돌려준다.
+    fn glyph(&self, ui: &mut Ui<Action>, cx: f32, cy: f32, name: &str, pressed: bool, action: Action) -> Color {
+        let theme = ui.theme;
+        let rect = Rect::new(cx - 16.0, cy - 16.0, 32.0, 32.0);
+        if ui.hot(rect) {
+            ui.f.circle(cx, cy, 16.0, theme.hover);
+        }
+        if pressed {
+            // 켜져 있는 것(섞기, 반복)은 강조색과 아래의 점으로 알린다.
+            ui.f.circle(cx, cy + 13.0, 1.6, theme.accent);
+        }
+        ui.target(rect, Role::Button, pressed, name, action);
+        if pressed { theme.accent } else { theme.text }
+    }
+
+    /// 아래의 재생 막대: 지금 곡, 재생 단추들과 진행 막대, 소리. (진행 막대, 소리 막대)의 자리를 돌려준다.
+    fn draw_bar(&self, ui: &mut Ui<Action>, bar: Rect) -> (Rect, Rect) {
+        let theme = ui.theme;
+        let narrow = self.narrow();
+        ui.f.rect(bar.x, bar.y, bar.w, bar.h, 0.0, theme.surface2);
+        ui.hline(bar.x, bar.y, bar.w);
+        let track = self.current();
+        let playing = matches!(self.state, PlayerState::Playing | PlayerState::Buffering) && self.playing.is_some();
+        let done = if self.duration > 0.0 { (self.position / self.duration).clamp(0.0, 1.0) } else { 0.0 };
+        let mid = bar.mid_y();
+
+        // 왼쪽: 지금 곡
+        let left_w = if narrow { bar.w - 116.0 } else { (bar.w * 0.28).clamp(170.0, 300.0) };
+        let cover = if narrow { Rect::new(bar.x + 12.0, mid - 16.0, 57.0, 32.0) } else { Rect::new(bar.x + 16.0, mid - 20.0, 71.0, 40.0) };
+        self.cover(ui, cover, track.map(|t| t.id.as_str()));
+        let text_x = cover.right() + 12.0;
+        let text_w = bar.x + left_w - text_x;
+        let title = track.map_or("고른 곡이 없습니다", |t| self.title(t));
+        let trouble = track.and_then(|t| self.broken.get(&t.id)).copied();
+        let artist = trouble.or(track.map(|t| self.artist(t))).unwrap_or("");
+        ui.label(text_x, mid - 8.5, 13.0, theme.text, Style::BOLD, text_w, title);
+        ui.label(text_x, mid + 9.5, 11.5, if trouble.is_some() { theme.danger } else { theme.muted }, Style::PLAIN, text_w, artist);
+
+        // 가운데의 큰 재생 단추: 채운 동그라미
+        let toggle = |ui: &mut Ui<Action>, cx: f32, cy: f32| {
+            let rect = Rect::new(cx - 18.0, cy - 18.0, 36.0, 36.0);
+            ui.f.circle(cx, cy, if ui.hot(rect) { 18.0 } else { 17.0 }, theme.text);
+            if playing {
+                ui.f.rect(cx - 5.5, cy - 6.0, 4.0, 12.0, 1.0, theme.surface);
+                ui.f.rect(cx + 1.5, cy - 6.0, 4.0, 12.0, 1.0, theme.surface);
+            } else {
+                ui.f.polygon(&[(cx - 4.0, cy - 6.5), (cx + 6.5, cy), (cx - 4.0, cy + 6.5)], theme.surface);
+            }
+            ui.target(rect, Role::Button, false, if playing { "일시정지" } else { "재생" }, Action::Toggle);
+        };
+        let skip = |ui: &mut Ui<Action>, cx: f32, cy: f32, forward: bool, ink: Color| {
+            let d = if forward { 1.0 } else { -1.0 };
+            ui.f.polygon(&[(cx - 5.0 * d, cy - 6.0), (cx + 3.5 * d, cy), (cx - 5.0 * d, cy + 6.0)], ink);
+            ui.f.rect(cx + 3.5 * d - if forward { 0.0 } else { 2.0 }, cy - 6.0, 2.0, 12.0, 0.5, ink);
+        };
+
+        if narrow {
+            // 좁은 화면: 진행은 막대 맨 위의 가는 줄로, 단추는 재생과 다음만.
+            let seek = Rect::new(bar.x, bar.y - 5.0, bar.w, 12.0);
+            ui.f.rect(bar.x, bar.y, bar.w * done, 2.5, 0.0, theme.accent);
+            ui.target(seek, Role::Button, false, &format!("재생 위치 {}%", (done * 100.0).round()), Action::Seek);
+            toggle(ui, bar.right() - 76.0, mid);
+            let ink = self.glyph(ui, bar.right() - 30.0, mid, "다음 곡", false, Action::Next);
+            skip(ui, bar.right() - 30.0, mid, true, ink);
+            return (seek, Rect::new(0.0, 0.0, 0.0, 0.0));
+        }
+
+        // 가운데: 단추들과 그 아래의 진행 막대
+        let cx = bar.x + bar.w / 2.0;
+        let cy = bar.y + 26.0;
+        let ink = self.glyph(ui, cx - 96.0, cy, "섞기", self.shuffle, Action::Shuffle);
+        ui.f.line(&[(cx - 103.0, cy - 4.0), (cx - 99.0, cy - 4.0), (cx - 93.0, cy + 4.0), (cx - 89.0, cy + 4.0)], ink, 1.5);
+        ui.f.line(&[(cx - 103.0, cy + 4.0), (cx - 99.0, cy + 4.0), (cx - 93.0, cy - 4.0), (cx - 89.0, cy - 4.0)], ink, 1.5);
+        let ink = self.glyph(ui, cx - 50.0, cy, "이전 곡", false, Action::Previous);
+        skip(ui, cx - 50.0, cy, false, ink);
+        toggle(ui, cx, cy);
+        let ink = self.glyph(ui, cx + 50.0, cy, "다음 곡", false, Action::Next);
+        skip(ui, cx + 50.0, cy, true, ink);
+        let repeat = match self.repeat {
+            Repeat::Off => "반복",
+            Repeat::All => "반복: 목록 전체",
+            Repeat::One => "반복: 한 곡",
+        };
+        let rx = cx + 96.0;
+        let ink = self.glyph(ui, rx, cy, repeat, self.repeat != Repeat::Off, Action::Repeat);
+        // 돌아오는 고리. 한 곡 반복이면 가운데에 1을 적는다.
+        ui.f.line(&[(rx + 4.0, cy - 5.0), (rx - 4.0, cy - 5.0), (rx - 7.0, cy - 2.0), (rx - 7.0, cy + 2.0), (rx - 4.0, cy + 5.0), (rx + 4.0, cy + 5.0), (rx + 7.0, cy + 2.0), (rx + 7.0, cy - 1.0)], ink, 1.5);
+        ui.f.line(&[(rx + 4.5, cy - 2.5), (rx + 7.0, cy - 0.5), (rx + 9.5, cy - 2.5)], ink, 1.5);
+        if self.repeat == Repeat::One {
+            ui.f.styled(rx, cy + 0.5, 8.5, ink, Align::Center, Style::BOLD, "1");
+        }
+
+        let seek_w = (bar.w * 0.36).clamp(150.0, 480.0);
+        let seek = Rect::new(cx - seek_w / 2.0, bar.y + 51.0, seek_w, 16.0);
+        self.slider(ui, seek, done, "재생 위치", Action::Seek);
+        ui.f.styled(seek.x - 10.0, seek.mid_y(), 11.0, theme.muted, Align::Right, Style::MONO, &clock(self.position));
+        let length = if self.duration > 0.0 { clock(self.duration) } else { "-:--".into() };
+        ui.text(seek.right() + 10.0, seek.mid_y(), 11.0, theme.muted, Style::MONO, &length);
+
+        // 오른쪽: 소리
+        let volume = Rect::new(bar.right() - 124.0, mid - 8.0, 104.0, 16.0);
+        let (sx, sy) = (volume.x - 20.0, mid);
+        ui.f.polygon(&[(sx - 6.0, sy - 2.5), (sx - 3.0, sy - 2.5), (sx + 1.0, sy - 6.0), (sx + 1.0, sy + 6.0), (sx - 3.0, sy + 2.5), (sx - 6.0, sy + 2.5)], theme.muted);
+        if self.volume > 0.0 {
+            ui.f.line(&[(sx + 4.0, sy - 3.0), (sx + 5.5, sy), (sx + 4.0, sy + 3.0)], theme.muted, 1.3);
+        }
+        self.slider(ui, volume, self.volume / 100.0, "소리 크기", Action::Volume);
+        (seek, volume)
+    }
+
+    /// 누르거나 끌어서 값을 정하는 가로 막대
+    fn slider(&self, ui: &mut Ui<Action>, rect: Rect, fraction: f32, name: &str, action: Action) {
+        let theme = ui.theme;
+        let mid = rect.mid_y();
+        let active = ui.hot(rect) || self.dragging.as_ref() == Some(&action);
+        ui.f.rect(rect.x, mid - 2.0, rect.w, 4.0, 2.0, theme.line_strong);
+        ui.f.rect(rect.x, mid - 2.0, rect.w * fraction, 4.0, 2.0, if active { theme.accent } else { theme.text });
+        if active {
+            ui.f.circle(rect.x + rect.w * fraction, mid, 5.5, theme.text);
+        }
+        ui.target(rect, Role::Button, false, &format!("{name} {}%", (fraction * 100.0).round()), action);
     }
 
     // ───────────── 입력 ─────────────
@@ -649,6 +757,14 @@ impl App {
                 self.dragging = Some(action);
             }
             Action::OpenOnYouTube => self.opening = self.current().map(|track| format!("https://www.youtube.com/watch?v={}", track.id)),
+            Action::PlayList => {
+                let count = self.lists.get(self.shown).map_or(0, |l| l.tracks.len());
+                if count > 0 {
+                    self.failures = 0;
+                    let first = if self.shuffle { self.random(count) } else { 0 };
+                    self.play((self.shown, first), true);
+                }
+            }
             Action::ListMenu => self.menu = Some((at, self.lists.iter().map(|list| MenuItem::new(&list.name)).collect())),
         }
     }
@@ -694,6 +810,10 @@ impl App {
                 }
                 if duration > 0.0 {
                     self.duration = duration;
+                    // 틀어 봐야 길이를 안다. 알게 된 길이는 목록에 보여 준다.
+                    if let Some(id) = self.current().map(|t| t.id.clone()) {
+                        self.lengths.insert(id, duration);
+                    }
                 }
                 if state == PlayerState::Playing {
                     self.failures = 0;
@@ -742,7 +862,7 @@ impl App {
 
 fn main() {
     webos::init();
-    let (w, h) = (860, 520);
+    let (w, h) = (980, 620);
     let window = match Window::open("음악", w, h) {
         Ok(window) => window,
         Err(e) => {
@@ -772,6 +892,8 @@ fn main() {
         broken: HashMap::new(),
         failures: 0,
         meta: HashMap::new(),
+        thumbs: HashMap::new(),
+        lengths: HashMap::new(),
         history: Vec::new(),
         seed,
         commands: Vec::new(),
@@ -800,15 +922,21 @@ fn main() {
     let _ = app.window.present(&frame);
     loop {
         // 제목을 모르는 곡이 있으면, 입력이 없는 틈에 하나씩 유튜브에 묻는다.
-        let pending = app.unknown();
-        let event = if pending.is_some() { app.window.next_event_within(40) } else { app.window.next_event() };
-        let mut redraw = match (event, pending) {
-            (Some(event), _) => app.handle(event),
-            (None, Some(id)) => {
+        // 곡의 그림도 같은 틈에 하나씩 받아 온다.
+        let (pending, uncovered) = (app.unknown(), app.uncovered());
+        let waiting = pending.is_some() || uncovered.is_some();
+        let event = if waiting { app.window.next_event_within(40) } else { app.window.next_event() };
+        let mut redraw = match (event, pending, uncovered) {
+            (Some(event), ..) => app.handle(event),
+            (None, Some(id), _) => {
                 app.fetch_meta(&id);
                 true
             }
-            (None, None) => break,
+            (None, None, Some(id)) => {
+                app.fetch_cover(&id);
+                true
+            }
+            (None, None, None) => break,
         };
         while let Some(event) = app.window.poll_event() {
             redraw |= app.handle(event);

@@ -48,6 +48,7 @@ test.beforeEach(async ({ page }) => {
   await page.context().route('https://www.youtube.com/embed/**', (route) => route.fulfill({ contentType: 'text/html', body: FAKE_PLAYER }))
   // 제목을 묻는 요청에는 모른다고 답한다 (이 검사의 목록에는 제목이 적혀 있다).
   await page.context().route('https://www.youtube.com/oembed**', (route) => route.fulfill({ status: 404, body: 'Not Found' }))
+  await page.context().route('https://i.ytimg.com/**', (route) => route.fulfill({ status: 404, body: 'Not Found' }))
   await boot(page)
   await typeIn(page, term(page), 'mkdir music; echo "# 내 목록" > music/mine.txt; echo "first000001 | 하나 | 가" >> music/mine.txt; echo "blocked0002 | 막힌 곡 | 나" >> music/mine.txt; echo "third000003 | 셋 | 다" >> music/mine.txt')
   await expectScreen(page, term(page)).toMatch(/\$$/)

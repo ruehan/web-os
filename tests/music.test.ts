@@ -3,7 +3,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { KernelEvent } from '../src/kernel/abi.ts'
 import { GuiEvent, PLAYER_UNSUPPORTED, PlayerCommand, PlayerState, decodeDrawList, encodeEvent, encodePointer, keyCode, type DrawOp } from '../src/kernel/gui.ts'
-import { boot } from './host.ts'
+import { PAGES, boot } from './host.ts'
 
 type Host = ReturnType<typeof boot>
 let host: Host
@@ -62,8 +62,9 @@ describe('music', () => {
   it('shows the playlists from the library file and asks for nothing until a song is picked', async () => {
     write(LIBRARY, THREE)
     const app = await openMusic()
-    expect(all('gui-open', app.pid)[0]).toMatchObject({ title: '음악', w: 860, h: 520 })
-    expect(app.labels('option')).toEqual(['첫 목록', '둘째 목록', '하나', '둘', '셋'])
+    expect(all('gui-open', app.pid)[0]).toMatchObject({ title: '음악', w: 980, h: 620 })
+    // 가운데에 고른 목록의 곡들, 왼쪽에 보관함의 목록들
+    expect(app.labels('option')).toEqual(['하나', '둘', '셋', '첫 목록', '둘째 목록'])
     expect(app.texts()).toEqual(expect.arrayContaining(['고른 곡이 없습니다', '곡을 고르면 여기서 재생됩니다.', '가', '나', '다']))
     // 아직 플레이어를 놓지 않았고, 시킨 일도 없다.
     expect(app.player()).toBeUndefined()
@@ -89,7 +90,9 @@ describe('music', () => {
 
     // 플레이어가 알려 온 상태대로 단추와 시간이 바뀐다.
     app.report(PlayerState.playing, 65, 187)
-    await app.until(() => app.texts().includes('1:05 / 3:07'), 'the time')
+    await app.until(() => app.texts().includes('1:05') && app.texts().includes('3:07'), 'the time')
+    // 틀어 봐서 알게 된 길이는 목록의 그 곡에도 나온다.
+    expect(app.texts().filter((t) => t === '3:07')).toHaveLength(2)
     expect(app.region('일시정지')).toBeDefined()
     app.press('일시정지')
     await app.until(() => app.region('재생'), 'the play button')
@@ -142,7 +145,7 @@ describe('music', () => {
     await app.until(() => app.loaded().at(-1) === 'aaaaaaaaaa2', 'next')
     // 이전 곡: 조금 들었으면 그 곡의 처음으로, 아니면 앞 곡으로.
     app.report(PlayerState.playing, 30)
-    await app.until(() => app.texts().some((t) => t.startsWith('0:30')), 'the position')
+    await app.until(() => app.texts().includes('0:30'), 'the position')
     app.press('이전 곡')
     await app.until(() => app.commands().at(-1)?.command === PlayerCommand.seek, 'back to the start of the song')
     expect(app.commands().at(-1)).toMatchObject({ value: 0 })
@@ -172,7 +175,7 @@ describe('music', () => {
     expect(app.commands().at(-1)!.value).toBeCloseTo(100, 0)
     // 누른 채 끌면 따라간다. 떼면 끝난다.
     app.pointer(GuiEvent.pointerMove, bar.x + bar.w, bar.y + 8)
-    await app.until(() => app.commands().at(-1)?.value === 200, 'the end of the song')
+    await app.until(() => Math.abs((app.commands().at(-1)?.value ?? 0) - 200) < 1, 'the end of the song')
     app.pointer(GuiEvent.pointerUp, bar.x + bar.w, bar.y + 8)
 
     const volume = app.region('소리 크기 80%')!
@@ -219,7 +222,7 @@ describe('music', () => {
     const app = await openMusic()
     // 받아 오기 전에는 영상의 번호가 보이고, 입력이 없는 틈에 하나씩 받아 온다.
     await app.until(() => app.labels('option').includes('Second "Song"'), 'the titles')
-    expect(app.labels('option')).toEqual(['주소만', '첫 곡', 'Second "Song"', 'gone0000000'])
+    expect(app.labels('option')).toEqual(['첫 곡', 'Second "Song"', 'gone0000000', '주소만'])
     expect(app.texts()).toEqual(expect.arrayContaining(['가수 A', 'Singer B']))
     // 받은 제목은 적어 두어서, 다음에는 묻지 않는다.
     const saved = new TextDecoder().decode(host.kernel.fs.readFile('/home/guest/.cache/music/titles'))
@@ -228,7 +231,7 @@ describe('music', () => {
     const again = await openMusic()
     await again.until(() => again.labels('option').includes('첫 곡'), 'the saved titles')
     await new Promise((r) => setTimeout(r, 200))
-    const fetched = host.events.flatMap((e) => (e.type === 'trace' ? e.records : [])).filter((r) => r.pid === again.pid && r.call === 'fetch')
+    const fetched = host.events.flatMap((e) => (e.type === 'trace' ? e.records : [])).filter((r) => r.pid === again.pid && r.call === 'fetch' && r.args.includes('oembed'))
     // 받아 오지 못했던 것(없는 영상)만 다시 물어본다.
     expect(fetched.map((r) => r.args)).toEqual(['"https://www.youtube.com/oembed?format=json&url=https://www.youtube.com/watch?v=gone0000000"'])
   })
@@ -237,7 +240,7 @@ describe('music', () => {
     write(LIBRARY, THREE)
     write('/home/guest/music/내 목록.txt', '# 내가 고른 것\ncccccccccc1 | 다섯 | 마\n')
     const app = await openMusic()
-    expect(app.labels('option').slice(0, 3)).toEqual(['첫 목록', '둘째 목록', '내가 고른 것'])
+    expect(app.labels('option').slice(-3)).toEqual(['첫 목록', '둘째 목록', '내가 고른 것'])
     app.press('내가 고른 것')
     app.press('섞기')
     app.press('반복')
@@ -251,14 +254,35 @@ describe('music', () => {
     expect(again.labels('option')).toContain('다섯')
   })
 
+  it('plays a whole list from its big button, and shows covers once they are fetched', async () => {
+    write(LIBRARY, THREE)
+    // 유튜브의 작은 그림: 테스트의 네트워크는 첫 곡의 것만 내준다.
+    PAGES['https://i.ytimg.com/vi/aaaaaaaaaa1/mqdefault.jpg'] = { status: 200, headers: 'content-type: image/jpeg', body: '320x180' }
+    const app = await openMusic()
+    const covers = () => app.latest().filter((op) => op.op === 'image').map((op) => (op as { path: string }).path)
+    // 받아 오면 파일로 적어 두고, 곡의 줄과 보관함의 목록(첫 곡의 그림)에 그린다.
+    await app.until(() => covers().length === 2, 'the cover in the row and in the library')
+    expect(new Set(covers())).toEqual(new Set(['/home/guest/.cache/music/covers/aaaaaaaaaa1.jpg']))
+    expect(new TextDecoder().decode(host.kernel.fs.readFile('/home/guest/.cache/music/covers/aaaaaaaaaa1.jpg'))).toBe('320x180')
+
+    app.press('이 목록 재생')
+    await app.until(() => app.loaded().join() === 'aaaaaaaaaa1', 'the first song of the list')
+    // 아래의 재생 막대에도 지금 곡의 그림과 제목이 나온다.
+    await app.until(() => covers().length === 3, 'the cover in the bar')
+    expect(app.texts().filter((t) => t === '하나')).toHaveLength(2)
+    delete PAGES['https://i.ytimg.com/vi/aaaaaaaaaa1/mqdefault.jpg']
+  })
+
   it('stacks the player above the list on a narrow screen', async () => {
     write(LIBRARY, THREE)
     const app = await openMusic()
     app.send(GuiEvent.resize, 390, 700, 0)
     app.press('하나')
     await app.until(() => app.player()?.w === 390 - 24, 'the player across the width')
-    // 왼쪽의 목록 대신, 목록을 고르는 단추가 있다.
+    // 왼쪽의 보관함 대신 목록을 고르는 단추가 있고, 아래의 막대에는 재생과 다음만 남는다.
     expect(app.labels('option')).toEqual(['하나', '둘', '셋'])
+    expect(app.region('다음 곡')).toBeDefined()
+    expect(app.region('섞기')).toBeUndefined()
     app.press('첫 목록 ▾')
     await app.until(() => app.latest().some((op) => op.op === 'menu'), 'the menu of lists')
     app.send(GuiEvent.menu, 1)

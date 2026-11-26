@@ -213,6 +213,16 @@ impl Frame {
         }
     }
 
+    /// 점들을 이은 안쪽을 채운 도형
+    pub fn polygon(&mut self, points: &[(f32, f32)], color: Color) {
+        self.op(22);
+        self.u(color.0);
+        self.u(points.len() as u32);
+        for &(x, y) in points {
+            self.f(&[x, y]);
+        }
+    }
+
     pub fn circle(&mut self, x: f32, y: f32, r: f32, color: Color) {
         self.op(5);
         self.f(&[x, y, r]);
