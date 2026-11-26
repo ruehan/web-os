@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["webos", "sh", "coreutils", "hello", "fsdemo", "spin", "exitcode", "paint", "notepad", "files"]
+members = ["webos", "sh", "coreutils", "hello", "fsdemo", "spin", "exitcode", "paint", "notepad", "files", "music"]
 
 [workspace.package]
 version = "0.1.0"

@@ -298,6 +298,43 @@ impl Frame {
         self.s(path);
     }
 
+    /// 이 자리에 바깥 사이트의 영상 플레이어(유튜브의 공식 플레이어)를 놓는다. 입력 칸처럼, 묶음에 들어 있는 동안만 있다.
+    /// 무엇을 틀지는 `player_load` 등으로 시킨다. 상태는 `Event::Player`로 온다.
+    pub fn player(&mut self, x: f32, y: f32, w: f32, h: f32) {
+        self.op(20);
+        self.f(&[x, y, w, h]);
+    }
+
+    fn player_command(&mut self, command: u8, value: f32, id: &str) {
+        self.op(21);
+        self.buf.push(command);
+        self.f(&[value]);
+        self.s(id);
+    }
+
+    /// 플레이어에 영상을 불러온다 (`id`는 영상의 번호). `autoplay`면 바로 튼다. 시킬 때의 묶음 하나에만 넣는다.
+    pub fn player_load(&mut self, id: &str, autoplay: bool) {
+        self.player_command(1, autoplay as u8 as f32, id);
+    }
+
+    pub fn player_play(&mut self) {
+        self.player_command(2, 0.0, "");
+    }
+
+    pub fn player_pause(&mut self) {
+        self.player_command(3, 0.0, "");
+    }
+
+    /// 재생 위치를 `seconds`초로 옮긴다.
+    pub fn player_seek(&mut self, seconds: f32) {
+        self.player_command(4, seconds, "");
+    }
+
+    /// 소리 크기 (0~100)
+    pub fn player_volume(&mut self, volume: f32) {
+        self.player_command(5, volume, "");
+    }
+
     /// 이 뒤에 그리는 것은 입력 칸보다 위에 온다 (입력 칸을 덮는 창 등).
     /// 이 뒤에 놓는 입력 칸은 그 위층보다도 위에 온다.
     pub fn overlay(&mut self) {
@@ -420,6 +457,27 @@ pub enum Event {
     /// 사용자가 파일을 건넸다 (고른 것, 창에 끌어다 놓은 것, 붙여 넣은 것). `handoff_dir()`에 놓여 있고,
     /// 가져간 뒤 지워야 한다. `refused`는 너무 커서 받지 않은 파일의 수다.
     Files { count: usize, refused: usize },
+    /// 바깥 플레이어의 상태가 바뀌었거나 재생 위치가 나아갔다. `position`과 `duration`은 초.
+    Player { state: PlayerState, position: f32, duration: f32 },
+    /// 바깥 플레이어가 영상을 틀지 못했다 (유튜브의 오류 코드: 100 없는 영상, 101·150 퍼가기 금지 등. `PLAYER_UNSUPPORTED`면 이 브라우저에서는 플레이어를 놓을 수 없다).
+    PlayerError(i32),
+}
+
+/// `Event::PlayerError`의 코드: 이 브라우저에서는 플레이어를 놓을 수 없다.
+pub const PLAYER_UNSUPPORTED: i32 = 9999;
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PlayerState {
+    /// 아직 틀지 않았다
+    Unstarted,
+    /// 끝까지 틀었다
+    Ended,
+    Playing,
+    Paused,
+    /// 받아 오는 중
+    Buffering,
+    /// 불러와 두었다 (틀라고 하면 튼다)
+    Cued,
 }
 
 /// 사용자가 건넨 파일들이 놓이는 폴더. 파일 이름은 "순번-원래 이름"이다.
@@ -460,6 +518,19 @@ fn decode(raw: [i32; 4]) -> Option<Event> {
         10 => Event::FieldFocus { field: a as u32, on: b != 0 },
         11 => Event::Menu(usize::try_from(a).ok()),
         12 => Event::PointerLeave,
+        16 => Event::Player {
+            state: match a {
+                0 => PlayerState::Ended,
+                1 => PlayerState::Playing,
+                2 => PlayerState::Paused,
+                3 => PlayerState::Buffering,
+                5 => PlayerState::Cued,
+                _ => PlayerState::Unstarted,
+            },
+            position: b as f32 / 1000.0,
+            duration: c as f32 / 1000.0,
+        },
+        17 => Event::PlayerError(a),
         15 => Event::Files { count: a.max(0) as usize, refused: b.max(0) as usize },
         14 => Event::CaretAt { field: a as u32, x: b as f32, y: c as f32 },
         13 => Event::Caret { field: a as u32, start: b.max(0) as usize, end: c.max(0) as usize },

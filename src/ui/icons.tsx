@@ -103,6 +103,14 @@ export const PortfolioIcon = () => (
   </Icon>
 )
 
+export const MusicIcon = () => (
+  <Icon>
+    <path d="M7.5 15V5.5l8-1.5v9.5" />
+    <circle cx="5.5" cy="15" r="2" />
+    <circle cx="13.500" cy="13.500" r="2" />
+  </Icon>
+)
+
 export const TraceIcon = () => (
   <Icon>
     <path d="M3 5.5h8M3 10h5M3 14.5h8" />

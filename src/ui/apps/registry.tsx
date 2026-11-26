@@ -6,6 +6,7 @@ import {
   FolderIcon,
   GuideIcon,
   LogIcon,
+  MusicIcon,
   NoteIcon,
   PortfolioIcon,
   PaintIcon,
@@ -73,6 +74,7 @@ export const APPS: AppDef[] = [
   { id: 'portfolio', name: '포트폴리오', icon: PortfolioIcon, component: PortfolioApp, size: { w: 560, h: 620 }, single: true },
   { id: 'welcome', name: '시작하기', icon: GuideIcon, component: WelcomeApp, size: { w: 380, h: 580 }, single: true },
   { id: 'paint', name: '그림판', icon: PaintIcon, component: SurfaceApp, size: { w: 720, h: 480 }, exec: '/bin/paint' },
+  { id: 'music', name: '음악', icon: MusicIcon, component: SurfaceApp, size: { w: 860, h: 520 }, exec: '/bin/music', single: true },
   // 프로세스가 연 창은 모두 이 앱으로 뜬다. 직접 실행하는 것이 아니므로 메뉴에는 없다.
   { id: 'surface', name: '프로그램', icon: ProgramIcon, component: SurfaceApp, size: { w: 640, h: 480 }, hidden: true },
 ]

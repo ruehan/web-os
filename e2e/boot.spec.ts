@@ -79,7 +79,7 @@ test('clear wipes the screen', async ({ page }) => {
 
 test('ls colors directories on a terminal', async ({ page }) => {
   await type(page, 'ls /')
-  await expectScreen(page).toContain('ls /\nbin  etc  home  proc  tmp\n')
+  await expectScreen(page).toContain('ls /\nbin  etc  home  proc  tmp  usr\n')
   const dir = focusedWindow(page).locator('.terminal .line span', { hasText: /^bin$/ })
   await expect(dir).toHaveCSS('font-weight', '650')
 })

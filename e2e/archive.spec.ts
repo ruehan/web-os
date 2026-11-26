@@ -90,7 +90,7 @@ test('linking an empty folder exports every directory, and later changes follow'
   expect(first.files['etc/motd']).toContain('Web OS')
   expect(first.files['home/guest/README.md']).toContain('환영합니다')
   // 실행 파일까지 모두 나간다. 가상 폴더인 /proc 은 나가지 않는다.
-  expect(first.programs).toBe(32)
+  expect(first.programs).toBe(33)
   expect(Object.keys(first.files).some((path) => path.startsWith('proc/'))).toBe(false)
 
   await typeIn(page, term(page), 'echo more >> note.txt; rm /etc/custom; echo t > /tmp/scratch; grep localdir /proc/mounts')
@@ -218,7 +218,7 @@ test('refuses to load a folder over the limit, until the limit is raised', async
   await expect(settings(page).getByRole('alert')).toContainText('지금 한도는 100MB · 파일 2천 개입니다')
   // 불러오지 않았으므로 지금 내용은 그대로다.
   await typeIn(page, term(page), 'ls / | wc -l')
-  await expectScreen(page, term(page)).toContain('wc -l\n5\n')
+  await expectScreen(page, term(page)).toContain('wc -l\n6\n')
 
   await raise(page, '설정')
   await settings(page).getByRole('button', { name: '500MB · 파일 1만 개' }).click()

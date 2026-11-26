@@ -26,7 +26,7 @@ test('files survive a reload everywhere except /tmp', async ({ page }) => {
   await reload(page)
   expect(await screen(page)).toMatch(/^custom\n/)
   await type(page, 'mine | head -n 1; cat /data/x; ls /')
-  await expectScreen(page).toContain('ls /\nHello from a real WASM process!\nd\nbin  data  etc  home  proc  tmp\n')
+  await expectScreen(page).toContain('ls /\nHello from a real WASM process!\nd\nbin  data  etc  home  proc  tmp  usr\n')
 
   await launch(page, '시스템 로그')
   await expect(page.getByTestId('klog')).toContainText('storage: restored')

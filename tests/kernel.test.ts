@@ -134,12 +134,12 @@ describe('shell', () => {
 
   it('lists many entries across multiple readdir calls', async () => {
     const r = await start().sh('ls /bin | wc -l; ls /bin | head -n 2; ls /bin | tail -n 1')
-    expect(r.stdout).toBe('32\ncat\nclear\nyes\n')
+    expect(r.stdout).toBe('33\ncat\nclear\nyes\n')
   })
 
   it('runs script files, directly and via sh', async () => {
     const { sh } = start()
-    const expected = '안녕하세요, guest 님\n현재 위치: /home/guest\n32\n'
+    const expected = '안녕하세요, guest 님\n현재 위치: /home/guest\n33\n'
     expect((await sh('sh hello.sh')).stdout).toBe(expected)
     expect((await start().sh('./hello.sh')).stdout).toBe(expected)
   })
@@ -350,7 +350,7 @@ describe('file requests from the desktop', () => {
   it('lists, reads, writes, renames and removes', () => {
     const { kernel } = start()
     const names = (path: string) => kernel.fsRequest({ op: 'list', path }).entries!.map((e) => e.name)
-    expect(names('/')).toEqual(['bin', 'tmp', 'home', 'etc', 'proc'])
+    expect(names('/').sort()).toEqual(['bin', 'etc', 'home', 'proc', 'tmp', 'usr'])
     expect(kernel.fsRequest({ op: 'list', path: '/home/guest' }).entries).toContainEqual({
       name: 'hello.sh',
       dir: false,

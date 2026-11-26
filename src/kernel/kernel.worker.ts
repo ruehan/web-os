@@ -117,7 +117,8 @@ async function loadInitrd(installDefaults: boolean): Promise<Initrd> {
     kernel.fs.writeFile(path, data)
   }
   const initrd: Initrd = JSON.parse(new TextDecoder().decode(await fetchBytes('initrd.json')))
-  const files = installDefaults ? initrd.files : []
+  // 홈의 기본 파일은 처음 한 번만 깐다 (사용자가 고쳤을 수 있다). /usr 아래의 것은 시스템의 것이라 켤 때마다 새것으로 맞춘다.
+  const files = initrd.files.filter((path) => installDefaults || path.startsWith('usr/'))
   await Promise.all([
     ...initrd.bin.map(async (name) => install(`/bin/${name}`, await fetchBytes(`bin/${name}.wasm`))),
     ...files.map(async (path) => install(`/${path}`, await fetchBytes(`rootfs/${path}`))),

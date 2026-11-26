@@ -19,6 +19,14 @@ export const PAGES: Record<string, { status: number; headers: string; body: stri
   'https://example.test/hello.txt': { status: 200, headers: 'content-type: text/plain\ncontent-length: 12', body: '안녕, 네트워크\n' },
   'https://example.test/big.txt': { status: 200, headers: 'content-type: text/plain', body: 'line\n'.repeat(40_000) },
   'https://example.test/missing': { status: 404, headers: 'content-type: text/plain', body: 'not found\n' },
+  // 유튜브에 영상의 제목을 묻는 주소 (음악 앱이 쓴다)
+  'https://www.youtube.com/oembed?format=json&url=https://www.youtube.com/watch?v=song0000001': {
+    status: 200, headers: 'content-type: application/json', body: '{"title":"\\uccab \\uace1","author_name":"가수 A","type":"video"}',
+  },
+  'https://www.youtube.com/oembed?format=json&url=https://www.youtube.com/watch?v=song0000002': {
+    status: 200, headers: 'content-type: application/json', body: '{"title":"Second \\"Song\\"","author_name":"Singer B"}',
+  },
+  'https://www.youtube.com/oembed?format=json&url=https://www.youtube.com/watch?v=gone0000000': { status: 404, headers: '', body: 'Not Found' },
 }
 
 export function boot() {

@@ -20,7 +20,7 @@ test.describe('files', () => {
     await expect(fileNames(page)).toHaveText(['guest'])
     await files.getByRole('link', { name: '/', exact: true }).click()
     // 폴더가 먼저, 이름순으로 나온다.
-    await expect(fileNames(page)).toHaveText(['bin', 'etc', 'home', 'proc', 'tmp'])
+    await expect(fileNames(page)).toHaveText(['bin', 'etc', 'home', 'proc', 'tmp', 'usr'])
     await expect(files.getByRole('button', { name: '위 폴더로' })).toBeDisabled()
 
     await fileRow(page, 'etc').dblclick()

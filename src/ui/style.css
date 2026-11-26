@@ -372,6 +372,14 @@ button {
   color: transparent;
 }
 
+/* 프로그램이 놓아 달라고 한 바깥 영상 플레이어 */
+.surface-player {
+  position: absolute;
+  border: 0;
+  border-radius: var(--radius-s);
+  background: #000;
+}
+
 /* 입력 칸보다 위에 그리는 층. 그린 것이 있을 때만 입력을 받는다. */
 .surface-top {
   position: absolute;

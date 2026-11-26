@@ -114,7 +114,7 @@ describe('files', () => {
     app.press('위 폴더로')
     await app.until(() => app.names().includes('work'), 'the parent')
     app.press('/')
-    await app.until(() => app.names().join() === 'bin,etc,home,proc,tmp', 'the root')
+    await app.until(() => app.names().join() === 'bin,etc,home,proc,tmp,usr', 'the root')
     expect(app.region('위 폴더로')).toMatchObject({ disabled: true })
     // 시작할 폴더를 정해 줄 수도 있다.
     const etc = await openFiles('/etc')

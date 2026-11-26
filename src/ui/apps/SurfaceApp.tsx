@@ -2,7 +2,7 @@
 // 이 창에서 일어난 마우스·키보드 입력은 그 프로세스에 이벤트로 전해진다.
 // 화면 쪽은 프로그램이 무엇인지 모른다. 규약(src/kernel/gui.ts)만 안다.
 import { createEffect, on, onCleanup, onMount } from 'solid-js'
-import { GuiEvent, HANDOFF_LIMIT, Mod, decodeDrawList, decodeStyles, encodeEvent, encodePointer, handoffDir, keyCode, styledPieces, type DrawOp, type StyleRange } from '../../kernel/gui.ts'
+import { GuiEvent, HANDOFF_LIMIT, Mod, PLAYER_UNSUPPORTED, PlayerCommand, decodeDrawList, decodeStyles, encodeEvent, encodePointer, handoffDir, keyCode, styledPieces, type DrawOp, type StyleRange } from '../../kernel/gui.ts'
 import { settings } from '../settings.ts'
 import { showMenuAt, type MenuItem } from '../contextmenu.tsx'
 import { canvasFont, fontFamilies } from '../system.ts'
@@ -103,6 +103,8 @@ function paint(ctx: CanvasRenderingContext2D, ops: DrawOp[], width: number, heig
       case 'open': // 새 탭으로 연다
       case 'title': // 창의 제목
       case 'launch': // 파일을 알맞은 앱으로 연다
+      case 'player': // 바깥 플레이어는 캔버스 위에 실제 요소로 놓는다
+      case 'playerCommand':
         break
       case 'image': {
         const image = imageAt(op.path)
@@ -482,6 +484,101 @@ export function SurfaceApp(props: AppProps) {
     }
   }
 
+  // ───────────── 바깥 플레이어 (유튜브) ─────────────
+  //
+  // 이 페이지는 다른 출처의 것을 막아 둔 상태라(SharedArrayBuffer를 쓰려면 그래야 한다), 보통의 iframe으로는 유튜브가 뜨지 않는다.
+  // 쿠키 없이 여는 iframe(credentialless)은 허용된다. 플레이어와는 유튜브의 IFrame API가 쓰는 메시지 형식으로 이야기한다.
+
+  const YOUTUBE = 'https://www.youtube.com'
+  let frame: HTMLIFrameElement | undefined
+  /** 플레이어가 준비됐다고 알려 왔는가. 그 전에 시킨 일은 모아 두었다가 준비되면 보낸다. */
+  let playerReady = false
+  let queued: { func: string; args: unknown[] }[] = []
+  let hello: ReturnType<typeof setInterval> | undefined
+  /** 프로그램에 마지막으로 알린 상태와 위치 (같은 것을 거듭 알리지 않는다) */
+  let told = { state: -2, time: -1, duration: -1 }
+  let playerState = -1
+
+  const tell = (func: string, ...args: unknown[]) => {
+    if (playerReady) frame?.contentWindow?.postMessage(JSON.stringify({ event: 'command', func, args }), YOUTUBE)
+    else queued.push({ func, args })
+  }
+
+  function onPlayerMessage(e: MessageEvent) {
+    if (!frame || e.source !== frame.contentWindow || e.origin !== YOUTUBE || typeof e.data !== 'string') return
+    let message: { event?: string; info?: unknown }
+    try {
+      message = JSON.parse(e.data)
+    } catch {
+      return
+    }
+    if (message.event === 'onReady') {
+      playerReady = true
+      clearInterval(hello)
+      for (const { func, args } of queued.splice(0)) tell(func, ...args)
+    } else if (message.event === 'onError') {
+      send(GuiEvent.playerError, Number(message.info) || 0)
+    } else if (message.event === 'infoDelivery' && message.info && typeof message.info === 'object') {
+      const info = message.info as { playerState?: number; currentTime?: number; duration?: number }
+      if (typeof info.playerState === 'number') playerState = info.playerState
+      const time = typeof info.currentTime === 'number' ? Math.round(info.currentTime * 1000) : told.time
+      const duration = typeof info.duration === 'number' && info.duration > 0 ? Math.round(info.duration * 1000) : told.duration
+      // 상태가 바뀌면 바로, 위치는 0.5초쯤 나아갔을 때마다 알린다.
+      if (playerState === told.state && duration === told.duration && Math.abs(time - told.time) < 450) return
+      told = { state: playerState, time, duration }
+      send(GuiEvent.player, playerState, Math.max(0, time), Math.max(0, duration))
+    }
+  }
+
+  /** 그리기 명령에 든 플레이어의 자리에 맞춰 요소를 놓고, 시킨 일을 전한다. */
+  function placePlayer() {
+    const place = ops.find((op): op is Extract<DrawOp, { op: 'player' }> => op.op === 'player')
+    if (!place) {
+      frame?.remove()
+      frame = undefined
+      clearInterval(hello)
+      return
+    }
+    for (const op of ops) {
+      if (op.op !== 'playerCommand') continue
+      if (!('credentialless' in HTMLIFrameElement.prototype)) {
+        // 이 브라우저는 플레이어를 놓을 방법이 없다. 프로그램이 다른 길(유튜브에서 열기)을 안내하게 한다.
+        if (op.command === PlayerCommand.load) send(GuiEvent.playerError, PLAYER_UNSUPPORTED)
+        continue
+      }
+      if (op.command === PlayerCommand.load) {
+        // 영상의 번호는 프로그램이 준 것이므로, 번호의 꼴이 아니면 받지 않는다.
+        if (!/^[\w-]{6,20}$/.test(op.id)) continue
+        if (!frame) {
+          frame = document.createElement('iframe')
+          frame.className = 'surface-player'
+          frame.title = '영상 플레이어'
+          frame.allow = 'autoplay; encrypted-media; picture-in-picture'
+          ;(frame as HTMLIFrameElement & { credentialless: boolean }).credentialless = true
+          const query = new URLSearchParams({ enablejsapi: '1', origin: location.origin, playsinline: '1', rel: '0', autoplay: op.value ? '1' : '0' })
+          frame.src = `${YOUTUBE}/embed/${op.id}?${query}`
+          playerReady = false
+          queued = []
+          told = { state: -2, time: -1, duration: -1 }
+          const own = frame
+          // 플레이어가 말을 걸어 주기를 기다린다는 것을, 답이 올 때까지 거듭 알린다.
+          frame.addEventListener('load', () => {
+            clearInterval(hello)
+            hello = setInterval(() => own.contentWindow?.postMessage(JSON.stringify({ event: 'listening', id: pid, channel: 'widget' }), YOUTUBE), 250)
+          })
+          host.append(frame)
+        } else {
+          told = { state: -2, time: -1, duration: -1 }
+          tell(op.value ? 'loadVideoById' : 'cueVideoById', op.id)
+        }
+      } else if (op.command === PlayerCommand.play) tell('playVideo')
+      else if (op.command === PlayerCommand.pause) tell('pauseVideo')
+      else if (op.command === PlayerCommand.seek) tell('seekTo', op.value, true)
+      else if (op.command === PlayerCommand.volume) tell('setVolume', Math.max(0, Math.min(100, op.value)))
+    }
+    if (frame) Object.assign(frame.style, { left: `${place.x}px`, top: `${place.y}px`, width: `${place.w}px`, height: `${place.h}px` })
+  }
+
   /**
    * 사용자가 건넨 파일들(고른 것, 끌어다 놓은 것, 붙여 넣은 것)을 프로그램이 읽을 수 있는 곳에 놓고 알린다.
    * 건넨 순서대로 "순번-이름"으로 놓는다.
@@ -600,6 +697,7 @@ export function SurfaceApp(props: AppProps) {
         redraw()
         placeFields()
         placeRegions()
+        placePlayer()
         for (const op of ops) if (op.op === 'select') moveCaret(op)
         const menu = ops.find((op): op is MenuOp => op.op === 'menu')
         if (menu) openMenu(menu)
@@ -632,6 +730,11 @@ export function SurfaceApp(props: AppProps) {
       closed: () => props.close(),
     })
     if (!detach) return props.close() // 창이 뜨기도 전에 프로세스가 끝났다
+    window.addEventListener('message', onPlayerMessage)
+    onCleanup(() => {
+      window.removeEventListener('message', onPlayerMessage)
+      clearInterval(hello)
+    })
     const observer = new ResizeObserver(fit)
     observer.observe(canvas)
     dark.addEventListener('change', fit)

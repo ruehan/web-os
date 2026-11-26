@@ -51,6 +51,13 @@ export const GuiEvent = {
    * a 놓인 파일의 수, b 너무 커서 받지 않은 파일의 수.
    */
   files: 15,
+  /**
+   * 바깥 플레이어(player 명령으로 놓은 것)의 상태가 바뀌었거나 재생 위치가 나아갔다.
+   * a 상태 (PlayerState), b 지금 위치, c 전체 길이 (밀리초).
+   */
+  player: 16,
+  /** 바깥 플레이어가 영상을 틀지 못했다. a 이유 (유튜브의 오류 코드: 100 없는 영상, 101·150 퍼가기 금지 등, 또는 PLAYER_UNSUPPORTED) */
+  playerError: 17,
 } as const
 
 /** 사용자가 건넨 파일이 놓이는 폴더 */
@@ -94,7 +101,14 @@ export function keyCode(key: string): number | undefined {
 
 // ───────────── 그리기 명령 ─────────────
 
-const Op = { clear: 1, rect: 2, frame: 3, line: 4, circle: 5, text: 6, clip: 7, unclip: 8, field: 9, region: 10, menu: 11, select: 12, overlay: 13, image: 14, pick: 15, copy: 16, open: 17, title: 18, launch: 19 } as const
+const Op = { clear: 1, rect: 2, frame: 3, line: 4, circle: 5, text: 6, clip: 7, unclip: 8, field: 9, region: 10, menu: 11, select: 12, overlay: 13, image: 14, pick: 15, copy: 16, open: 17, title: 18, launch: 19, player: 20, playerCommand: 21 } as const
+
+/** playerCommand 명령의 종류 */
+export const PlayerCommand = { load: 1, play: 2, pause: 3, seek: 4, volume: 5 } as const
+/** player 이벤트의 상태 (유튜브 플레이어의 것과 같다) */
+export const PlayerState = { unstarted: -1, ended: 0, playing: 1, paused: 2, buffering: 3, cued: 5 } as const
+/** playerError 이벤트의 코드 가운데, 유튜브의 것이 아닌 것: 이 브라우저에서는 플레이어를 놓을 수 없다 */
+export const PLAYER_UNSUPPORTED = 9999
 
 /** 입력 칸의 성질 (field 명령의 flags) */
 export const FieldFlag = { multiline: 1, mono: 2, focus: 4, bold: 8, select: 16, keys: 32, grabEnter: 64, where: 128 } as const
@@ -208,6 +222,16 @@ export type DrawOp =
   | { op: 'title'; text: string }
   /** 이 파일을 알맞은 앱으로 열어 달라 (파일을 두 번 눌렀을 때). path는 절대 경로다. 묶음 하나에만 넣는다. */
   | { op: 'launch'; path: string }
+  /**
+   * 이 자리에 바깥 사이트의 영상 플레이어를 놓는다 (유튜브의 공식 플레이어). 입력 칸처럼, 묶음에 들어 있는 동안만 있다.
+   * 무엇을 틀지는 playerCommand로 정한다. 프로그램은 영상의 번호만 넘기고, 어느 사이트의 플레이어인지는 화면 쪽이 정한다.
+   */
+  | { op: 'player'; x: number; y: number; w: number; h: number }
+  /**
+   * 플레이어에 시키는 일. 시킬 때의 묶음 하나에만 넣는다.
+   * load: id의 영상을 불러온다 (value가 1이면 바로 튼다). play, pause. seek: value초로 옮긴다. volume: value(0~100).
+   */
+  | { op: 'playerCommand'; command: number; value: number; id: string }
   | { op: 'menu'; x: number; y: number; items: { label: string; disabled: boolean; danger: boolean; separator: boolean }[] }
 
 const ALIGN = ['left', 'center', 'right'] as const
@@ -362,6 +386,12 @@ export function decodeDrawList(data: Uint8Array): DrawOp[] {
         break
       case Op.launch:
         ops.push({ op: 'launch', path: str() })
+        break
+      case Op.player:
+        ops.push({ op: 'player', x: f32(), y: f32(), w: f32(), h: f32() })
+        break
+      case Op.playerCommand:
+        ops.push({ op: 'playerCommand', command: u8(), value: f32(), id: str() })
         break
       case Op.select:
         ops.push({ op: 'select', id: u32(), start: u32(), end: u32() })
