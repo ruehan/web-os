@@ -87,7 +87,7 @@ struct Command {
     caret: usize,
 }
 
-const COMMANDS: [Command; 11] = [
+const COMMANDS: [Command; 12] = [
     Command { label: "제목 1", hint: "#", keys: "h1 heading title 제목1", insert: "# ", caret: 2 },
     Command { label: "제목 2", hint: "##", keys: "h2 heading 제목2", insert: "## ", caret: 3 },
     Command { label: "제목 3", hint: "###", keys: "h3 heading 제목3", insert: "### ", caret: 4 },
@@ -99,6 +99,8 @@ const COMMANDS: [Command; 11] = [
     Command { label: "표", hint: "| |", keys: "table", insert: "| 제목 | 제목 |\n|---|---|\n|  |  |", caret: 2 },
     Command { label: "구분선", hint: "---", keys: "hr line divider rule", insert: "---\n", caret: 4 },
     Command { label: "메모 링크", hint: "[[ ]]", keys: "link 링크", insert: "[[", caret: 2 },
+    // 넣을 글이 없는 대신 그림 파일을 고르게 한다 (고른 그림이 그 자리에 들어간다).
+    Command { label: "그림 넣기", hint: "![[ ]]", keys: "image picture photo 사진 그림", insert: "", caret: 0 },
 ];
 
 const FORMATS: [(&str, &str); 2] = [("md", "마크다운 (.md)"), ("txt", "텍스트 (.txt)")];
@@ -159,6 +161,8 @@ enum Action {
     /// 커서 아래에 뜬 목록에서 골랐다 (그 줄의 순번)
     Choose(usize),
     ClosePopup,
+    /// 그림 파일을 골라 메모에 넣는다
+    PickImage,
     /// 눌러도 아무 일도 없는 자리 (아래에 깔린 것이 눌리지 않게 막는다)
     Nothing,
 }
@@ -233,6 +237,10 @@ struct App {
     dismissed: Option<usize>,
     /// 본문 칸의 커서가 창의 어디에 있는지 (고를 것을 그 아래에 띄운다)
     caret_at: Option<(f32, f32)>,
+    /// 크기를 물어 본 그림들: 보관함 기준 경로 → 크기 (그림이 아니거나 읽을 수 없으면 None)
+    images: RefCell<HashMap<String, Option<(f32, f32)>>>,
+    /// 다음에 그릴 때 그림 파일을 고르는 창을 띄운다.
+    picking: bool,
     backlinks_open: bool,
     outline_open: bool,
     tags_open: bool,
@@ -355,6 +363,8 @@ impl App {
         }
         self.entries = found;
         self.texts = texts;
+        // 그림 파일이 바뀌었을 수 있으니, 크기는 다시 묻는다.
+        self.images.borrow_mut().clear();
         // 사라진 파일은 탭과 지나온 길에서도 뺀다.
         let known: HashSet<String> = self.entries.iter().map(|e| e.path.clone()).collect();
         self.remap(|path| known.contains(path).then(|| path.to_string()));
@@ -665,6 +675,74 @@ impl App {
         }
     }
 
+    // ───────────── 그림 ─────────────
+
+    /// 링크나 그림 주소가 가리키는 보관함 안의 그림: 절대 경로와 크기. 화면 쪽이 읽어 두므로 그릴 수 있게 된다.
+    fn picture(&self, target: &str) -> Option<preview::Picture> {
+        let files = self.files();
+        let path = vault::resolve_link(target, &files).filter(|path| kind_of(path) == Kind::Image)?;
+        let absolute = self.absolute(path).to_string_lossy().into_owned();
+        let size = *self.images.borrow_mut().entry(path.to_string()).or_insert_with(|| self.window.image_size(&absolute));
+        size.map(|(w, h)| (absolute, w, h))
+    }
+
+    /// 사용자가 건넨 파일들(고른 것, 끌어다 놓은 것, 붙여 넣은 것) 중 그림을 보관함에 넣고, 메모의 커서 자리에 적는다.
+    fn take_files(&mut self, refused: usize) {
+        let dir = webos::gui::handoff_dir();
+        let mut handed: Vec<String> = fs::read_dir(&dir).map(|list| list.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect()).unwrap_or_default();
+        handed.sort();
+        let mut embeds: Vec<String> = Vec::new();
+        let mut problem = if refused > 0 { "그림이 너무 큽니다. 20MB까지 넣을 수 있습니다." } else { "" }.to_string();
+        for file in handed {
+            let from = dir.join(&file);
+            // 이름은 "순번-원래 이름"이다.
+            let original = file.split_once('-').map_or(file.as_str(), |(_, name)| name);
+            if kind_of(original) != Kind::Image {
+                problem = "그림 파일만 넣을 수 있습니다.".to_string();
+                let _ = fs::remove_file(from);
+                continue;
+            }
+            // 화면에서 붙여 넣은 그림은 이름이 모두 "image.png"라, 알아볼 수 있는 이름을 지어 준다.
+            let stem = if stem_of(original).eq_ignore_ascii_case("image") { "붙여넣은 그림" } else { stem_of(original) };
+            let taken = self.names_in(ATTACHMENTS);
+            let name = vault::unique_name(&taken, stem, &ext_of(original));
+            let to = self.absolute(&join(ATTACHMENTS, &name));
+            let moved = fs::create_dir_all(self.absolute(ATTACHMENTS)).and_then(|_| fs::copy(&from, &to)).map(|_| ());
+            let _ = fs::remove_file(&from);
+            match moved {
+                Ok(()) => {
+                    // 다음 그림의 이름을 지을 때 이 이름을 피하도록 바로 목록에 올린다.
+                    self.entries.push(Entry { path: join(ATTACHMENTS, &name), kind: Kind::Image });
+                    embeds.push(format!("![[{name}]]"));
+                }
+                Err(e) => problem = describe("그림을 넣지 못했습니다", &e),
+            }
+        }
+        if embeds.is_empty() {
+            self.error = problem;
+            return;
+        }
+        let insert = embeds.join("\n");
+        if self.current.as_deref().is_some_and(|path| kind_of(path) == Kind::Note) {
+            let edit = if self.view_mode() != Mode::Read && self.sel_ok() {
+                let (start, end) = self.sel;
+                editing::replace(&self.text[..], start, end, &insert, insert.len())
+            } else {
+                // 읽기 보기처럼 커서가 없을 때는 메모 끝에 붙인다.
+                let gap = if self.text.is_empty() || self.text.ends_with('\n') { "" } else { "\n" };
+                let text = format!("{}{gap}{insert}\n", self.text);
+                editing::Edit { start: text.len(), end: text.len(), text }
+            };
+            self.apply_edit(edit);
+            self.save();
+        }
+        self.load();
+        // 넣지 못한 것이 있었으면 (저장이 잘 됐더라도) 알린다.
+        if !problem.is_empty() {
+            self.error = problem;
+        }
+    }
+
     // ───────────── 글쓰기 편의 ─────────────
 
     /// 본문의 글과 커서를 이 프로그램이 정한 것으로 바꾼다 (목록 이어 쓰기, 들여쓰기, 링크 완성).
@@ -757,6 +835,7 @@ impl App {
                 if let Some((from, _)) = self.slashing.take().filter(|(from, _)| *from <= pos) {
                     let command = &COMMANDS[*i];
                     self.apply_edit(editing::replace(&self.text, from, pos, command.insert, command.caret));
+                    self.picking = command.insert.is_empty();
                 }
             }
         }
@@ -1122,6 +1201,9 @@ impl App {
         if let Some((start, end)) = self.select.take() {
             ui.f.select(EDITOR, start, end);
         }
+        if std::mem::take(&mut self.picking) {
+            ui.f.pick(true, "image/*");
+        }
         if let Some(((x, y), items)) = self.menu.take() {
             let (labels, actions): (Vec<MenuItem>, Vec<Option<Action>>) = items.into_iter().unzip();
             ui.f.menu(x, y, &labels);
@@ -1423,6 +1505,11 @@ impl App {
         let remove = ui.tool_width("삭제");
         ui.tool(x0 + width - 8.0 - remove, y + 9.5, "삭제", Tool::Plain, false, Some(Action::AskDelete(path.to_string())));
         let mut right = x0 + width - 14.0 - remove;
+        if is_note {
+            let insert = ui.tool_width("그림 넣기");
+            ui.tool(right - insert, y + 9.5, "그림 넣기", Tool::Plain, false, Some(Action::PickImage));
+            right -= insert + 6.0;
+        }
         if self.is_markdown() {
             // 보기 방식: 편집 / 나란히 / 읽기
             let widths: Vec<f32> = MODES.iter().map(|(_, name)| ui.width(name, 13.0, Style::BOLD).ceil() + 28.0).collect();
@@ -1509,7 +1596,24 @@ impl App {
             } else {
                 "메모장에서 열 수 없는 파일입니다.".to_string()
             };
-            ui.f.styled(body.x + body.w / 2.0, body.mid_y(), 12.0, theme.muted, Align::Center, Style::PLAIN, &hint);
+            let mut hint_y = body.mid_y();
+            if kind_of(path) == Kind::Image {
+                // 그림을 크게 보여 준다. 자리에 맞지 않으면 비율을 지켜 줄인다.
+                let room = Rect::new(body.x + 16.0, body.y + 16.0, (body.w - 32.0).max(1.0), (body.h - 70.0).max(1.0));
+                match self.picture(path) {
+                    Some((file, w, h)) => {
+                        let scale = (room.w / w).min(room.h / h).min(1.0);
+                        let (w, h) = ((w * scale).round(), (h * scale).round());
+                        let x = (room.x + (room.w - w) / 2.0).round();
+                        ui.f.image(x, room.y, w, h, &file);
+                        ui.f.frame(x - 1.0, room.y - 1.0, w + 2.0, h + 2.0, RADIUS, theme.line, 1.0);
+                        ui.f.region(x, room.y, w, h, Role::Button, false, true, &format!("그림: {}", base_of(path)));
+                        hint_y = room.y + h + 26.0;
+                    }
+                    None => ui.f.styled(body.x + body.w / 2.0, body.mid_y() - 24.0, 13.0, theme.muted, Align::Center, Style::PLAIN, "그림을 열 수 없습니다."),
+                }
+            }
+            ui.f.styled(body.x + body.w / 2.0, hint_y, 12.0, theme.muted, Align::Center, Style::PLAIN, &hint);
             *self.preview.borrow_mut() = PreviewInfo::default();
             return;
         }
@@ -1594,10 +1698,11 @@ impl App {
             Target::Toggle(line) => Action::Toggle(line),
         };
         // 먼저 높이만 재서 스크롤의 끝을 정하고, 그다음에 그린다.
-        let measured = preview::render(ui, &files, &self.texts, text, view, 0.0, false, interactive, &act);
+        let image = |target: &str| self.picture(target);
+        let measured = preview::render(ui, &files, &self.texts, text, view, 0.0, false, interactive, &act, &image);
         let scroll = scroll.min((measured.height - view.h).max(0.0));
         ui.clip(view);
-        preview::render(ui, &files, &self.texts, text, view, scroll, true, interactive, &act);
+        preview::render(ui, &files, &self.texts, text, view, scroll, true, interactive, &act, &image);
         if measured.height > view.h && view.h > 0.0 {
             let thumb = (view.h * view.h / measured.height).max(24.0);
             let top = view.y + (view.h - thumb) * scroll / (measured.height - view.h);
@@ -1959,6 +2064,7 @@ impl App {
                 }
             }
             Action::ClosePopup => self.close_choices(),
+            Action::PickImage => self.picking = true,
             Action::Nothing => {}
         }
     }
@@ -2084,6 +2190,7 @@ impl App {
                 self.track_link();
                 return (&self.linking, &self.slashing) != (&was.0, &was.1);
             }
+            Event::Files { refused, .. } => self.take_files(refused),
             Event::CaretAt { field: EDITOR, x, y } => {
                 if self.caret_at == Some((x, y)) || self.choices().is_empty() {
                     return false;
@@ -2194,6 +2301,8 @@ fn main() {
         pick_at: 0,
         dismissed: None,
         caret_at: None,
+        images: RefCell::new(HashMap::new()),
+        picking: false,
         backlinks_open: false,
         outline_open: true,
         tags_open: false,

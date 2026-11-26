@@ -366,6 +366,72 @@ test('helps with writing: continues lists, indents, wraps, and completes links',
   await expect(editor(page)).toHaveValue('- a\n')
 })
 
+/** 캔버스의 사각형 안에서 빨간 점의 수 (그림이 실제로 그려졌는지 본다) */
+const redIn = (page: Page, x: number, y: number, w: number, h: number) =>
+  canvas(page).evaluate(
+    (el: HTMLCanvasElement, [x, y, w, h]) => {
+      const scale = el.width / el.clientWidth
+      const data = el.getContext('2d')!.getImageData(x! * scale, y! * scale, w! * scale, h! * scale).data
+      let red = 0
+      for (let i = 0; i < data.length; i += 4) if (data[i]! > 200 && data[i + 1]! < 60 && data[i + 2]! < 60) red++
+      return red / (scale * scale)
+    },
+    [x, y, w, h],
+  )
+
+const RED_SQUARE = { name: '빨강.svg', mimeType: 'image/svg+xml', buffer: Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="120" height="80"><rect width="120" height="80" fill="#ff0000"/></svg>') }
+
+test('inserts a chosen image file, draws it in the preview, and shows it on its own', async ({ page }) => {
+  await launch(page, '메모장')
+  await newNote(page, '그림 있는 글')
+  await page.keyboard.type('위\n')
+  // 그림 넣기: 프로그램이 청하면 브라우저의 파일 고르기 창이 뜨고, 고른 파일이 프로그램에 건네진다.
+  const chooser = page.waitForEvent('filechooser')
+  await press(page, 'button', '그림 넣기')
+  await (await chooser).setFiles(RED_SQUARE)
+  await expect(editor(page)).toHaveValue('위\n![[빨강.svg]]')
+  await shell(page, 'ls notes/attachments', '빨강.svg')
+  await page.getByRole('button', { name: '창: 메모장' }).click()
+
+  // 읽기에서는 그 자리에 그림이 그려진다 (120×80의 빨간 사각형).
+  await press(page, 'button', '읽기')
+  await expect.poll(() => redIn(page, 250, 95, 650, 440)).toBeGreaterThan(120 * 80 * 0.95)
+  expect(await redIn(page, 250, 95, 650, 440)).toBeLessThan(120 * 80 * 1.05)
+
+  // 보관함에서 그림 파일을 열면 그림만 크게 보인다.
+  await press(page, 'treeitem', 'attachments')
+  await press(page, 'treeitem', '빨강.svg')
+  await expect(editor(page)).toHaveCount(0)
+  await expect.poll(() => redIn(page, 250, 95, 650, 440)).toBeGreaterThan(120 * 80 * 0.95)
+})
+
+test('takes images dropped on the window or pasted into the text', async ({ page }) => {
+  await launch(page, '메모장')
+  await newNote(page, '받는 글')
+  // 붙여 넣은 그림 (화면 캡처 등은 이름이 image.png로 온다)
+  await editor(page).evaluate((el, svg) => {
+    const data = new DataTransfer()
+    data.items.add(new File([svg], 'image.svg', { type: 'image/svg+xml' }))
+    el.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }))
+  }, RED_SQUARE.buffer.toString())
+  await expect(editor(page)).toHaveValue('![[붙여넣은 그림.svg]]')
+  // 창에 끌어다 놓은 그림
+  await canvas(page).evaluate((el, svg) => {
+    const data = new DataTransfer()
+    data.items.add(new File([svg], '끌어온.svg', { type: 'image/svg+xml' }))
+    el.dispatchEvent(new DragEvent('drop', { dataTransfer: data, bubbles: true, cancelable: true }))
+  }, RED_SQUARE.buffer.toString())
+  await expect(editor(page)).toHaveValue(/!\[\[끌어온\.svg\]\]/)
+  // 글을 붙여 넣는 것은 평소대로 입력 칸이 받는다.
+  const taken = await editor(page).evaluate((el) => {
+    const data = new DataTransfer()
+    data.setData('text/plain', '글')
+    return !el.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }))
+  })
+  expect(taken).toBe(false)
+  await shell(page, 'ls notes/attachments | wc -l', /\n\s*2\n/)
+})
+
 test('the notes app sees what the notepad wrote', async ({ page }) => {
   await launch(page, '메모장')
   await newNote(page, '함께')

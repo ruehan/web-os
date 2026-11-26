@@ -56,7 +56,12 @@ struct Span {
     style: Style,
     kind: Kind,
     target: Option<Target>,
+    /// 글이 아니라 그림이면: 파일의 경로와 원래 크기
+    image: Option<Picture>,
 }
+
+/// 그릴 수 있는 그림: 파일의 절대 경로, 너비, 높이
+pub type Picture = (String, f32, f32);
 
 /// 줄을 나눌 수 있는 가장 작은 단위: 낱말 하나, 한글 한 글자, 또는 공백
 struct Atom {
@@ -66,12 +71,17 @@ struct Atom {
     w: f32,
 }
 
+/// 그림의 위아래 여백
+const IMAGE_GAP: f32 = 5.0;
+
 /// 한 줄 위의, 한 번에 그릴 토막
 struct Seg {
     span: usize,
     x: f32,
     w: f32,
     text: String,
+    /// 그림이면 그릴 높이 (폭은 w)
+    image_h: Option<f32>,
 }
 
 /// 띄어쓰기 없이도 글자 사이에서 줄을 바꿀 수 있는 글자인가 (한글, 한자, 가나 등)
@@ -84,6 +94,8 @@ pub struct Preview<'u, 't, A> {
     files: &'u [String],
     texts: &'u HashMap<String, String>,
     act: &'u dyn Fn(Target) -> A,
+    /// 링크의 대상이 보관함의 그림이면 그 그림을 찾아 준다.
+    image: &'u dyn Fn(&str) -> Option<Picture>,
     view: Rect,
     draw: bool,
     /// 다음에 그릴 자리 (화면 좌표)
@@ -108,9 +120,10 @@ pub fn render<A: Clone>(
     draw: bool,
     interactive: bool,
     act: &dyn Fn(Target) -> A,
+    image: &dyn Fn(&str) -> Option<Picture>,
 ) -> Laid {
     let top = view.y - scroll;
-    let mut preview = Preview { ui, files, texts, act, view, draw, y: top + PAD_Y, first: true, gap: 0.0, headings: Vec::new() };
+    let mut preview = Preview { ui, files, texts, act, image, view, draw, y: top + PAD_Y, first: true, gap: 0.0, headings: Vec::new() };
     let blocks = markdown::parse(text);
     preview.blocks(&blocks, view.x + PAD_X, (view.w - PAD_X * 2.0).max(40.0), 0, interactive);
     let headings = preview.headings.iter().map(|&(line, y)| (line, y - top)).collect();
@@ -132,7 +145,12 @@ impl<A: Clone> Preview<'_, '_, A> {
     }
 
     fn spans(&self, items: &[Inline], style: Style, out: &mut Vec<Span>) {
-        let plain = |text: &str, kind: Kind| Span { text: text.to_string(), style, kind, target: None };
+        let plain = |text: &str, kind: Kind| Span { text: text.to_string(), style, kind, target: None, image: None };
+        // 보관함 안의 그림은 그 자리에 그리고, 찾을 수 없으면 그렇다고 적는다.
+        let picture = |target: &str, alt: &str| match (self.image)(target) {
+            Some(found) => Span { image: Some(found), ..plain(alt, Kind::Plain) },
+            None => plain(&format!("그림을 찾을 수 없음: {target}"), Kind::Muted),
+        };
         for item in items {
             match item {
                 Inline::Text(text) => out.push(plain(text, Kind::Plain)),
@@ -149,10 +167,10 @@ impl<A: Clone> Preview<'_, '_, A> {
                         }
                     }
                 }
-                Inline::Image { src, alt } => out.push(plain(&format!("그림: {}", if alt.is_empty() { src } else { alt }), Kind::Muted)),
-                Inline::Wiki { target, embed: true, .. } if markdown::is_image_name(target) => {
-                    out.push(plain(&format!("그림: {target}"), Kind::Muted));
-                }
+                // 바깥 사이트의 그림은 가져올 수 없다 (이 페이지는 다른 출처의 자원을 막아 둔 상태다). 설명만 보여 준다.
+                Inline::Image { src, alt } if src.contains("://") => out.push(plain(if alt.is_empty() { src } else { alt }, Kind::Muted)),
+                Inline::Image { src, alt } => out.push(picture(src, alt)),
+                Inline::Wiki { target, label, embed: true } if markdown::is_image_name(target) => out.push(picture(target, label)),
                 Inline::Wiki { target, label, .. } => {
                     let exists = vault::resolve_link(target, self.files).is_some();
                     out.push(Span { target: Some(Target::Link(target.clone())), ..plain(label, if exists { Kind::Link } else { Kind::Missing }) });
@@ -180,7 +198,7 @@ impl<A: Clone> Preview<'_, '_, A> {
         // 1. 줄을 나눌 수 있는 단위로 쪼갠다.
         let mut atoms: Vec<Atom> = Vec::new();
         for (i, span) in spans.iter().enumerate() {
-            if matches!(span.kind, Kind::Code | Kind::Tag) {
+            if matches!(span.kind, Kind::Code | Kind::Tag) || span.image.is_some() {
                 atoms.push(Atom { span: i, text: span.text.clone(), space: false, w: 0.0 });
                 continue;
             }
@@ -208,6 +226,9 @@ impl<A: Clone> Preview<'_, '_, A> {
         let mut groups: HashMap<(u32, Style), Vec<usize>> = HashMap::new();
         for (i, atom) in atoms.iter().enumerate() {
             let span = &spans[atom.span];
+            if span.image.is_some() {
+                continue; // 그림의 폭은 재지 않아도 안다
+            }
             groups.entry((Self::metrics(span.kind, size).0.to_bits(), span.style)).or_default().push(i);
         }
         for ((bits, style), members) in groups {
@@ -222,6 +243,18 @@ impl<A: Clone> Preview<'_, '_, A> {
         let mut lines: Vec<Vec<Seg>> = vec![Vec::new()];
         let mut at = 0.0;
         for atom in atoms {
+            if let Some((_, natural_w, natural_h)) = &spans[atom.span].image {
+                // 그림은 한 줄을 통째로 쓴다. 폭이 넘치면 비율을 지켜 줄인다.
+                let w = natural_w.min(width).max(1.0);
+                let h = natural_h * w / natural_w.max(1.0);
+                if lines.last().is_some_and(|line| !line.is_empty()) {
+                    lines.push(Vec::new());
+                }
+                lines.last_mut().expect("never empty").push(Seg { span: atom.span, x: 0.0, w, text: atom.text, image_h: Some(h) });
+                lines.push(Vec::new());
+                at = 0.0;
+                continue;
+            }
             let line = lines.last_mut().expect("never empty");
             if atom.space && line.is_empty() {
                 continue; // 줄 머리의 공백은 버린다
@@ -237,14 +270,20 @@ impl<A: Clone> Preview<'_, '_, A> {
                     last.text.push_str(&atom.text);
                     last.w += atom.w;
                 }
-                _ => line.push(Seg { span: atom.span, x: at, w: atom.w, text: atom.text }),
+                _ => line.push(Seg { span: atom.span, x: at, w: atom.w, text: atom.text, image_h: None }),
             }
             at += atom.w;
         }
 
         // 4. 그린다.
         let theme = self.ui.theme;
+        let only = lines.iter().filter(|line| !line.is_empty()).count() <= 1;
         for line in lines {
+            // 그림 뒤에 남은 빈 줄은 자리를 차지하지 않는다 (글이 하나도 없는 문단만 한 줄을 쓴다).
+            if line.is_empty() && !only {
+                continue;
+            }
+            let line_h = line.iter().find_map(|seg| seg.image_h).map_or(line_h, |h| h + IMAGE_GAP * 2.0);
             let (top, mid) = (self.y, self.y + line_h / 2.0);
             self.y += line_h;
             if !self.visible(top, line_h) {
@@ -252,6 +291,10 @@ impl<A: Clone> Preview<'_, '_, A> {
             }
             for seg in line {
                 let span = &spans[seg.span];
+                if let (Some((path, ..)), Some(h)) = (&span.image, seg.image_h) {
+                    self.ui.f.image(x, top + IMAGE_GAP, seg.w, h, path);
+                    continue;
+                }
                 let (seg_size, pad) = Self::metrics(span.kind, size);
                 let rect = Rect::new(x + seg.x, mid - seg_size * 0.75, seg.w, seg_size * 1.5);
                 let (ink, style) = match span.kind {

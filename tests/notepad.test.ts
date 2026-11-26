@@ -935,6 +935,103 @@ describe('notepad', () => {
     })
   })
 
+  describe('images', () => {
+    type Image = Extract<DrawOp, { op: 'image' }>
+    const images = (pad: Awaited<ReturnType<typeof openNotepad>>) => pad.latest().filter((op): op is Image => op.op === 'image')
+    const asked = (pid: number) => all('gui-image', pid).map((e) => e.path)
+
+    it('draws the images of the vault in the preview, scaled to fit', async () => {
+      // 테스트의 화면은 파일에 적힌 "너비x높이"를 그림의 크기로 답한다.
+      write('attachments/사진.png', '200x100')
+      write('attachments/큰그림.jpg', '2000x1000')
+      write('글.md', '앞 글\n\n![[사진.png]]\n\n![설명](attachments/큰그림.jpg) 뒤 글\n\n![[없음.png]]\n\n![바깥](https://example.com/a.png)')
+      const pad = await openNotepad('글.md')
+      expect(asked(pad.pid)).toEqual([])
+      pad.press('읽기')
+      await pad.until(() => images(pad).length === 2, 'the images')
+      const [small, big] = images(pad)
+      // 작은 그림은 제 크기로, 큰 그림은 본문의 폭(610)에 맞춰 비율대로 줄여서.
+      expect(small).toMatchObject({ path: `${VAULT}/attachments/사진.png`, x: 270, w: 200, h: 100 })
+      expect(big).toMatchObject({ path: `${VAULT}/attachments/큰그림.jpg`, x: 270, w: 610, h: 305 })
+
+      // 크기는 그림마다 한 번만 묻는다 (다시 그려도 묻지 않는다).
+      expect(asked(pad.pid).sort()).toEqual([`${VAULT}/attachments/사진.png`, `${VAULT}/attachments/큰그림.jpg`].sort())
+      pad.wheel(600, 300, 99999)
+      await pad.see('그림을 찾을 수 없음: 없음.png')
+      expect(asked(pad.pid)).toHaveLength(2)
+      // 그림은 한 줄을 통째로 쓰고, 뒤의 글은 그 아래로 간다. 바깥 사이트의 그림은 설명만 보인다.
+      const moved = images(pad).find((op) => op.path.endsWith('큰그림.jpg'))!
+      const after = pad.latest().find((op) => op.op === 'text' && op.text.startsWith('뒤 글')) as { y: number }
+      expect(after.y).toBeGreaterThan(moved.y + moved.h)
+      expect(pad.texts()).toContain('바깥')
+    })
+
+    it('shows an image file when it is opened from the tree', async () => {
+      write('attachments/넓은.png', '1300x400')
+      write('글.md', '')
+      const pad = await openNotepad('글.md')
+      pad.press('attachments')
+      await pad.until(() => pad.region('넓은.png'), 'the folder to unfold')
+      pad.press('넓은.png')
+      await pad.until(() => images(pad).length, 'the image')
+      // 자리(폭 650 - 여백 32)에 맞춰 줄이고 가운데에 둔다.
+      expect(images(pad)[0]).toMatchObject({ w: 618, h: 190, x: 250 + 16 })
+      expect(pad.texts()).toContain('메모에 넣으려면 ![[넓은.png]] 라고 적습니다.')
+      expect(pad.field(EDITOR)).toBeUndefined()
+      expect(pad.region('그림 넣기')).toBeUndefined()
+    })
+
+    /** 사용자가 파일을 건넨 것처럼 한다: 화면 쪽이 하듯 정해진 폴더에 놓고 알린다. */
+    function hand(pid: number, files: Record<string, string>, refused = 0) {
+      host.kernel.fs.mkdirp(`/tmp/.gui-${pid}`)
+      Object.entries(files).forEach(([name, body], i) => host.kernel.fs.writeFile(`/tmp/.gui-${pid}/${String(i).padStart(4, '0')}-${name}`, utf8(body)))
+      host.kernel.guiEvent(pid, encodeEvent(GuiEvent.files, Object.keys(files).length, refused))
+    }
+    const inbox = (pid: number) => [...(host.kernel.fs.lookup(host.kernel.fs.root, `/tmp/.gui-${pid}`) as { entries: Map<string, unknown> }).entries.keys()]
+
+    it('asks for image files and puts the chosen ones into the note at the cursor', async () => {
+      write('글.md', '앞뒤')
+      const pad = await openNotepad('글.md')
+      pad.send(GuiEvent.fieldFocus, EDITOR, 1)
+      pad.send(GuiEvent.caret, EDITOR, 3, 3)
+      pad.press('그림 넣기')
+      await pad.until(() => pad.latest().some((op) => op.op === 'pick'), 'the file dialog')
+      expect(pad.latest()).toContainEqual({ op: 'pick', multiple: true, accept: 'image/*' })
+
+      hand(pad.pid, { '풍경.png': '300x200', 'image.png': '10x10', '문서.pdf': 'x' })
+      await host.until(() => file('글.md') === '앞![[풍경.png]]\n![[붙여넣은 그림.png]]뒤', 'the embeds')
+      // 그림은 보관함의 attachments 폴더로 옮겨지고, 건네받은 자리는 비운다.
+      expect(file('attachments/풍경.png')).toBe('300x200')
+      expect(file('attachments/붙여넣은 그림.png')).toBe('10x10')
+      expect(inbox(pad.pid)).toEqual([])
+      await pad.see('그림 파일만 넣을 수 있습니다.')
+
+      // 같은 이름이 있으면 번호를 붙이고, 읽기 보기처럼 커서가 없을 때는 메모 끝에 붙인다.
+      pad.press('읽기')
+      await pad.until(() => !pad.field(EDITOR), 'the preview')
+      hand(pad.pid, { '풍경.png': '50x50' })
+      await host.until(() => file('글.md').endsWith('뒤\n![[풍경 2.png]]\n'), 'the embed at the end')
+      expect(file('attachments/풍경 2.png')).toBe('50x50')
+      // 너무 커서 받지 못한 것이 있으면 알린다.
+      hand(pad.pid, {}, 1)
+      await pad.see('그림이 너무 큽니다. 20MB까지 넣을 수 있습니다.')
+    })
+
+    it('inserts an image from the / list too', async () => {
+      write('글.md', '줄\n/그림')
+      const pad = await openNotepad('글.md')
+      pad.send(GuiEvent.fieldFocus, EDITOR, 1)
+      pad.send(GuiEvent.caret, EDITOR, utf8('줄\n/그림').length, utf8('줄\n/그림').length)
+      pad.send(GuiEvent.caretAt, EDITOR, 300, 150)
+      await pad.until(() => pad.region('그림 넣기', 'option'), 'the command')
+      pad.send(GuiEvent.key, keyCode('Enter'))
+      await pad.until(() => all('gui-draw', pad.pid).some((e) => decodeDrawList(e.data).some((op) => op.op === 'pick')), 'the file dialog')
+      expect(pad.shown()).toBe('줄\n')
+      hand(pad.pid, { '도표.svg': '80x60' })
+      await host.until(() => file('글.md') === '줄\n![[도표.svg]]', 'the embed where the command was')
+    })
+  })
+
   it('scrolls a long tree with the wheel, drawing only the visible rows', async () => {
     for (let i = 1; i <= 60; i++) write(`메모 ${String(i).padStart(2, '0')}.md`, '')
     const pad = await openNotepad()

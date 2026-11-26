@@ -111,6 +111,8 @@ export function describeArgs(req: SysReq): string {
       return `${a0}, ${preview(req.data ?? new Uint8Array(0))}, ${req.data?.length ?? 0}`
     case Sys.guimeasure:
       return `${req.data?.length ?? 0} bytes`
+    case Sys.guiimage:
+      return quote(req.path ?? '')
     case Sys.pipe:
     case Sys.getpid:
     case Sys.winsize:
@@ -135,6 +137,11 @@ export function describeResult(req: SysReq, res: SysRes): { result: string; erro
     case Sys.guimeasure:
       result = `${(data?.length ?? 0) / 4} widths`
       break
+    case Sys.guiimage: {
+      const view = data && data.length >= 8 ? new DataView(data.buffer, data.byteOffset) : undefined
+      result = view ? `${view.getFloat32(0, true)}x${view.getFloat32(4, true)}` : 'none'
+      break
+    }
     case Sys.fdstat:
       result = FILE_TYPES[res.ret ?? 0] ?? String(res.ret)
       break

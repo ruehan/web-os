@@ -42,6 +42,7 @@ export const Sys = {
   guitext: 28, // args [field, offset, maxLen] -> data 입력 칸의 글 일부, ret 글의 판 번호 (읽는 사이에 바뀌었는지 확인용)
   guisettext: 29, // args [field, guarded], data 글   입력 칸의 글을 정한다. guarded가 1이면 사용자가 그사이 더 치지 않았을 때만 (-> ret 정했으면 1)
   guimeasure: 30, // data 요청               -> data 글마다 f32 폭 (화면 쪽이 잰다)
+  guiimage: 31, // path 그림 파일 (절대 경로) -> data f32 너비, f32 높이 (화면 쪽이 그림을 읽어 두고 크기를 알려 준다. 못 읽으면 0, 0)
 } as const
 
 export interface SysReq {
@@ -191,6 +192,11 @@ export type KernelEvent =
   | { type: 'gui-text'; pid: number; field: number; data: Uint8Array; after?: number }
   /** 프로세스가 글들의 폭을 묻는다. gui-measured 명령으로 답해야 프로세스가 다시 움직인다. */
   | { type: 'gui-measure'; pid: number; data: Uint8Array }
+  /**
+   * 프로세스가 그림 파일의 크기를 묻는다. 화면 쪽은 그 파일을 읽어 그릴 준비를 해 두고(image 명령이 이 경로로 가리킨다),
+   * gui-measured 명령으로 너비와 높이(f32 둘)를 답해야 한다. 읽을 수 없으면 0, 0.
+   */
+  | { type: 'gui-image'; pid: number; path: string }
   /** 추적 중에 일어난 시스템 콜들. 너무 많으면 일부를 버리고 그 수를 dropped에 적는다. */
   | { type: 'trace'; records: TraceRecord[]; dropped: number }
 

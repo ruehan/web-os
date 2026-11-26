@@ -134,6 +134,11 @@ export interface SurfaceView {
   closed(): void
 }
 
+const IMAGE_TYPES: Record<string, string> = {
+  png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif',
+  webp: 'image/webp', avif: 'image/avif', bmp: 'image/bmp', svg: 'image/svg+xml',
+}
+
 /** 프로세스의 창에 글자를 그릴 때 쓰는 글꼴 지정. 폭을 잴 때와 그릴 때가 같아야 한다. */
 export const canvasFont = (size: number, style: TextStyle, family: string, monoFamily: string) =>
   `${style.italic ? 'italic ' : ''}${style.bold ? 600 : 400} ${size}px ${style.mono ? monoFamily : family}`
@@ -153,7 +158,7 @@ export function createSystem() {
   const sessions = new Map<number, SessionState>()
   let nextRef = 1
   /** 프로세스가 연 창들: pid → 마지막으로 그린 내용과, 그 창을 그리는 화면 쪽 */
-  const surfaces = new Map<number, { last?: Uint8Array; texts: Map<number, string>; edits: Map<number, number>; view?: SurfaceView }>()
+  const surfaces = new Map<number, { last?: Uint8Array; texts: Map<number, string>; edits: Map<number, number>; images: Map<string, HTMLImageElement>; view?: SurfaceView }>()
   /** 글자 폭을 재는 데 쓰는, 화면에 보이지 않는 캔버스 */
   let ruler: CanvasRenderingContext2D | null | undefined
   let surfaceOpened: ((surface: { pid: number; title: string; w: number; h: number }) => void) | undefined
@@ -245,7 +250,7 @@ export function createSystem() {
         return
       }
       case 'gui-open':
-        surfaces.set(ev.pid, { texts: new Map(), edits: new Map() })
+        surfaces.set(ev.pid, { texts: new Map(), edits: new Map(), images: new Map() })
         return surfaceOpened?.(ev)
       case 'gui-draw': {
         const surface = surfaces.get(ev.pid)
@@ -277,8 +282,26 @@ export function createSystem() {
         }
         return send({ type: 'gui-measured', pid: ev.pid, data: encodeWidths(widths) })
       }
+      case 'gui-image': {
+        // 프로세스는 답이 올 때까지 멈춰 있으므로, 읽지 못하더라도 반드시 답한다.
+        const reply = (w: number, h: number) => send({ type: 'gui-measured', pid: ev.pid, data: encodeWidths([w, h]) })
+        const surface = surfaces.get(ev.pid)
+        if (!surface) return reply(0, 0)
+        void loadImage(ev.path).then(
+          (image) => {
+            const old = surface.images.get(ev.path)
+            if (old) URL.revokeObjectURL(old.src)
+            surface.images.set(ev.path, image)
+            // 크기가 적혀 있지 않은 SVG는 브라우저의 기본 크기로 친다.
+            reply(image.naturalWidth || 300, image.naturalHeight || 150)
+          },
+          () => reply(0, 0),
+        )
+        return
+      }
       case 'gui-close': {
         const surface = surfaces.get(ev.pid)
+        for (const image of surface?.images.values() ?? []) URL.revokeObjectURL(image.src)
         surfaces.delete(ev.pid)
         return surface?.view?.closed()
       }
@@ -451,6 +474,22 @@ export function createSystem() {
     },
   }
 
+  /** 파일시스템의 그림 파일을 읽어 그릴 수 있게 준비한다. 그림이 아니거나 읽을 수 없으면 거부된다. */
+  async function loadImage(path: string): Promise<HTMLImageElement> {
+    const type = IMAGE_TYPES[path.slice(path.lastIndexOf('.') + 1).toLowerCase()]
+    if (!type) throw new Error('not an image')
+    const data = (await fsCall({ op: 'read', path })).data ?? new Uint8Array(0)
+    const image = new Image()
+    image.src = URL.createObjectURL(new Blob([data as Uint8Array<ArrayBuffer>], { type }))
+    try {
+      await image.decode()
+    } catch (e) {
+      URL.revokeObjectURL(image.src)
+      throw e
+    }
+    return image
+  }
+
   const fsCall = (request: FsRequest) =>
     new Promise<FsResult>((resolve, reject) => {
       const id = nextRef++
@@ -518,6 +557,8 @@ export function createSystem() {
 
     /** 프로세스가 연 창들 */
     gui: {
+      /** 프로세스가 guiimage로 물어서 읽어 둔 그림. 없으면 undefined. */
+      image: (pid: number, path: string) => surfaces.get(pid)?.images.get(path),
       /** 프로세스가 창을 열 때마다 불린다. */
       onOpen(handler: NonNullable<typeof surfaceOpened>) {
         surfaceOpened = handler

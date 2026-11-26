@@ -2,7 +2,7 @@
 // 이 창에서 일어난 마우스·키보드 입력은 그 프로세스에 이벤트로 전해진다.
 // 화면 쪽은 프로그램이 무엇인지 모른다. 규약(src/kernel/gui.ts)만 안다.
 import { createEffect, on, onCleanup, onMount } from 'solid-js'
-import { GuiEvent, Mod, decodeDrawList, encodeEvent, encodePointer, keyCode, type DrawOp } from '../../kernel/gui.ts'
+import { GuiEvent, HANDOFF_LIMIT, Mod, decodeDrawList, encodeEvent, encodePointer, handoffDir, keyCode, type DrawOp } from '../../kernel/gui.ts'
 import { settings } from '../settings.ts'
 import { showMenuAt, type MenuItem } from '../contextmenu.tsx'
 import { canvasFont, fontFamilies } from '../system.ts'
@@ -23,7 +23,7 @@ const isBrowserKey = (e: KeyboardEvent) =>
 const isEditingKey = (e: KeyboardEvent) => ['c', 'v', 'x', 'z', 'y', 'a'].includes(e.key.toLowerCase())
 const modsOf = (e: KeyboardEvent) => (e.shiftKey ? Mod.shift : 0) | (e.ctrlKey ? Mod.ctrl : 0) | (e.altKey ? Mod.alt : 0) | (e.metaKey ? Mod.meta : 0)
 
-function paint(ctx: CanvasRenderingContext2D, ops: DrawOp[], width: number, height: number, fonts: [string, string]) {
+function paint(ctx: CanvasRenderingContext2D, ops: DrawOp[], width: number, height: number, fonts: [string, string], imageAt: (path: string) => HTMLImageElement | undefined) {
   const box = (x: number, y: number, w: number, h: number, radius: number) => {
     ctx.beginPath()
     if (radius > 0) ctx.roundRect(x, y, w, h, radius)
@@ -98,7 +98,18 @@ function paint(ctx: CanvasRenderingContext2D, ops: DrawOp[], width: number, heig
       case 'menu': // 시스템의 메뉴로 띄운다
       case 'select': // 입력 칸의 커서를 옮긴다
       case 'overlay': // 위층과의 경계 (아래에서 나눠 그린다)
+      case 'pick': // 파일 고르기 창을 띄운다
         break
+      case 'image': {
+        const image = imageAt(op.path)
+        if (!image || op.w <= 0 || op.h <= 0) break
+        try {
+          ctx.drawImage(image, op.x, op.y, op.w, op.h)
+        } catch {
+          // 그릴 수 없는 그림은 건너뛴다.
+        }
+        break
+      }
     }
   }
   // 프로그램이 풀지 않고 끝낸 clip이 다음 그림에 남지 않게 한다.
@@ -119,6 +130,8 @@ export function SurfaceApp(props: AppProps) {
   /** 이 창에서 마지막으로 커서가 있던 입력 칸. 창이 다시 앞으로 오면 거기로 돌아간다. */
   let lastField: number | undefined
   /** 칸마다의 가장 최근 명령 (어떤 키를 프로그램에 넘길지 등) */
+  /** 지금까지 프로그램에 건넨 파일의 수 (이름 앞에 붙이는 순번) */
+  let handed = 0
   const fieldOps = new Map<number, FieldOp>()
   /** 방금 Enter를 눌러 줄바꿈을 기다리는 칸들과, 그때 함께 누른 키 */
   const enters = new Map<number, number>()
@@ -149,7 +162,7 @@ export function SurfaceApp(props: AppProps) {
       if (!ctx) continue
       ctx.setTransform(scale, 0, 0, scale, 0, 0)
       if (target === top) ctx.clearRect(0, 0, size.w, size.h)
-      paint(ctx, list, size.w, size.h, fontFamilies())
+      paint(ctx, list, size.w, size.h, fontFamilies(), (path) => gui.image(pid, path))
     }
     // 위층에 그린 것이 있을 때만 위층이 입력을 받는다 (없으면 아래의 입력 칸을 누를 수 있어야 한다).
     top.style.pointerEvents = split < 0 ? 'none' : 'auto'
@@ -332,6 +345,42 @@ export function SurfaceApp(props: AppProps) {
     }
   }
 
+  /**
+   * 사용자가 건넨 파일들(고른 것, 끌어다 놓은 것, 붙여 넣은 것)을 프로그램이 읽을 수 있는 곳에 놓고 알린다.
+   * 건넨 순서대로 "순번-이름"으로 놓는다.
+   */
+  async function handOver(files: File[]) {
+    if (files.length === 0) return
+    const fs = props.system.fs
+    const dir = handoffDir(pid)
+    let [placed, refused] = [0, 0]
+    try {
+      await fs.mkdir(dir).catch(() => {}) // 이미 있으면 그대로 쓴다
+      for (const file of files) {
+        if (file.size > HANDOFF_LIMIT) {
+          refused++
+          continue
+        }
+        // 이름에 든 /는 경로로 읽히지 않게 바꾼다.
+        const name = (file.name || 'file').replace(/[\/\\]/g, '_')
+        await fs.write(`${dir}/${String(handed++).padStart(4, '0')}-${name}`, new Uint8Array(await file.arrayBuffer()))
+        placed++
+      }
+    } finally {
+      send(GuiEvent.files, placed, refused)
+    }
+  }
+
+  /** 프로그램이 파일을 골라 달라고 했다: 브라우저의 파일 고르기 창을 띄운다. */
+  function pickFiles(op: Extract<DrawOp, { op: 'pick' }>) {
+    const input = document.createElement('input')
+    input.type = 'file'
+    input.accept = op.accept
+    input.multiple = op.multiple
+    input.addEventListener('change', () => void handOver([...(input.files ?? [])]))
+    input.click()
+  }
+
   /** 프로그램이 띄워 달라고 한 메뉴를 시스템의 메뉴로 띄우고, 고른 것을 알린다. */
   function openMenu(op: MenuOp) {
     const box = canvas.getBoundingClientRect()
@@ -414,6 +463,8 @@ export function SurfaceApp(props: AppProps) {
         for (const op of ops) if (op.op === 'select') moveCaret(op)
         const menu = ops.find((op): op is MenuOp => op.op === 'menu')
         if (menu) openMenu(menu)
+        const pick = ops.find((op) => op.op === 'pick')
+        if (pick?.op === 'pick') pickFiles(pick)
       },
       setText(field, text) {
         texts.set(field, text)
@@ -485,7 +536,25 @@ export function SurfaceApp(props: AppProps) {
   }
 
   return (
-    <div class="surface-host" ref={host} data-pid={pid}>
+    <div
+      class="surface-host"
+      ref={host}
+      data-pid={pid}
+      // 파일을 창에 끌어다 놓거나 붙여 넣으면 프로그램에 건넨다. (글을 붙여 넣는 것은 입력 칸이 그대로 받는다.)
+      onDragOver={(e) => e.dataTransfer?.types.includes('Files') && e.preventDefault()}
+      onDrop={(e) => {
+        const files = [...(e.dataTransfer?.files ?? [])]
+        if (files.length === 0) return
+        e.preventDefault()
+        void handOver(files)
+      }}
+      onPaste={(e) => {
+        const files = [...(e.clipboardData?.files ?? [])]
+        if (files.length === 0) return
+        e.preventDefault()
+        void handOver(files)
+      }}
+    >
       <canvas
         class="surface"
         ref={canvas}

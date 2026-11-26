@@ -29,6 +29,17 @@ export function boot() {
         const width = (text: string) => [...text].reduce((n, ch) => n + (ch.codePointAt(0)! >= 0x1100 ? size : size / 2), 0)
         kernel.guiMeasured(event.pid, encodeWidths(texts.map(width)))
       }
+      // 그림의 크기: 테스트의 "그림 파일"에는 "너비x높이"가 글로 적혀 있다. 그렇게 적혀 있지 않으면 64x48, 없는 파일은 0x0.
+      if (event.type === 'gui-image') {
+        let size = [0, 0]
+        try {
+          const match = /^(\d+)x(\d+)/.exec(new TextDecoder().decode(kernel.fs.readFile(event.path)))
+          size = match ? [Number(match[1]), Number(match[2])] : [64, 48]
+        } catch {
+          // 없는 파일
+        }
+        kernel.guiMeasured(event.pid, encodeWidths(size))
+      }
       notify()
     },
     now: () => 0,

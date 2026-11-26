@@ -713,13 +713,15 @@ export class Kernel {
         this.host.emit({ type: 'gui-text', pid: proc.pid, field: a0, data, ...(a1 === 1 ? { after: edits } : {}) })
         return { errno: 0, ret: a1 === 1 ? 1 : 0 }
       }
-      case Sys.guimeasure: {
+      case Sys.guimeasure:
+      case Sys.guiimage: {
         const gui = proc.gui
         if (!gui) throw new KernelError(Errno.BADF)
         if (!gui.asking) {
           gui.asking = true
           gui.reply = undefined
-          this.host.emit({ type: 'gui-measure', pid: proc.pid, data: req.data ?? new Uint8Array(0) })
+          if (req.nr === Sys.guimeasure) this.host.emit({ type: 'gui-measure', pid: proc.pid, data: req.data ?? new Uint8Array(0) })
+          else this.host.emit({ type: 'gui-image', pid: proc.pid, path: req.path ?? '' })
         }
         // 답은 화면 쪽에서 온다. (테스트처럼 그 자리에서 바로 답하는 경우에는 이미 와 있다.)
         if (!gui.reply) throw new Block(gui.replyQ)

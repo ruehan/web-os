@@ -352,6 +352,14 @@ export function runWasi(
       bytes().set(res.data!.subarray(0, count * 4), out)
       return count
     },
+    // 그림 파일의 크기를 묻는다 (화면 쪽이 그 그림을 그릴 준비도 해 둔다). out에 f32 너비와 높이를 쓰고, 읽을 수 있는 그림이면 1.
+    gui_image(pathPtr: number, pathLen: number, out: number) {
+      const res = sys.call({ nr: Sys.guiimage, args: [], path: readString(pathPtr, pathLen) })
+      if (res.errno) return -res.errno
+      if ((res.data?.length ?? 0) < 8) return 0
+      bytes().set(res.data!.subarray(0, 8), out)
+      return new DataView(res.data!.buffer, res.data!.byteOffset).getFloat32(0, true) > 0 ? 1 : 0
+    },
   }
 
   // 아직 구현하지 않은 함수는 링크 오류 대신 ENOSYS를 돌려준다.

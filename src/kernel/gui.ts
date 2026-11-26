@@ -45,7 +45,18 @@ export const GuiEvent = {
    * 커서 옆에 고를 것을 띄울 때 쓴다.
    */
   caretAt: 14,
+  /**
+   * 사용자가 파일을 건넸다 (pick 명령으로 고른 것, 창에 끌어다 놓은 것, 붙여 넣은 것).
+   * 파일들은 /tmp/.gui-<pid>/ 아래에 "순번-이름"으로 놓여 있고, 프로그램이 가져간 뒤 지운다.
+   * a 놓인 파일의 수, b 너무 커서 받지 않은 파일의 수.
+   */
+  files: 15,
 } as const
+
+/** 사용자가 건넨 파일이 놓이는 폴더 */
+export const handoffDir = (pid: number) => `/tmp/.gui-${pid}`
+/** 건네받는 파일 하나의 최대 크기. 파일시스템 전체가 메모리에 올라가므로 지나치게 큰 파일은 받지 않는다. */
+export const HANDOFF_LIMIT = 20 * 1024 * 1024
 
 /** key 이벤트의 특수 키 */
 export const Key = {
@@ -83,7 +94,7 @@ export function keyCode(key: string): number | undefined {
 
 // ───────────── 그리기 명령 ─────────────
 
-const Op = { clear: 1, rect: 2, frame: 3, line: 4, circle: 5, text: 6, clip: 7, unclip: 8, field: 9, region: 10, menu: 11, select: 12, overlay: 13 } as const
+const Op = { clear: 1, rect: 2, frame: 3, line: 4, circle: 5, text: 6, clip: 7, unclip: 8, field: 9, region: 10, menu: 11, select: 12, overlay: 13, image: 14, pick: 15 } as const
 
 /** 입력 칸의 성질 (field 명령의 flags) */
 export const FieldFlag = { multiline: 1, mono: 2, focus: 4, bold: 8, select: 16, keys: 32, grabEnter: 64, where: 128 } as const
@@ -177,6 +188,16 @@ export type DrawOp =
    * 이 뒤에 놓는 입력 칸은 그 위층보다도 위에 온다.
    */
   | { op: 'overlay' }
+  /**
+   * 그림 파일을 이 사각형에 맞춰 그린다. 그 전에 guiimage로 크기를 물어 화면 쪽이 읽어 두게 해야 한다
+   * (묻지 않은 그림은 그려지지 않는다). path는 그때 물은 경로와 같아야 한다.
+   */
+  | { op: 'image'; x: number; y: number; w: number; h: number; path: string }
+  /**
+   * 사용자에게 파일을 고르게 한다 (그림 넣기 등). 고른 파일은 files 이벤트로 건네진다.
+   * menu처럼 묶음 하나에만 넣는다. accept는 고를 수 있는 종류 ("image/*" 등), multiple은 여러 개를 고를 수 있는지.
+   */
+  | { op: 'pick'; multiple: boolean; accept: string }
   | { op: 'menu'; x: number; y: number; items: { label: string; disabled: boolean; danger: boolean; separator: boolean }[] }
 
 const ALIGN = ['left', 'center', 'right'] as const
@@ -313,6 +334,12 @@ export function decodeDrawList(data: Uint8Array): DrawOp[] {
       }
       case Op.overlay:
         ops.push({ op: 'overlay' })
+        break
+      case Op.image:
+        ops.push({ op: 'image', x: f32(), y: f32(), w: f32(), h: f32(), path: str() })
+        break
+      case Op.pick:
+        ops.push({ op: 'pick', multiple: u8() !== 0, accept: str() })
         break
       case Op.select:
         ops.push({ op: 'select', id: u32(), start: u32(), end: u32() })

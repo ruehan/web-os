@@ -20,6 +20,8 @@ extern "C" {
     fn sys_gui_set_text(field: u32, text: *const u8, len: usize, guarded: i32) -> i32;
     #[link_name = "gui_measure"]
     fn sys_gui_measure(req: *const u8, len: usize, out: *mut f32, cap: usize) -> i32;
+    #[link_name = "gui_image"]
+    fn sys_gui_image(path: *const u8, len: usize, out: *mut f32) -> i32;
 }
 
 /// 빨강, 초록, 파랑, 불투명도 (각 0~255)
@@ -250,6 +252,22 @@ impl Frame {
         self.s(label);
     }
 
+    /// 그림 파일을 이 사각형에 맞춰 그린다. 먼저 `Window::image_size`로 크기를 물어 둔 그림만 그려진다
+    /// (`path`는 그때와 같은 절대 경로여야 한다).
+    pub fn image(&mut self, x: f32, y: f32, w: f32, h: f32, path: &str) {
+        self.op(14);
+        self.f(&[x, y, w, h]);
+        self.s(path);
+    }
+
+    /// 사용자에게 파일을 고르게 한다. 고른 파일은 `Event::Files`로 건네진다. 띄우고 싶을 때의 묶음 하나에만 넣는다.
+    /// `accept`는 고를 수 있는 종류다 ("image/*" 등).
+    pub fn pick(&mut self, multiple: bool, accept: &str) {
+        self.op(15);
+        self.buf.push(multiple as u8);
+        self.s(accept);
+    }
+
     /// 이 뒤에 그리는 것은 입력 칸보다 위에 온다 (입력 칸을 덮는 창 등).
     /// 이 뒤에 놓는 입력 칸은 그 위층보다도 위에 온다.
     pub fn overlay(&mut self) {
@@ -369,6 +387,14 @@ pub enum Event {
     Caret { field: u32, start: usize, end: usize },
     /// 입력 칸의 커서가 창의 어디에 있는지 (`Field::locate`로 물었을 때). `y`는 커서가 있는 줄의 아래쪽이다.
     CaretAt { field: u32, x: f32, y: f32 },
+    /// 사용자가 파일을 건넸다 (고른 것, 창에 끌어다 놓은 것, 붙여 넣은 것). `handoff_dir()`에 놓여 있고,
+    /// 가져간 뒤 지워야 한다. `refused`는 너무 커서 받지 않은 파일의 수다.
+    Files { count: usize, refused: usize },
+}
+
+/// 사용자가 건넨 파일들이 놓이는 폴더. 파일 이름은 "순번-원래 이름"이다.
+pub fn handoff_dir() -> std::path::PathBuf {
+    std::path::PathBuf::from(format!("/tmp/.gui-{}", crate::getpid()))
 }
 
 fn decode(raw: [i32; 4]) -> Option<Event> {
@@ -404,6 +430,7 @@ fn decode(raw: [i32; 4]) -> Option<Event> {
         10 => Event::FieldFocus { field: a as u32, on: b != 0 },
         11 => Event::Menu(usize::try_from(a).ok()),
         12 => Event::PointerLeave,
+        15 => Event::Files { count: a.max(0) as usize, refused: b.max(0) as usize },
         14 => Event::CaretAt { field: a as u32, x: b as f32, y: c as f32 },
         13 => Event::Caret { field: a as u32, start: b.max(0) as usize, end: c.max(0) as usize },
         _ => return None,
@@ -485,6 +512,13 @@ impl Window {
                 bytes.extend_from_slice(&chunk[..n]);
             }
         }
+    }
+
+    /// 그림 파일의 크기 (너비, 높이). 화면 쪽이 그 파일을 읽어 두므로, 그 뒤로 `Frame::image`로 그릴 수 있다.
+    /// 그림이 아니거나 읽을 수 없으면 `None`. `path`는 절대 경로여야 한다.
+    pub fn image_size(&self, path: &str) -> Option<(f32, f32)> {
+        let mut size = [0f32; 2];
+        (unsafe { sys_gui_image(path.as_ptr(), path.len(), size.as_mut_ptr()) } == 1).then_some((size[0], size[1]))
     }
 
     /// 글들이 화면에서 차지할 폭. 글자를 그리는 것은 화면 쪽이라 폭도 화면 쪽에 물어봐야 안다.
