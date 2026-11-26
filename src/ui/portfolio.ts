@@ -11,8 +11,6 @@ export interface Project {
   link?: string
   /** 기간 (예: "2026.03 ~ 2026.11") */
   period?: string
-  /** 어디서 한 일인지 (회사, 과정 등) */
-  at?: string
   /** 이 OS 안에서 바로 해 볼 수 있는 것: 단추의 글, 열 앱, 터미널이면 실행할 명령 */
   tries?: { label: string; app: string; run?: string }[]
 }
@@ -74,18 +72,6 @@ export const portfolio: Portfolio = {
       ],
     },
     {
-      name: '쓸모 (SSEULMO)',
-      summary: 'TMS 기반 음식물 폐기물 수거 서비스.',
-      at: '제로원',
-      points: ['사진으로 용량을 재고, AI로 폐기물을 분석하고, 수거 경로를 최적화합니다.'],
-    },
-    {
-      name: '담비 (DAMBI)',
-      summary: 'IoT 음식물 폐기물 감량기.',
-      at: '제로원',
-      points: ['감량기의 상태를 실시간으로 지켜보고, 에너지 효율을 맞춥니다.'],
-    },
-    {
       name: 'Calmiary',
       summary: '고민을 기록하는 다이어리.',
       link: 'https://calmiary.org',
@@ -103,7 +89,16 @@ export const portfolio: Portfolio = {
       period: '2026.11 ~',
       points: ['유통·제조·CS를 잇는 통합 디지털 인프라 설계', '반복 업무 자동화와 데이터 기반 의사결정 체계', 'LLM 업무 어시스턴트 등 현장에 쓰이는 AI 도입'],
     },
-    { place: '제로원', role: 'S/W Lead Developer', period: '2025.04 ~ 2026.10', points: ['FastAPI, React, React Native'] },
+    {
+      place: '제로원',
+      role: 'S/W Lead Developer',
+      period: '2025.04 ~ 2026.10',
+      points: [
+        '쓸모 (SSEULMO): TMS 기반 음식물 폐기물 수거 서비스. 사진으로 용량을 재고, AI로 폐기물을 분석하고, 수거 경로를 최적화합니다.',
+        '담비 (DAMBI): IoT 음식물 폐기물 감량기. 감량기의 상태를 실시간으로 지켜보고, 에너지 효율을 맞춥니다.',
+        'FastAPI, React, React Native',
+      ],
+    },
     { place: 'KETI', role: 'Software Researcher', period: '2021.10 ~ 2023.03', points: ['Python, Flask, Vue.js'] },
   ],
   contacts: [

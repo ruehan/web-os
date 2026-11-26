@@ -52,8 +52,8 @@ export function PortfolioApp(props: AppProps) {
                     {project.name}
                   </a>
                 </Show>
-                <Show when={project.at || project.period}>
-                  <small>{[project.at, project.period].filter(Boolean).join(' · ')}</small>
+                <Show when={project.period}>
+                  <small>{project.period}</small>
                 </Show>
               </h3>
               <p>{project.summary}</p>
