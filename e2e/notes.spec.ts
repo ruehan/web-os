@@ -355,7 +355,7 @@ test('survives a reload, including text typed just before closing the window', a
   await page.keyboard.press('Enter')
   await page.keyboard.type('닫기 직전에 친 글')
   // 자동 저장을 기다리지 않고 바로 창을 닫는다.
-  await notes(page).getByRole('button', { name: '닫기' }).click()
+  await notes(page).getByRole('button', { name: '닫기', exact: true }).click()
   await page.waitForTimeout(700)
   await page.reload()
   await expectScreen(page, term(page)).toMatch(/\$$/)

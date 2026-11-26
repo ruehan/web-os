@@ -1,6 +1,6 @@
 // 메모 보관함. 폴더로 정리한 마크다운 메모를 [[링크]]로 서로 잇고, 그림을 함께 보관한다.
 // 메모와 그림은 모두 홈의 notes 폴더 아래의 실제 파일이라 터미널, 파일 탐색기, 보관 폴더, 백업에서도 그대로 보인다.
-import { For, Show, batch, createEffect, createMemo, createResource, createSignal, onCleanup, type JSX } from 'solid-js'
+import { For, Show, batch, createEffect, createMemo, createResource, createSignal, onCleanup, onMount, type JSX } from 'solid-js'
 import { createStore, reconcile } from 'solid-js/store'
 import { Errno } from '../../kernel/errno.ts'
 import { CodeArea } from '../editor/CodeArea.tsx'
@@ -13,22 +13,29 @@ import {
   ATTACHMENTS,
   VAULT,
   baseOf,
+  buildGraph,
   dirOf,
   extOf,
   extensionForType,
   imageTypeOf,
+  isInside,
   isLegacyName,
   joinPath,
   kindOf,
+  layoutGraph,
+  moveProblem,
   nameProblem,
+  outlineOf,
   parseLinks,
   renameLinks,
   resolveLink,
   stemOf,
+  tagsOf,
   titleFromText,
   uniqueName,
   type FileKind,
 } from '../notes/vault.ts'
+import { continueList, indent, type Edit } from '../notes/editing.ts'
 import { FsError } from '../system.ts'
 import type { AppProps } from './registry.tsx'
 
@@ -57,6 +64,31 @@ interface Entry {
 
 const absolute = (path: string) => (path ? `${VAULT}/${path}` : VAULT)
 
+/** 최근에 연 메모를 기억해 두는 곳 (이 브라우저에만 남는다) */
+const RECENT_KEY = 'webos.notes.recent'
+const RECENT_LIMIT = 20
+
+function savedRecent(): string[] {
+  try {
+    const saved: unknown = JSON.parse(localStorage.getItem(RECENT_KEY) ?? '[]')
+    return Array.isArray(saved) ? saved.filter((p): p is string => typeof p === 'string') : []
+  } catch {
+    return []
+  }
+}
+
+/** 이름에 친 글자들이 순서대로 들어 있는가. 붙어 있으면 앞쪽일수록, 흩어져 있으면 그다음으로 친다. 없으면 -1. */
+function matchScore(name: string, typed: string): number {
+  const at = name.indexOf(typed)
+  if (at >= 0) return at
+  let from = 0
+  for (const ch of typed) {
+    from = name.indexOf(ch, from) + 1
+    if (from === 0) return -1
+  }
+  return 1000 + name.length
+}
+
 const stamp = (d = new Date()) => {
   const two = (n: number) => String(n).padStart(2, '0')
   return `${d.getFullYear()}${two(d.getMonth() + 1)}${two(d.getDate())}-${two(d.getHours())}${two(d.getMinutes())}${two(d.getSeconds())}`
@@ -81,6 +113,23 @@ export function NotesApp(props: AppProps) {
   const [error, setError] = createSignal('')
   /** 커서가 닫히지 않은 [[ 안에 있을 때: 지금까지 친 글자와 그 시작 위치 */
   const [linking, setLinking] = createSignal<{ from: number; typed: string } | null>(null)
+  /** 탭으로 열어 둔 파일들 */
+  const [tabs, setTabs] = createSignal<string[]>([])
+  /** 지나온 파일들과 그 안에서의 지금 위치 (뒤로, 앞으로) */
+  const [trail, setTrail] = createSignal<{ list: string[]; at: number }>({ list: [], at: -1 })
+  /** 옆에 참고로 펼쳐 둔 메모 */
+  const [side, setSide] = createSignal<string | null>(null)
+  const [graphOpen, setGraphOpen] = createSignal(false)
+  /** 빠른 열기 창에 친 글자. 닫혀 있으면 null. */
+  const [quick, setQuick] = createSignal<string | null>(null)
+  const [quickAt, setQuickAt] = createSignal(0)
+  const [recent, setRecent] = createSignal(savedRecent())
+  /** 끌고 있는 항목과, 지금 놓으면 들어갈 폴더 */
+  const [dragging, setDragging] = createSignal<string | null>(null)
+  const [dropDir, setDropDir] = createSignal<string | null>(null)
+  let root!: HTMLDivElement
+  /** 사용자가 탭을 모두 닫았다. 다른 메모를 열 때까지는 알아서 열지 않는다. */
+  let stayEmpty = false
   let area: HTMLTextAreaElement | undefined
   let titleInput: HTMLInputElement | undefined
   let imagePicker!: HTMLInputElement
@@ -161,9 +210,14 @@ export function NotesApp(props: AppProps) {
         if (!found.some((e) => e.path === path)) found.push({ path, kind: 'note' })
       }
       found.sort((a, b) => a.path.localeCompare(b.path, 'ko'))
-      setEntries(reconcile(found, { key: 'path' }))
-      setTexts(reconcile(loaded))
-      if (!found.some((e) => e.path === current())) setCurrent(found.find((e) => e.kind === 'note')?.path ?? null)
+      batch(() => {
+        setEntries(reconcile(found, { key: 'path' }))
+        setTexts(reconcile(loaded))
+        // 사라진 파일은 탭, 지나온 길, 최근 목록에서도 뺀다.
+        const known = new Set(found.map((e) => e.path))
+        remap((path) => (known.has(path) ? path : null))
+        if (!current() && !stayEmpty) show(tabs().at(-1) ?? found.find((e) => e.kind === 'note')?.path ?? null)
+      })
     } catch (e) {
       report(e)
     }
@@ -211,16 +265,92 @@ export function NotesApp(props: AppProps) {
     for (const path of [...pending.keys()]) void save(path)
   })
 
-  // ───────────── 열기, 만들기, 이름 바꾸기, 지우기 ─────────────
+  // ───────────── 탭과 지나온 길 ─────────────
 
-  function open(path: string) {
-    setCurrent(path)
-    setActiveDir(dirOf(path))
-    setConfirmingDelete(null)
-    setLinking(null)
-    setError('')
-    // 그 파일이 든 폴더들이 접혀 있으면 펼친다.
-    setCollapsed((set) => new Set([...set].filter((dir) => !`${path}/`.startsWith(`${dir}/`))))
+  /** 파일을 화면에 올린다: 탭에 없으면 탭을 만들고, 최근 목록과 지나온 길에 적는다. */
+  function show(path: string | null, record = true) {
+    batch(() => {
+      setCurrent(path)
+      if (!path) return
+      setTabs((list) => (list.includes(path) ? list : [...list, path]))
+      if (kindOf(path) === 'note') setRecent((list) => [path, ...list.filter((p) => p !== path)].slice(0, RECENT_LIMIT))
+      if (record) {
+        setTrail(({ list, at }) => (list[at] === path ? { list, at } : { list: [...list.slice(0, at + 1), path], at: at + 1 }))
+      }
+    })
+  }
+
+  /** 경로가 바뀌거나(이름 바꾸기, 옮기기) 없어졌을 때(null), 경로를 기억하는 모든 곳을 함께 고친다. */
+  function remap(to: (path: string) => string | null) {
+    const each = (list: string[]) => [...new Set(list.map(to).filter((p): p is string => p !== null))]
+    batch(() => {
+      setTabs(each)
+      setRecent(each)
+      setSide((path) => path && to(path))
+      setTrail(({ list, at }) => {
+        const next: string[] = []
+        let pos = -1
+        list.forEach((path, i) => {
+          const moved = to(path)
+          if (moved !== null && next.at(-1) !== moved) next.push(moved)
+          if (i === at) pos = next.length - 1
+        })
+        return { list: next, at: pos }
+      })
+      setCurrent((path) => path && to(path))
+    })
+  }
+
+  createEffect(() => {
+    try {
+      localStorage.setItem(RECENT_KEY, JSON.stringify(recent()))
+    } catch {
+      // 저장하지 못해도 이번에 켜 둔 동안에는 그대로 쓸 수 있다.
+    }
+  })
+
+  const canGo = (step: number) => trail().list[trail().at + step] !== undefined
+
+  /** 뒤로(-1), 앞으로(+1) */
+  function go(step: number) {
+    const { list, at } = trail()
+    const path = list[at + step]
+    if (path === undefined) return
+    setTrail({ list, at: at + step })
+    open(path, false)
+  }
+
+  function closeTab(path: string) {
+    const list = tabs()
+    const at = list.indexOf(path)
+    if (at < 0) return
+    const rest = list.filter((p) => p !== path)
+    batch(() => {
+      setTabs(rest)
+      if (current() !== path) return
+      // 닫은 탭의 오른쪽, 없으면 왼쪽 탭으로 간다.
+      const next = rest[at] ?? rest[at - 1] ?? null
+      stayEmpty = next === null
+      if (next) open(next)
+      else setCurrent(null)
+    })
+  }
+
+  // ───────────── 열기, 만들기, 이름 바꾸기, 옮기기, 지우기 ─────────────
+
+  function open(path: string, record = true) {
+    stayEmpty = false
+    batch(() => {
+      show(path, record)
+      setGraphOpen(false)
+      setQuick(null)
+      setActiveDir(dirOf(path))
+      setConfirmingDelete(null)
+      setLinking(null)
+      setError('')
+      // 그 파일이 든 폴더들이 접혀 있으면 펼친다.
+      setCollapsed((set) => new Set([...set].filter((dir) => !`${path}/`.startsWith(`${dir}/`))))
+    })
   }
 
   function createNote(stem = '제목 없음', dir = activeDir()): string {
@@ -291,7 +421,7 @@ export function NotesApp(props: AppProps) {
       setEntries((e) => e.path === from, 'path', to)
       setTexts(to, content)
       setTexts(from, undefined as never)
-      setCurrent(to)
+      remap((path) => (path === from ? to : path))
       setError('')
       // 파일이 실제로 옮겨지고 저장될 때까지는 "저장 중"이다.
       setSaving(true)
@@ -321,13 +451,85 @@ export function NotesApp(props: AppProps) {
       await Promise.all([...pending.keys()].map(save))
       await fs.rename(absolute(from), absolute(to))
       const moved = (path: string) => (`${path}/`.startsWith(`${from}/`) ? to + path.slice(from.length) : path)
-      setCurrent((path) => path && moved(path))
+      remap(moved)
       setActiveDir(moved)
       await load()
     } catch (e) {
       report(e)
     }
   }
+
+  /** 파일이나 폴더를 다른 폴더로 옮긴다 (dest가 빈 문자열이면 보관함 맨 위). */
+  async function move(path: string, dest: string) {
+    const problem = moveProblem(path, dest, namesIn(dest))
+    if (problem !== undefined) return void (problem && setError(problem))
+    const to = joinPath(dest, baseOf(path))
+    const moved = (p: string) => (isInside(p, path) ? to + p.slice(path.length) : p)
+    const known = files()
+    try {
+      await Promise.all([...pending.keys()].map(save))
+      await fs.rename(absolute(path), absolute(to))
+      batch(() => {
+        remap(moved)
+        setActiveDir(moved)
+        setCollapsed((set) => new Set([...set].filter((dir) => !isInside(dest, dir) || dest === '')))
+        setError('')
+      })
+      await load()
+      // 이름만 적은 링크는 그대로 통한다. 폴더까지 적은 링크([[폴더/메모]])만 새 자리로 고친다.
+      for (const old of known) if (isInside(old, path)) await relink(old, moved(old), known)
+    } catch (e) {
+      report(e)
+    }
+  }
+
+  /** 옮길 수 있는 폴더들을 메뉴로 보여 준다. */
+  function moveMenu(e: MouseEvent, path: string) {
+    const dirs = ['', ...entries.filter((x) => x.kind === 'dir').map((x) => x.path)].filter(
+      (dir) => moveProblem(path, dir, namesIn(dir)) === undefined,
+    )
+    showMenu(
+      e,
+      dirs.length
+        ? dirs.map((dir) => ({ label: dir || '보관함 맨 위', onSelect: () => void move(path, dir) }))
+        : [{ label: '옮길 수 있는 폴더가 없습니다', onSelect: () => {}, disabled: true }],
+    )
+  }
+
+  /** 끌어다 놓을 수 있는 자리에 붙이는 동작들. dest는 놓았을 때 들어갈 폴더. */
+  const dropInto = (dest: () => string) => ({
+    onDragOver: (e: DragEvent) => {
+      const path = dragging()
+      if (!path || moveProblem(path, dest(), namesIn(dest())) !== undefined) return
+      e.preventDefault()
+      e.stopPropagation()
+      setDropDir(dest())
+    },
+    onDrop: (e: DragEvent) => {
+      const path = dragging()
+      if (!path) return
+      e.preventDefault()
+      e.stopPropagation()
+      setDropDir(null)
+      setDragging(null)
+      void move(path, dest())
+    },
+  })
+
+  const dragFrom = (item: Entry) => ({
+    onDragStart: (e: DragEvent) => {
+      // 편집 화면에 놓으면 그 자리에 링크가 들어간다.
+      const link = item.kind === 'note' ? `[[${stemOf(item.path)}]]` : item.kind === 'dir' ? '' : `![[${baseOf(item.path)}]]`
+      e.dataTransfer?.setData('text/plain', link)
+      if (e.dataTransfer) e.dataTransfer.effectAllowed = 'copyMove'
+      e.stopPropagation()
+      setDragging(item.path)
+    },
+    onDragEnd: () => {
+      setDragging(null)
+      setDropDir(null)
+    },
+  })
 
   async function remove(path: string) {
     setConfirmingDelete(null)
@@ -340,6 +542,7 @@ export function NotesApp(props: AppProps) {
     try {
       await fs.remove(absolute(path))
       if (`${activeDir()}/`.startsWith(`${path}/`)) setActiveDir(dirOf(path))
+      remap((p) => (isInside(p, path) ? null : p))
       await load()
     } catch (e) {
       report(e)
@@ -421,6 +624,21 @@ export function NotesApp(props: AppProps) {
       return completeLink(suggestions()[0]!)
     }
     if (e.key === 'Escape' && linking()) return setLinking(null)
+    // 한글을 조합하는 중의 Enter는 글자를 확정하는 것이다.
+    if (e.isComposing) return
+    if (lang() === 'markdown' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      let change: Edit | null = null
+      if (e.key === 'Enter' && !e.shiftKey && el.selectionStart === el.selectionEnd) change = continueList(el.value, el.selectionStart)
+      else if (e.key === 'Tab') change = indent(el.value, el.selectionStart, el.selectionEnd, e.shiftKey)
+      if (change) {
+        e.preventDefault()
+        el.value = change.text
+        el.setSelectionRange(change.start, change.end)
+        edit(change.text)
+        trackCaret(el)
+      }
+      return
+    }
     if (!(e.ctrlKey || e.metaKey) || e.altKey) return
     const key = e.key.toLowerCase()
     if (key === 'b') wrap(el, '**', '**')
@@ -489,13 +707,74 @@ export function NotesApp(props: AppProps) {
     return { data: await fs.read(absolute(path)), type }
   }
 
+  /** ![[메모]]로 넣을 메모의 내용 */
+  function readNote(target: string) {
+    const path = resolveLink(target, files())
+    return path && kindOf(path) === 'note' ? texts[path] : undefined
+  }
+
   const context: PreviewContext = {
     linkExists: (target) => resolveLink(target, files()) !== undefined,
     openLink,
     readImage,
+    readNote,
     revision: files,
     toggleTask: (line) => edit(toggleTask(text(), line)),
     openTag: (name) => setQuery(`#${name}`),
+  }
+  /** 옆에 펼친 참고 메모용. 체크를 눌러도 지금 편집하는 메모가 바뀌면 안 되므로 누를 수 없게 한다. */
+  const sideContext: PreviewContext = { ...context, toggleTask: undefined }
+
+  // ───────────── 목차, 태그 ─────────────
+
+  const outline = createMemo(() => (entry()?.kind === 'note' && lang() === 'markdown' ? outlineOf(text()) : []))
+
+  /** 보관함의 모든 태그와, 그 태그가 든 메모의 수 (많은 것부터) */
+  const allTags = createMemo(() => {
+    const count = new Map<string, number>()
+    for (const path of notes()) for (const tag of tagsOf(texts[path] ?? '')) count.set(tag, (count.get(tag) ?? 0) + 1)
+    return [...count].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'ko'))
+  })
+
+  /** 목차에서 고른 제목으로 간다: 편집 화면은 커서를 그 줄에 두고, 읽기 화면은 그 제목이 보이게 한다. */
+  function jump(line: number) {
+    const lines = text().split('\n')
+    if (area?.isConnected) {
+      const offset = lines.slice(0, line).reduce((n, l) => n + l.length + 1, 0)
+      area.focus({ preventScroll: true })
+      area.setSelectionRange(offset, offset)
+      // 긴 줄이 여러 줄로 접히면 줄 번호만으로는 높이를 알 수 없어, 전체 높이의 비율로 어림한다.
+      area.scrollTop = Math.max(0, (line / lines.length) * area.scrollHeight - 30)
+      trackCaret(area)
+    }
+    const heading = [...root.querySelectorAll<HTMLElement>(`.preview [data-line="${line}"]`)].find((h) => !h.closest('.md-embed, .note-ref'))
+    const scroller = heading?.closest('.preview')
+    if (heading && scroller) scroller.scrollTop += heading.getBoundingClientRect().top - scroller.getBoundingClientRect().top - 8
+  }
+
+  // ───────────── 빠른 열기 ─────────────
+
+  /** 친 글자가 없으면 최근에 연 메모부터, 있으면 이름이 맞는 메모를 가까운 순서로 */
+  const quickHits = createMemo(() => {
+    const typed = (quick() ?? '').trim().toLowerCase()
+    const all = notes()
+    if (!typed) return [...recent().filter((p) => all.includes(p)), ...all.filter((p) => !recent().includes(p))].slice(0, 8)
+    return all
+      .map((path) => ({ path, score: matchScore(stemOf(path).toLowerCase(), typed) }))
+      .filter((hit) => hit.score >= 0)
+      .sort((a, b) => a.score - b.score || a.path.length - b.path.length || a.path.localeCompare(b.path, 'ko'))
+      .slice(0, 8)
+      .map((hit) => hit.path)
+  })
+
+  function openQuick() {
+    setQuickAt(0)
+    setQuick('')
+  }
+
+  function closeQuick() {
+    setQuick(null)
+    area?.focus()
   }
 
   // ───────────── 찾기 ─────────────
@@ -536,11 +815,15 @@ export function NotesApp(props: AppProps) {
               aria-level={tree.level}
               aria-selected={current() === item.path}
               style={{ 'padding-left': `${8 + (tree.level - 1) * 14}px` }}
+              draggable={true}
+              {...dragFrom(item)}
+              {...dropInto(() => dirOf(item.path))}
               onClick={() => open(item.path)}
               onKeyDown={(e) => e.key === 'Enter' && open(item.path)}
               onContextMenu={(e) =>
                 showMenu(e, [
                   { label: '열기', onSelect: () => open(item.path) },
+                  item.kind === 'note' && { label: '옆에 열기', onSelect: () => setSide(item.path) },
                   item.kind === 'note' && {
                     label: '이름 바꾸기',
                     onSelect: () => {
@@ -556,6 +839,7 @@ export function NotesApp(props: AppProps) {
                     label: '링크 복사',
                     onSelect: () => void navigator.clipboard?.writeText(`[[${stemOf(item.path)}]]`),
                   },
+                  { label: '다른 폴더로 옮기기…', onSelect: () => moveMenu(e, item.path) },
                   'separator',
                   { label: '삭제…', onSelect: () => setConfirmingDelete(item.path), danger: true },
                 ])
@@ -572,8 +856,11 @@ export function NotesApp(props: AppProps) {
           <li role="treeitem" aria-level={tree.level} aria-expanded={!collapsed().has(item.path)} aria-label={baseOf(item.path)}>
             <div
               class="tree-row tree-dir"
-              classList={{ active: activeDir() === item.path }}
+              classList={{ active: activeDir() === item.path, 'drop-target': dropDir() === item.path }}
               style={{ 'padding-left': `${8 + (tree.level - 1) * 14}px` }}
+              draggable={renamingDir() !== item.path}
+              {...dragFrom(item)}
+              {...dropInto(() => item.path)}
               onClick={() => {
                 setActiveDir(item.path)
                 toggleDir(item.path)
@@ -587,6 +874,7 @@ export function NotesApp(props: AppProps) {
                   { label: '여기에 새 폴더', onSelect: () => void newFolder() },
                   'separator',
                   { label: '이름 바꾸기', onSelect: () => setRenamingDir(item.path) },
+                  { label: '다른 폴더로 옮기기…', onSelect: () => moveMenu(e, item.path) },
                   { label: '삭제…', onSelect: () => setConfirmingDelete(item.path), danger: true },
                 ])
               }}
@@ -656,17 +944,101 @@ export function NotesApp(props: AppProps) {
     )
   }
 
+  /** 메모를 점으로, 링크를 선으로 그린 관계도 */
+  const GraphView = () => {
+    let box!: HTMLDivElement
+    const [size, setSize] = createSignal({ w: 600, h: 400 })
+    const [hover, setHover] = createSignal<string | null>(null)
+    onMount(() => {
+      const measure = () => box.clientWidth && setSize({ w: box.clientWidth, h: box.clientHeight })
+      const observer = new ResizeObserver(measure)
+      observer.observe(box)
+      onCleanup(() => observer.disconnect())
+    })
+    const graph = createMemo(() =>
+      layoutGraph(buildGraph(notes().map((path) => ({ path, text: texts[path] ?? '' })), files()), size().w, size().h),
+    )
+    const spot = createMemo(() => new Map(graph().nodes.map((node) => [node.id, node])))
+    /** 마우스를 올린 점과 그 이웃들. 이것만 또렷하게 그린다. */
+    const near = createMemo(() => {
+      const id = hover()
+      if (!id) return null
+      const set = new Set([id])
+      for (const link of graph().links) {
+        if (link.source === id) set.add(link.target)
+        if (link.target === id) set.add(link.source)
+      }
+      return set
+    })
+    const dim = (id: string) => near() !== null && !near()!.has(id)
+    const pick = (id: string, label: string, exists: boolean) => (exists ? open(id) : openLink(label))
+
+    return (
+      <div class="note-graph" ref={box}>
+        <Show when={graph().nodes.length} fallback={<p class="editor-note">메모를 만들고 [[링크]]로 이으면 여기에 그려집니다.</p>}>
+          <svg width={size().w} height={size().h} role="group" aria-label="메모 그래프">
+            <For each={graph().links}>
+              {(link) => (
+                <line
+                  classList={{ dim: dim(link.source) || dim(link.target), lit: near() !== null && !dim(link.source) && !dim(link.target) }}
+                  x1={spot().get(link.source)!.x}
+                  y1={spot().get(link.source)!.y}
+                  x2={spot().get(link.target)!.x}
+                  y2={spot().get(link.target)!.y}
+                />
+              )}
+            </For>
+            <For each={graph().nodes}>
+              {(node) => (
+                <g
+                  class="graph-node"
+                  classList={{ missing: !node.exists, current: node.id === current(), dim: dim(node.id) }}
+                  role="button"
+                  tabindex="0"
+                  aria-label={`${node.label}${node.exists ? '' : ' (아직 없는 메모)'}, 링크 ${node.degree}개`}
+                  transform={`translate(${node.x} ${node.y})`}
+                  onClick={() => pick(node.id, node.label, node.exists)}
+                  onKeyDown={(e) => e.key === 'Enter' && pick(node.id, node.label, node.exists)}
+                  onPointerEnter={() => setHover(node.id)}
+                  onPointerLeave={() => setHover(null)}
+                  onFocus={() => setHover(node.id)}
+                  onBlur={() => setHover(null)}
+                >
+                  {/* 점이 작아도 쉽게 누를 수 있도록, 보이지 않는 넓은 원이 이름표까지 덮는다. */}
+                  <circle class="graph-hit" r="22" cy="6" />
+                  <circle r={5 + Math.min(7, node.degree * 1.5)} />
+                  <text y={20 + Math.min(7, node.degree * 1.5)} text-anchor="middle">
+                    {node.label}
+                  </text>
+                </g>
+              )}
+            </For>
+          </svg>
+        </Show>
+        <p class="graph-hint">
+          메모 {graph().nodes.filter((n) => n.exists).length}개 · 링크 {graph().links.length}개 · 점을 누르면 그 메모가 열립니다. 점선은 링크만 있고 아직 없는 메모입니다.
+        </p>
+      </div>
+    )
+  }
+
+  const tabName = (path: string) => (kindOf(path) === 'note' ? stemOf(path) : baseOf(path))
   const deleting = () => entries.find((e) => e.path === confirmingDelete())
 
   return (
     <div
       class="notes"
+      ref={root}
       onKeyDown={(e) => {
+        if (!(e.ctrlKey || e.metaKey)) return
+        const key = e.key.toLowerCase()
         // 보관함 어디에 초점이 있든 Ctrl/Cmd+Alt+N 으로 새 메모를 만든다. (Ctrl/Cmd+N 은 브라우저가 새 창에 쓴다.)
-        if ((e.ctrlKey || e.metaKey) && e.altKey && e.key.toLowerCase() === 'n') {
-          e.preventDefault()
-          newNote()
-        }
+        if (e.altKey && key === 'n') newNote()
+        else if (e.altKey && e.key === 'ArrowLeft') go(-1)
+        else if (e.altKey && e.key === 'ArrowRight') go(1)
+        else if (!e.altKey && key === 'o') openQuick()
+        else return
+        e.preventDefault()
       }}
     >
       <aside class="notes-side">
@@ -681,14 +1053,19 @@ export function NotesApp(props: AppProps) {
             새 폴더
           </button>
         </div>
-        <input
-          class="notes-search"
-          type="search"
-          aria-label="메모 찾기"
-          placeholder="메모 찾기"
-          value={query()}
-          onInput={(e) => setQuery(e.currentTarget.value)}
-        />
+        <div class="notes-find">
+          <input
+            class="notes-search"
+            type="search"
+            aria-label="메모 찾기"
+            placeholder="메모 찾기"
+            value={query()}
+            onInput={(e) => setQuery(e.currentTarget.value)}
+          />
+          <button class="tool" aria-pressed={graphOpen()} title="메모 사이의 링크를 그림으로 봅니다" onClick={() => setGraphOpen((on) => !on)}>
+            그래프
+          </button>
+        </div>
         <Show
           when={query().trim()}
           fallback={
@@ -696,6 +1073,9 @@ export function NotesApp(props: AppProps) {
               class="notes-tree"
               role="tree"
               aria-label="보관함"
+              classList={{ 'drop-target': dropDir() === '' }}
+              {...dropInto(() => '')}
+              onDragLeave={(e) => e.target === e.currentTarget && setDropDir(null)}
               onClick={(e) => e.target === e.currentTarget && setActiveDir('')}
               // 항목이 아닌 빈 곳: 보관함 맨 위에 만든다.
               onContextMenu={(e) => {
@@ -731,9 +1111,92 @@ export function NotesApp(props: AppProps) {
             </For>
           </ul>
         </Show>
+
+        <Show when={outline().length}>
+          <details class="side-section" open>
+            <summary>목차</summary>
+            <ul aria-label="목차">
+              <For each={outline()}>
+                {(heading) => (
+                  <li>
+                    <button style={{ 'padding-left': `${10 + (heading.level - 1) * 10}px` }} onClick={() => jump(heading.line)}>
+                      {heading.title}
+                    </button>
+                  </li>
+                )}
+              </For>
+            </ul>
+          </details>
+        </Show>
+        <Show when={allTags().length}>
+          <details class="side-section">
+            <summary>태그 {allTags().length}개</summary>
+            <ul class="tag-list" aria-label="태그">
+              <For each={allTags()}>
+                {([tag, count]) => (
+                  <li>
+                    <button class="md-tag" aria-pressed={query() === `#${tag}`} onClick={() => setQuery((q) => (q === `#${tag}` ? '' : `#${tag}`))}>
+                      #{tag} <span class="tag-count">{count}</span>
+                    </button>
+                  </li>
+                )}
+              </For>
+            </ul>
+          </details>
+        </Show>
       </aside>
 
       <section class="notes-main">
+        <div class="note-tabs">
+          <button class="tool" aria-label="뒤로" title="뒤로" disabled={!canGo(-1)} onClick={() => go(-1)}>
+            ←
+          </button>
+          <button class="tool" aria-label="앞으로" title="앞으로" disabled={!canGo(1)} onClick={() => go(1)}>
+            →
+          </button>
+          <div class="tab-strip" role="tablist" aria-label="열어 둔 메모">
+            <For each={tabs()}>
+              {(path) => (
+                <div
+                  class="note-tab"
+                  role="tab"
+                  tabindex="0"
+                  title={path}
+                  aria-selected={current() === path && !graphOpen()}
+                  onClick={() => open(path)}
+                  onKeyDown={(e) => e.key === 'Enter' && open(path)}
+                  // 가운데 버튼으로 누르면 닫는다.
+                  onAuxClick={(e) => e.button === 1 && closeTab(path)}
+                  onContextMenu={(e) =>
+                    showMenu(e, [
+                      { label: '탭 닫기', onSelect: () => closeTab(path) },
+                      { label: '다른 탭 모두 닫기', onSelect: () => (open(path), setTabs([path])), disabled: tabs().length < 2 },
+                      kindOf(path) === 'note' && 'separator',
+                      kindOf(path) === 'note' && { label: '옆에 열기', onSelect: () => setSide(path) },
+                    ])
+                  }
+                >
+                  <span class="tab-name">{tabName(path)}</span>
+                  <button
+                    class="tab-close"
+                    aria-label={`${tabName(path)} 탭 닫기`}
+                    title="탭 닫기"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      closeTab(path)
+                    }}
+                  >
+                    ×
+                  </button>
+                </div>
+              )}
+            </For>
+          </div>
+          <button class="tool" title="이름으로 메모 열기 (Ctrl/Cmd+O)" onClick={openQuick}>
+            빠른 열기
+          </button>
+        </div>
+
         <Show when={deleting()}>
           {(target) => (
             <div class="promptbar" role="alertdialog" aria-label="지우기 확인">
@@ -751,10 +1214,13 @@ export function NotesApp(props: AppProps) {
           )}
         </Show>
 
+        <Show when={graphOpen()}>
+          <GraphView />
+        </Show>
         <Show
-          when={entry()}
+          when={!graphOpen() && entry()}
           fallback={
-            <p class="editor-note">
+            <p class="editor-note" hidden={graphOpen()}>
               “새 메모”를 눌러 적기 시작하세요.
               {/* 열어 둔 메모가 없으면 상태 줄도 없으므로, 오류는 여기에 보여 준다. */}
               <Show when={error()}>
@@ -829,6 +1295,19 @@ export function NotesApp(props: AppProps) {
                   <Show when={mode() !== 'edit' && lang() === 'markdown'}>
                     <Preview text={text()} lang="markdown" context={context} />
                   </Show>
+                  <Show when={side() !== null && texts[side()!] !== undefined}>
+                    <aside class="note-ref" aria-label="참고 메모">
+                      <div class="note-ref-head">
+                        <button class="md-wikilink" title="이 메모를 편집하러 가기" onClick={() => open(side()!)}>
+                          {stemOf(side()!)}
+                        </button>
+                        <button class="tab-close" aria-label="참고 메모 닫기" title="닫기" onClick={() => setSide(null)}>
+                          ×
+                        </button>
+                      </div>
+                      <Preview text={texts[side()!]!} lang="markdown" context={sideContext} />
+                    </aside>
+                  </Show>
                 </div>
 
                 <Show when={suggestions().length}>
@@ -883,6 +1362,50 @@ export function NotesApp(props: AppProps) {
               </footer>
             </>
           )}
+        </Show>
+
+        <Show when={quick() !== null}>
+          <div class="quick-open" onPointerDown={(e) => e.target === e.currentTarget && closeQuick()}>
+            <div class="quick-panel" role="dialog" aria-label="빠른 열기">
+              <input
+                type="search"
+                aria-label="열 메모의 이름"
+                placeholder="메모 이름"
+                ref={(el) => queueMicrotask(() => el.focus())}
+                value={quick() ?? ''}
+                onInput={(e) => {
+                  setQuickAt(0)
+                  setQuick(e.currentTarget.value)
+                }}
+                onKeyDown={(e) => {
+                  if (e.isComposing) return
+                  const hits = quickHits()
+                  if (e.key === 'ArrowDown') setQuickAt((i) => (i + 1) % Math.max(1, hits.length))
+                  else if (e.key === 'ArrowUp') setQuickAt((i) => (i - 1 + hits.length) % Math.max(1, hits.length))
+                  else if (e.key === 'Enter') {
+                    const path = hits[quickAt()]
+                    if (path) {
+                      open(path)
+                      queueMicrotask(() => area?.focus())
+                    }
+                  } else if (e.key === 'Escape') closeQuick()
+                  else return
+                  e.preventDefault()
+                  e.stopPropagation()
+                }}
+              />
+              <ul role="listbox" aria-label={(quick() ?? '').trim() ? '이름이 맞는 메모' : '최근에 연 메모'}>
+                <For each={quickHits()} fallback={<li class="notes-empty">그런 이름의 메모가 없습니다.</li>}>
+                  {(path, i) => (
+                    <li role="option" aria-selected={i() === quickAt()} onPointerEnter={() => setQuickAt(i())} onClick={() => open(path)}>
+                      <span class="notes-title">{stemOf(path)}</span>
+                      <span class="notes-excerpt">{dirOf(path)}</span>
+                    </li>
+                  )}
+                </For>
+              </ul>
+            </div>
+          </div>
         </Show>
 
         <input

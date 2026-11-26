@@ -177,7 +177,7 @@ test('notes: act on a note or folder, or create in the empty area', async ({ pag
   await expect.poll(names).toEqual(['프로젝트'])
 
   await row('프로젝트').click({ button: 'right' })
-  await expect(items(page)).toHaveText(['여기에 새 메모', '여기에 새 폴더', '이름 바꾸기', '삭제…'])
+  await expect(items(page)).toHaveText(['여기에 새 메모', '여기에 새 폴더', '이름 바꾸기', '다른 폴더로 옮기기…', '삭제…'])
   await pick(page, '여기에 새 메모')
   await expect(notes.getByRole('textbox', { name: '제목' })).toBeFocused()
   await page.keyboard.type('계획')
@@ -185,7 +185,7 @@ test('notes: act on a note or folder, or create in the empty area', async ({ pag
   await expect(notes.locator('.statusbar')).toContainText('notes/프로젝트/계획.md · 저장됨')
 
   await row('계획').click({ button: 'right' })
-  await expect(items(page)).toHaveText(['열기', '이름 바꾸기', '링크 복사', '삭제…'])
+  await expect(items(page)).toHaveText(['열기', '옆에 열기', '이름 바꾸기', '링크 복사', '다른 폴더로 옮기기…', '삭제…'])
   await pick(page, '링크 복사')
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe('[[계획]]')
 

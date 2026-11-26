@@ -1827,11 +1827,6 @@ button.md-tag {
 }
 
 /* 체크된 항목만 흐리게 긋는다. 그 아래에 들여 쓴 항목들은 각자의 체크를 따른다. */
-.md-task.done {
-  color: inherit;
-  text-decoration: none;
-}
-
 .md-task.done > .md-item {
   color: var(--muted);
   text-decoration: line-through;
@@ -1863,13 +1858,313 @@ button.md-tag {
   accent-color: var(--accent);
 }
 
-.md-task.done {
-  color: var(--muted);
-  text-decoration: line-through;
-}
-
 .md-table {
   margin: 0 0 0.9em;
+}
+
+/* 찾기 칸과 그래프 버튼 */
+.notes-find {
+  display: flex;
+  gap: 6px;
+  margin: 0 8px 6px;
+}
+
+.notes-find .notes-search {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+}
+
+/* 끌어다 놓으면 들어갈 자리 */
+.tree-dir.drop-target,
+.notes-tree.drop-target {
+  outline: 1.5px dashed var(--accent);
+  outline-offset: -2px;
+  background: var(--accent-soft);
+}
+
+/* 보관함 아래의 목차와 태그 */
+.side-section {
+  flex: none;
+  max-height: 30%;
+  overflow-y: auto;
+  border-top: 1px solid var(--line);
+  font-size: 12.5px;
+}
+
+.side-section summary {
+  padding: 6px 12px;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+}
+
+.side-section ul {
+  margin: 0;
+  padding: 0 6px 6px;
+  list-style: none;
+}
+
+.side-section li > button:not(.md-tag) {
+  display: block;
+  width: 100%;
+  padding: 3px 10px;
+  border: 0;
+  border-radius: var(--radius-s);
+  background: none;
+  text-align: left;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.side-section li > button:not(.md-tag):hover {
+  background: var(--hover);
+}
+
+.side-section .tag-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 0 10px 8px;
+}
+
+.tag-list .md-tag[aria-pressed='true'] {
+  outline: 1.5px solid var(--accent);
+}
+
+.tag-count {
+  opacity: 0.65;
+}
+
+/* 열어 둔 메모들의 탭 */
+.note-tabs {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-2);
+}
+
+.tab-strip {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  gap: 2px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.note-tab {
+  flex: 0 1 160px;
+  min-width: 64px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px 4px 3px 10px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-s);
+  color: var(--muted);
+  font-size: 12.5px;
+  cursor: default;
+  user-select: none;
+}
+
+.note-tab:hover {
+  background: var(--hover);
+}
+
+.note-tab[aria-selected='true'] {
+  border-color: var(--line);
+  background: var(--surface);
+  color: var(--text);
+}
+
+.tab-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.tab-close {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-s);
+  background: none;
+  color: var(--muted);
+  line-height: 1;
+}
+
+.tab-close:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+/* 옆에 펼친 참고 메모 */
+.note-ref {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-left: 1px solid var(--line);
+}
+
+.note-ref-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 8px 5px 14px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-2);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.note-ref > .preview {
+  flex: 1;
+  min-height: 0;
+}
+
+/* 그래프 */
+.note-graph {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.note-graph svg {
+  display: block;
+}
+
+.note-graph line {
+  stroke: var(--line-strong);
+  stroke-width: 1;
+  transition: opacity 0.15s;
+}
+
+.note-graph line.lit {
+  stroke: var(--accent);
+}
+
+.graph-node {
+  cursor: pointer;
+  outline: 0;
+  transition: opacity 0.15s;
+}
+
+.graph-node .graph-hit {
+  fill: transparent;
+  stroke: none;
+}
+
+.graph-node circle:not(.graph-hit) {
+  fill: var(--muted);
+  stroke: var(--surface);
+  stroke-width: 1.5;
+}
+
+.graph-node text {
+  fill: var(--text);
+  font-size: 11px;
+  paint-order: stroke;
+  stroke: var(--surface);
+  stroke-width: 3px;
+  pointer-events: none;
+}
+
+.graph-node:hover circle:not(.graph-hit),
+.graph-node:focus-visible circle:not(.graph-hit),
+.graph-node.current circle:not(.graph-hit) {
+  fill: var(--accent);
+}
+
+.graph-node.missing circle:not(.graph-hit) {
+  fill: var(--surface);
+  stroke: var(--muted);
+  stroke-dasharray: 3 2;
+}
+
+.graph-node.missing text {
+  fill: var(--muted);
+}
+
+.note-graph .dim {
+  opacity: 0.2;
+}
+
+.graph-hint {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 8px;
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+  pointer-events: none;
+}
+
+/* 빠른 열기 */
+.notes {
+  position: relative;
+}
+
+.quick-open {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding: 48px 16px 16px;
+  background: color-mix(in srgb, var(--wall) 45%, transparent);
+}
+
+.quick-panel {
+  width: min(420px, 100%);
+  padding: 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-m);
+  background: var(--surface);
+  box-shadow: var(--shadow-raised);
+  animation: reveal 0.14s var(--ease-out);
+}
+
+.quick-panel input {
+  width: 100%;
+}
+
+.quick-panel ul {
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.quick-panel li[role='option'] {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 5px 8px;
+  border-radius: var(--radius-s);
+  cursor: default;
+}
+
+.quick-panel li[aria-selected='true'] {
+  background: var(--accent-soft);
+}
+
+.quick-panel .notes-excerpt {
+  flex: 1;
+  min-width: 0;
+  text-align: right;
 }
 
 /* 좁은 화면에서는 목록을 위에, 내용을 아래에 둔다. 나란히 보기는 위아래로 나눈다. */

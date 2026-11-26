@@ -239,7 +239,8 @@ export function layoutGraph(graph: Graph, width: number, height: number, iterati
     return { ...node, x: width / 2 + Math.cos(angle) * radius, y: height / 2 + Math.sin(angle) * radius }
   })
   const byId = new Map(nodes.map((n) => [n.id, n]))
-  const ideal = Math.sqrt((width * height) / Math.max(1, nodes.length)) * 0.75
+  // 점 사이의 알맞은 거리. 넓은 화면에서도 가장자리까지 퍼지지 않도록 위를 막는다.
+  const ideal = Math.min(150, Math.sqrt((width * height) / Math.max(1, nodes.length)) * 0.5)
   for (let step = 0; step < iterations; step++) {
     // 뒤로 갈수록 덜 움직여 자리를 잡는다.
     const heat = (1 - step / iterations) * ideal * 0.15
@@ -270,13 +271,14 @@ export function layoutGraph(graph: Graph, width: number, height: number, iterati
     }
     nodes.forEach((node, i) => {
       // 가운데로 살짝 당겨서, 이어지지 않은 점들이 멀리 날아가지 않게 한다.
-      push[i]!.x += (width / 2 - node.x) * 0.02 * ideal * 0.1
-      push[i]!.y += (height / 2 - node.y) * 0.02 * ideal * 0.1
+      push[i]!.x += (width / 2 - node.x) * 0.006 * ideal
+      push[i]!.y += (height / 2 - node.y) * 0.006 * ideal
       const size = Math.hypot(push[i]!.x, push[i]!.y) || 1
       node.x += (push[i]!.x / size) * Math.min(size, heat)
       node.y += (push[i]!.y / size) * Math.min(size, heat)
-      node.x = Math.min(width - 30, Math.max(30, node.x))
-      node.y = Math.min(height - 20, Math.max(20, node.y))
+      // 이름표와 아래 안내문이 들어갈 자리를 남긴다.
+      node.x = Math.min(width - 40, Math.max(40, node.x))
+      node.y = Math.min(height - 56, Math.max(24, node.y))
     })
   }
   return { nodes, links: graph.links }
