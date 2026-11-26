@@ -113,7 +113,8 @@ function scan(text: string, rules: Rule[], comments: 'word-start' | 'anywhere'):
 function markdown(text: string): Token[] {
   const tokens: Token[] = []
   const push = (piece: string, kind: TokenKind) => piece && tokens.push({ text: piece, kind })
-  const INLINE = /`[^`\n]+`|\*\*[^*\n]+\*\*|\*[^*\s][^*\n]*\*|\[[^\]\n]+\]\([^)\n]*\)/g
+  // 메모 링크([[..]], ![[..]])와 그림(![..](..))도 링크처럼 색을 입힌다.
+  const INLINE = /`[^`\n]+`|!?\[\[[^\]\n]+\]\]|\*\*[^*\n]+\*\*|\*[^*\s][^*\n]*\*|!?\[[^\]\n]*\]\([^)\n]*\)/g
   let fenced = false
   const lines = text.split('\n')
   lines.forEach((line, n) => {
@@ -132,7 +133,7 @@ function markdown(text: string): Token[] {
       const start = marker.length + match.index
       push(line.slice(at, start), '')
       const piece = match[0]
-      push(piece, piece.startsWith('`') ? 'code' : piece.startsWith('[') ? 'link' : 'emphasis')
+      push(piece, piece.startsWith('`') ? 'code' : piece.startsWith('[') || piece.startsWith('!') ? 'link' : 'emphasis')
       at = start + piece.length
     }
     push(line.slice(at) + newline, '')

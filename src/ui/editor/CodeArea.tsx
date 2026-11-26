@@ -18,6 +18,8 @@ export function CodeArea(props: {
   /** 커서가 움직였을 수 있을 때 (입력, 키, 클릭) */
   onCursor?(el: HTMLTextAreaElement): void
   onKeyDown?: JSX.EventHandler<HTMLTextAreaElement, KeyboardEvent>
+  /** 파일(그림 등)을 붙여 넣거나 끌어다 놓았다. 받아서 처리했으면 true를 돌려준다 (기본 동작을 막는다). */
+  onFiles?(files: File[], el: HTMLTextAreaElement): boolean
 }) {
   let layer!: HTMLPreElement
   const tokens = createMemo(() =>
@@ -43,6 +45,15 @@ export function CodeArea(props: {
           props.onCursor?.(e.currentTarget)
         }}
         onKeyDown={props.onKeyDown}
+        onPaste={(e) => {
+          const files = [...(e.clipboardData?.files ?? [])]
+          if (files.length && props.onFiles?.(files, e.currentTarget)) e.preventDefault()
+        }}
+        onDragOver={(e) => props.onFiles && e.dataTransfer?.types.includes('Files') && e.preventDefault()}
+        onDrop={(e) => {
+          const files = [...(e.dataTransfer?.files ?? [])]
+          if (files.length && props.onFiles?.(files, e.currentTarget)) e.preventDefault()
+        }}
         onKeyUp={(e) => props.onCursor?.(e.currentTarget)}
         onClick={(e) => props.onCursor?.(e.currentTarget)}
         // 입력창을 스크롤하면 뒤의 색 입힌 글도 같이 움직여야 한다.

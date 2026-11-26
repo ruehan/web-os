@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { parseCsv } from '../src/ui/editor/csv.ts'
 import { highlight, languageOf, type Lang } from '../src/ui/editor/highlight.ts'
-import { parseInline, parseMarkdown } from '../src/ui/editor/markdown.ts'
+import { parseInline, parseMarkdown, toggleTask } from '../src/ui/editor/markdown.ts'
 
 /** 색이 입혀지는 조각만 "종류:글" 꼴로 모은다. */
 const colored = (text: string, lang: Lang) =>
@@ -104,8 +104,8 @@ describe('markdown', () => {
     expect(blocks.map((b) => b.type)).toEqual(['heading', 'paragraph', 'list', 'list', 'quote', 'rule', 'code'])
     expect(blocks[0]).toEqual({ type: 'heading', level: 1, children: [{ type: 'text', text: '제목' }] })
     expect(blocks[1]).toEqual({ type: 'paragraph', children: [{ type: 'text', text: '첫 문단 이어지는 줄' }] })
-    expect(blocks[2]).toMatchObject({ ordered: false, items: [[{ text: '하나' }], [{ text: '둘' }]] })
-    expect(blocks[3]).toMatchObject({ ordered: true, items: [[{ text: '일' }], [{ text: '이' }]] })
+    expect(blocks[2]).toMatchObject({ ordered: false, items: [{ children: [{ text: '하나' }], line: 5 }, { children: [{ text: '둘' }], line: 6 }] })
+    expect(blocks[3]).toMatchObject({ ordered: true, items: [{ children: [{ text: '일' }] }, { children: [{ text: '이' }] }] })
     expect(blocks[4]).toMatchObject({ children: [{ text: '인용 계속' }] })
     expect(blocks[6]).toEqual({ type: 'code', lang: 'rust', text: 'fn x() {}\n' })
   })
@@ -132,6 +132,65 @@ describe('markdown', () => {
     expect(parseMarkdown('<img src=x onerror=alert(1)>')).toEqual([
       { type: 'paragraph', children: [{ type: 'text', text: '<img src=x onerror=alert(1)>' }] },
     ])
+  })
+
+  it('parses note links, embeds, images and tags', () => {
+    expect(parseInline('[[회의록]] [[폴더/계획#일정|이번 계획]] ![[그림.png]] ![설명](attachments/a.png) #할일 #프로젝트/웹')).toEqual([
+      { type: 'wikilink', target: '회의록', label: '회의록', embed: false },
+      { type: 'text', text: ' ' },
+      { type: 'wikilink', target: '폴더/계획', label: '이번 계획', embed: false },
+      { type: 'text', text: ' ' },
+      { type: 'wikilink', target: '그림.png', label: '그림.png', embed: true },
+      { type: 'text', text: ' ' },
+      { type: 'image', src: 'attachments/a.png', alt: '설명' },
+      { type: 'text', text: ' ' },
+      { type: 'tag', name: '할일' },
+      { type: 'text', text: ' ' },
+      { type: 'tag', name: '프로젝트/웹' },
+    ])
+  })
+
+  it('does not mistake other uses of # for tags', () => {
+    const kinds = (text: string) => parseInline(text).map((i) => i.type)
+    expect(kinds('C#은 언어다, 가격은 #1, 주소 a.b/#top, 색 &#35;')).toEqual(['text'])
+    expect(kinds('`#코드` 안과 [[메모#제목]] 안')).toEqual(['code', 'text', 'wikilink', 'text'])
+  })
+
+  it('parses task lists with the line each task is on', () => {
+    const blocks = parseMarkdown('머리말\n\n- [ ] 할 일\n- [x] 한 일\n- 보통 항목')
+    expect(blocks[1]).toMatchObject({
+      type: 'list',
+      items: [
+        { checked: false, line: 2, children: [{ text: '할 일' }] },
+        { checked: true, line: 3, children: [{ text: '한 일' }] },
+        { line: 4, children: [{ text: '보통 항목' }] },
+      ],
+    })
+    expect((blocks[1] as { items: { checked?: boolean }[] }).items[2]!.checked).toBeUndefined()
+  })
+
+  it('toggles a task in the source text, leaving everything else alone', () => {
+    const text = '- [ ] 하나\n  1. [x] 둘\n- 셋 [ ]\n글'
+    expect(toggleTask(text, 0)).toBe('- [x] 하나\n  1. [x] 둘\n- 셋 [ ]\n글')
+    expect(toggleTask(text, 1)).toBe('- [ ] 하나\n  1. [ ] 둘\n- 셋 [ ]\n글')
+    // 체크 목록이 아닌 줄이나 없는 줄은 건드리지 않는다.
+    expect(toggleTask(text, 2)).toBe(text)
+    expect(toggleTask(text, 3)).toBe(text)
+    expect(toggleTask(text, 99)).toBe(text)
+  })
+
+  it('parses tables', () => {
+    const blocks = parseMarkdown('| 이름 | 값 |\n|---|:--:|\n| **가** | 1 |\n| 나 \\| 다 | `2` |\n\n다음 문단')
+    expect(blocks.map((b) => b.type)).toEqual(['table', 'paragraph'])
+    expect(blocks[0]).toMatchObject({
+      head: [[{ text: '이름' }], [{ text: '값' }]],
+      rows: [
+        [[{ type: 'strong' }], [{ text: '1' }]],
+        [[{ text: '나 | 다' }], [{ type: 'code', text: '2' }]],
+      ],
+    })
+    // 구분 줄이 없으면 표가 아니다.
+    expect(parseMarkdown('| 그냥 | 글 |').map((b) => b.type)).toEqual(['paragraph'])
   })
 
   it('an unclosed code fence runs to the end', () => {
