@@ -14,6 +14,12 @@ extern "C" {
     fn sys_gui_draw(data: *const u8, len: usize) -> i32;
     #[link_name = "gui_event"]
     fn sys_gui_event(out: *mut i32, timeout_ms: i32) -> i32;
+    #[link_name = "gui_text"]
+    fn sys_gui_text(field: u32, offset: usize, buf: *mut u8, len: usize, version: *mut u32) -> i32;
+    #[link_name = "gui_set_text"]
+    fn sys_gui_set_text(field: u32, text: *const u8, len: usize) -> i32;
+    #[link_name = "gui_measure"]
+    fn sys_gui_measure(req: *const u8, len: usize, out: *mut f32, cap: usize) -> i32;
 }
 
 /// 빨강, 초록, 파랑, 불투명도 (각 0~255)
@@ -40,6 +46,28 @@ pub enum Align {
     Left = 0,
     Center = 1,
     Right = 2,
+}
+
+/// 글 입력 칸 하나. `Frame::field`로 놓는다.
+pub struct Field<'a> {
+    /// 프로그램이 정하는 번호. 글을 주고받을 때 이 번호로 가리킨다.
+    pub id: u32,
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+    /// 글자 크기
+    pub size: f32,
+    pub color: Color,
+    pub background: Color,
+    /// 여러 줄을 쓸 수 있는가
+    pub multiline: bool,
+    /// 고정폭 글꼴
+    pub mono: bool,
+    /// 이 묶음을 그릴 때 커서를 이 칸으로 옮긴다. 옮기고 싶을 때의 묶음 하나에만 켠다.
+    pub focus: bool,
+    /// 화면 낭독기 등에 알려 줄 이름
+    pub label: &'a str,
 }
 
 /// 한 번에 그릴 것들의 묶음
@@ -116,6 +144,29 @@ impl Frame {
         self.u(text.len() as u32);
         self.buf.extend_from_slice(text.as_bytes());
     }
+
+    /// 이 뒤로는 사각형 안에만 그려진다. 다 그리면 `unclip`을 부른다.
+    pub fn clip(&mut self, x: f32, y: f32, w: f32, h: f32) {
+        self.op(7);
+        self.f(&[x, y, w, h]);
+    }
+
+    pub fn unclip(&mut self) {
+        self.op(8);
+    }
+
+    /// 이 자리에 글 입력 칸을 놓는다. 칸은 묶음에 들어 있는 동안만 있다.
+    /// 글의 내용은 `Window::set_text`로 정하고, 사용자가 고치면 `Event::Input`이 온다.
+    pub fn field(&mut self, field: &Field) {
+        self.op(9);
+        self.u(field.id);
+        self.f(&[field.x, field.y, field.w, field.h, field.size]);
+        self.u(field.color.0);
+        self.u(field.background.0);
+        self.buf.push(field.multiline as u8 | (field.mono as u8) << 1 | (field.focus as u8) << 2);
+        self.u(field.label.len() as u32);
+        self.buf.extend_from_slice(field.label.as_bytes());
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -161,6 +212,12 @@ pub enum Event {
     Key { key: Key, mods: Mods },
     /// 사용자가 창을 닫으려 한다. 정리하고 종료해야 한다 (곧 강제로 종료된다).
     Close,
+    /// 마우스 휠이나 두 손가락 밀기. `dy`는 세로로 민 양 (아래가 양수).
+    Wheel { x: f32, y: f32, dy: f32 },
+    /// 입력 칸의 글이 바뀌었다. `Window::text`로 가져온다.
+    Input { field: u32 },
+    /// 창이 입력을 받게 됐거나(true) 다른 창으로 넘어갔다(false).
+    Focus(bool),
 }
 
 fn decode(raw: [i32; 4]) -> Option<Event> {
@@ -190,6 +247,9 @@ fn decode(raw: [i32; 4]) -> Option<Event> {
             mods: Mods { shift: b & 1 != 0, ctrl: b & 2 != 0, alt: b & 4 != 0, meta: b & 8 != 0 },
         },
         6 => Event::Close,
+        7 => Event::Wheel { x, y, dy: c as f32 },
+        8 => Event::Input { field: a as u32 },
+        9 => Event::Focus(a != 0),
         _ => return None,
     })
 }
@@ -235,5 +295,55 @@ impl Window {
     /// 이미 와 있는 입력이 있으면 가져온다. 기다리지 않는다.
     pub fn poll_event(&self) -> Option<Event> {
         self.wait(0)
+    }
+
+    /// 입력 칸의 글을 정한다 (파일을 열었을 때 등).
+    pub fn set_text(&self, field: u32, text: &str) -> io::Result<()> {
+        crate::check(unsafe { sys_gui_set_text(field, text.as_ptr(), text.len()) }).map(|_| ())
+    }
+
+    /// 입력 칸에 지금 적혀 있는 글
+    pub fn text(&self, field: u32) -> io::Result<String> {
+        // 긴 글은 여러 번에 나눠 읽는다. 읽는 사이에 사용자가 또 고쳤으면(판 번호가 달라짐) 처음부터 다시 읽는다.
+        'again: loop {
+            let mut bytes = Vec::new();
+            let mut first = None;
+            loop {
+                let mut chunk = [0u8; 32 * 1024];
+                let mut version = 0u32;
+                let n = crate::check(unsafe { sys_gui_text(field, bytes.len(), chunk.as_mut_ptr(), chunk.len(), &mut version) })? as usize;
+                if *first.get_or_insert(version) != version {
+                    continue 'again;
+                }
+                if n == 0 {
+                    return String::from_utf8(bytes).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e));
+                }
+                bytes.extend_from_slice(&chunk[..n]);
+            }
+        }
+    }
+
+    /// 글들이 화면에서 차지할 폭. 글자를 그리는 것은 화면 쪽이라 폭도 화면 쪽에 물어봐야 안다.
+    /// 물어볼 때마다 프로세스가 잠깐 멈추므로, 여러 글을 한 번에 묻는 것이 좋다.
+    pub fn measure(&self, texts: &[&str], size: f32, bold: bool) -> Vec<f32> {
+        if texts.is_empty() {
+            return Vec::new();
+        }
+        let mut req = Vec::new();
+        req.extend_from_slice(&size.to_le_bytes());
+        req.push(bold as u8);
+        for text in texts {
+            req.extend_from_slice(&(text.len() as u32).to_le_bytes());
+            req.extend_from_slice(text.as_bytes());
+        }
+        let mut widths = vec![0f32; texts.len()];
+        let got = unsafe { sys_gui_measure(req.as_ptr(), req.len(), widths.as_mut_ptr(), widths.len()) };
+        if got < texts.len() as i32 {
+            // 잴 수 없으면 글자 수로 어림한다.
+            for (width, text) in widths.iter_mut().zip(texts) {
+                *width = text.chars().count() as f32 * size * 0.6;
+            }
+        }
+        widths
     }
 }

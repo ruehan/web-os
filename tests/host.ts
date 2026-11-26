@@ -3,6 +3,7 @@
 import { readFileSync } from 'node:fs'
 import { Worker } from 'node:worker_threads'
 import type { KernelEvent } from '../src/kernel/abi.ts'
+import { decodeMeasure, encodeWidths } from '../src/kernel/gui.ts'
 import { Kernel } from '../src/kernel/kernel.ts'
 import { Emulator, lineText } from '../src/ui/terminal/emulator.ts'
 
@@ -21,6 +22,13 @@ export function boot() {
   const kernel: Kernel = new Kernel({
     emit(event) {
       events.push(event)
+      // 브라우저에서는 화면 쪽이 글자 폭을 재서 답한다. 여기서는 정해 둔 폭으로 바로 답한다:
+      // 한글 같은 넓은 글자는 글자 크기만큼, 그 밖에는 그 절반.
+      if (event.type === 'gui-measure') {
+        const { size, texts } = decodeMeasure(event.data)
+        const width = (text: string) => [...text].reduce((n, ch) => n + (ch.codePointAt(0)! >= 0x1100 ? size : size / 2), 0)
+        kernel.guiMeasured(event.pid, encodeWidths(texts.map(width)))
+      }
       notify()
     },
     now: () => 0,

@@ -17,7 +17,7 @@ test('the rail keeps a few pinned apps; the menu lists them all', async ({ page 
 
   await menuButton(page).click()
   await expect(menu(page).locator('.launcher-app')).toHaveText([
-    '터미널', '파일', '편집기', '메모', '프로세스', '시스템 콜', '시스템 로그', '설정', '시작하기', '그림판',
+    '터미널', '파일', '편집기', '메모', '프로세스', '시스템 콜', '시스템 로그', '설정', '시작하기', '그림판', '메모장',
   ])
   await expect(menu(page).getByRole('searchbox', { name: '앱 찾기' })).toBeFocused()
   // 창을 가리지 않도록 막대 바로 옆에 뜬다.

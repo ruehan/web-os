@@ -318,6 +318,10 @@ self.onmessage = (e: MessageEvent<KernelCommand>) => {
         return void kernel.launch(cmd.path, cmd.argv)
       case 'gui-event':
         return kernel.guiEvent(cmd.pid, cmd.data)
+      case 'gui-text':
+        return kernel.guiText(cmd.pid, cmd.field, cmd.data)
+      case 'gui-measured':
+        return kernel.guiMeasured(cmd.pid, cmd.data)
       case 'fs':
         return emit({ type: 'fs-result', id: cmd.id, result: kernel.fsRequest(cmd.request) })
       case 'trace':

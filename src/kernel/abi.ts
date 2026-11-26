@@ -39,6 +39,9 @@ export const Sys = {
   guiopen: 25, // args [w, h], path 제목     이 프로세스의 창을 연다 (프로세스당 하나)
   guidraw: 26, // data 그리기 명령 묶음      창의 내용을 통째로 바꿔 그린다
   guievent: 27, // args [timeoutMs | -1]    -> ret 이벤트가 있으면 1, 시간이 다 되면 0, data 이벤트
+  guitext: 28, // args [field, offset, maxLen] -> data 입력 칸의 글 일부, ret 글의 판 번호 (읽는 사이에 바뀌었는지 확인용)
+  guisettext: 29, // args [field], data 글   입력 칸의 글을 정한다
+  guimeasure: 30, // data 요청               -> data 글마다 f32 폭 (화면 쪽이 잰다)
 } as const
 
 export interface SysReq {
@@ -181,6 +184,10 @@ export type KernelEvent =
   | { type: 'gui-draw'; pid: number; data: Uint8Array }
   /** 창을 연 프로세스가 끝났다. */
   | { type: 'gui-close'; pid: number }
+  /** 프로세스가 입력 칸의 글을 정했다. */
+  | { type: 'gui-text'; pid: number; field: number; data: Uint8Array }
+  /** 프로세스가 글들의 폭을 묻는다. gui-measured 명령으로 답해야 프로세스가 다시 움직인다. */
+  | { type: 'gui-measure'; pid: number; data: Uint8Array }
   /** 추적 중에 일어난 시스템 콜들. 너무 많으면 일부를 버리고 그 수를 dropped에 적는다. */
   | { type: 'trace'; records: TraceRecord[]; dropped: number }
 
@@ -195,6 +202,10 @@ export type KernelCommand =
   | { type: 'spawn'; path: string; argv: string[] }
   /** 창에서 일어난 입력을 그 프로세스에 전한다 (gui.ts의 이벤트). */
   | { type: 'gui-event'; pid: number; data: Uint8Array }
+  /** 사용자가 입력 칸의 글을 고쳤다. */
+  | { type: 'gui-text'; pid: number; field: number; data: Uint8Array }
+  /** gui-measure에 대한 답: 글마다 f32 폭 */
+  | { type: 'gui-measured'; pid: number; data: Uint8Array }
   | { type: 'fs'; id: number; request: FsRequest }
   | { type: 'storage-reset' }
   /**

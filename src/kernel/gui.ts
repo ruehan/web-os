@@ -23,6 +23,12 @@ export const GuiEvent = {
   key: 5,
   /** 사용자가 창을 닫으려 한다. 정리한 뒤 종료해야 한다. */
   close: 6,
+  /** 마우스 휠이나 두 손가락 밀기. a x, b y (포인터와 같은 단위), c 세로로 민 양 (픽셀, 아래가 양수) */
+  wheel: 7,
+  /** 입력 칸의 글이 바뀌었다. a 칸의 번호, b 글의 길이(바이트). 글은 guitext로 가져간다. */
+  input: 8,
+  /** 창이 입력을 받게 됐거나(a = 1) 다른 창으로 넘어갔다(a = 0). */
+  focus: 9,
 } as const
 
 /** key 이벤트의 특수 키 */
@@ -61,7 +67,10 @@ export function keyCode(key: string): number | undefined {
 
 // ───────────── 그리기 명령 ─────────────
 
-const Op = { clear: 1, rect: 2, frame: 3, line: 4, circle: 5, text: 6 } as const
+const Op = { clear: 1, rect: 2, frame: 3, line: 4, circle: 5, text: 6, clip: 7, unclip: 8, field: 9 } as const
+
+/** 입력 칸의 성질 (field 명령의 flags) */
+export const FieldFlag = { multiline: 1, mono: 2, focus: 4 } as const
 
 export type DrawOp =
   /** 창 전체를 한 색으로 채운다. */
@@ -75,6 +84,31 @@ export type DrawOp =
   | { op: 'circle'; x: number; y: number; r: number; color: string }
   /** y는 글자의 세로 가운데다. */
   | { op: 'text'; x: number; y: number; size: number; color: string; align: 'left' | 'center' | 'right'; bold: boolean; text: string }
+  /** 이 뒤로는 사각형 안에만 그려진다 (unclip까지). 스크롤되는 목록 등에 쓴다. */
+  | { op: 'clip'; x: number; y: number; w: number; h: number }
+  | { op: 'unclip' }
+  /**
+   * 이 자리에 글 입력 칸을 놓는다. 칸은 화면 쪽의 실제 입력 칸이라 한글 조합, 선택, 복사·붙여넣기가 그대로 된다.
+   * 글의 내용은 그리기 명령에 싣지 않는다: 프로그램이 정할 때는 guisettext, 사용자가 고치면 input 이벤트로 오간다.
+   * 묶음에 들어 있는 동안만 칸이 있고, 빠지면 사라진다. focus를 켠 묶음을 받으면 그 칸으로 커서를 옮기므로,
+   * 프로그램은 커서를 옮기고 싶을 때의 묶음 하나에만 켜야 한다.
+   */
+  | {
+      op: 'field'
+      id: number
+      x: number
+      y: number
+      w: number
+      h: number
+      size: number
+      color: string
+      background: string
+      multiline: boolean
+      mono: boolean
+      focus: boolean
+      /** 화면 낭독기 등에 알려 줄 이름 */
+      label: string
+    }
 
 const ALIGN = ['left', 'center', 'right'] as const
 /** 명령 하나가 가질 수 있는 점의 수. 망가진 묶음이 메모리를 다 쓰지 않게 막는다. */
@@ -145,9 +179,61 @@ export function decodeDrawList(data: Uint8Array): DrawOp[] {
         ops.push({ op: 'text', x, y, size, color, align: ALIGN[flags & 3] ?? 'left', bold: (flags & 4) !== 0, text })
         break
       }
+      case Op.clip:
+        ops.push({ op: 'clip', x: f32(), y: f32(), w: f32(), h: f32() })
+        break
+      case Op.unclip:
+        ops.push({ op: 'unclip' })
+        break
+      case Op.field: {
+        const id = u32()
+        const [x, y, w, h, size] = [f32(), f32(), f32(), f32(), f32()]
+        const [color, background] = [cssColor(u32()), cssColor(u32())]
+        const flags = u8()
+        const length = u32()
+        need(length)
+        const label = new TextDecoder().decode(data.subarray(at, at + length))
+        at += length
+        ops.push({
+          op: 'field', id, x, y, w, h, size, color, background, label,
+          multiline: (flags & FieldFlag.multiline) !== 0,
+          mono: (flags & FieldFlag.mono) !== 0,
+          focus: (flags & FieldFlag.focus) !== 0,
+        })
+        break
+      }
       default:
         throw new RangeError(`draw list has an unknown command ${op}`)
     }
   }
   return ops
 }
+
+// ───────────── 글자 폭 재기 ─────────────
+//
+// 글자를 그리는 것은 화면 쪽이라, 글이 차지할 폭도 화면 쪽만 안다. 프로그램이 배치를 계산할 수 있게
+// 글들의 폭을 물어보는 호출(guimeasure)이 있다. 요청: f32 글자 크기, u8 굵게, 그리고 (u32 길이, 글)의 나열.
+// 응답: 글마다 f32 폭.
+
+export interface MeasureRequest {
+  size: number
+  bold: boolean
+  texts: string[]
+}
+
+export function decodeMeasure(data: Uint8Array): MeasureRequest {
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength)
+  if (data.length < 5) throw new RangeError('measure request is too short')
+  const texts: string[] = []
+  let at = 5
+  while (at + 4 <= data.length) {
+    const length = view.getUint32(at, true)
+    at += 4
+    if (at + length > data.length) throw new RangeError('measure request ends in the middle of a text')
+    texts.push(new TextDecoder().decode(data.subarray(at, at + length)))
+    at += length
+  }
+  return { size: view.getFloat32(0, true), bold: view.getUint8(4) !== 0, texts }
+}
+
+export const encodeWidths = (widths: number[]) => new Uint8Array(Float32Array.from(widths).buffer)

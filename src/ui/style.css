@@ -335,7 +335,27 @@ button {
   border-radius: 0 0 var(--radius-l) var(--radius-l);
 }
 
-/* 프로세스가 직접 그리는 창의 그림판 */
+/* 프로세스가 직접 그리는 창 */
+.surface-host {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+/* 프로세스가 놓아 달라고 한 글 입력 칸. 자리, 크기, 색은 프로세스가 정한다. */
+.surface-field {
+  position: absolute;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  outline: 0;
+  resize: none;
+  line-height: 1.65;
+  font-family: inherit;
+}
+
 .surface {
   display: block;
   width: 100%;

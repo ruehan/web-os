@@ -331,6 +331,24 @@ export function runWasi(
       if (res.ret) bytes().set(res.data!.subarray(0, 16), ptr)
       return res.ret ?? 0
     },
+    // 입력 칸의 글을 offset부터 최대 len 바이트 읽는다. 읽은 바이트 수를 돌려주고, 글의 판 번호를 versionPtr에 쓴다.
+    gui_text(field: number, offset: number, ptr: number, len: number, versionPtr: number) {
+      const res = sys.call({ nr: Sys.guitext, args: [field, offset, Math.min(len, PAYLOAD_MAX)] })
+      if (res.errno) return -res.errno
+      bytes().set(res.data!, ptr)
+      view().setUint32(versionPtr, res.ret ?? 0, true)
+      return res.data!.length
+    },
+    gui_set_text: (field: number, ptr: number, len: number) =>
+      -sys.call({ nr: Sys.guisettext, args: [field], data: bytes().slice(ptr, ptr + len) }).errno,
+    // 글들의 폭을 잰다. 폭(f32)을 최대 cap개까지 out에 쓰고 그 개수를 돌려준다.
+    gui_measure(reqPtr: number, reqLen: number, out: number, cap: number) {
+      const res = sys.call({ nr: Sys.guimeasure, args: [], data: bytes().slice(reqPtr, reqPtr + reqLen) })
+      if (res.errno) return -res.errno
+      const count = Math.min(cap, res.data!.length >> 2)
+      bytes().set(res.data!.subarray(0, count * 4), out)
+      return count
+    },
   }
 
   // 아직 구현하지 않은 함수는 링크 오류 대신 ENOSYS를 돌려준다.

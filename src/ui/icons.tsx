@@ -145,3 +145,10 @@ export const ProgramIcon = () => (
     <path d="M3 7.5h14M7.5 12.5l2-1.7-2-1.7M11 12.5h2" />
   </Icon>
 )
+
+export const NotepadIcon = () => (
+  <Icon>
+    <rect x="4" y="3.5" width="12" height="13" rx="1.6" />
+    <path d="M7 2.5v2M10 2.5v2M13 2.5v2M7 8.5h6M7 11.5h6M7 14h3" />
+  </Icon>
+)

@@ -17,6 +17,7 @@ import {
   type SysReq,
   type SysRes,
 } from './abi.ts'
+import { GuiEvent, encodeEvent } from './gui.ts'
 import { Errno, KernelError } from './errno.ts'
 import { Pipe, WaitQueue } from './pipe.ts'
 import { describeArgs, describeResult, sysName, type TraceRecord } from './trace.ts'
@@ -61,7 +62,16 @@ interface Process {
   /** 시간 제한이 있는 대기의 타이머 */
   timer?: ReturnType<typeof setTimeout>
   /** 창을 열었으면: 아직 가져가지 않은 입력 이벤트들 */
-  gui?: { events: Uint8Array[]; queue: WaitQueue }
+  gui?: {
+    events: Uint8Array[]
+    queue: WaitQueue
+    /** 입력 칸의 글: 칸 번호 → 글과, 바뀔 때마다 올라가는 판 번호 */
+    fields: Map<number, { data: Uint8Array; version: number }>
+    /** 화면 쪽에 글자 폭을 물어 두고 답을 기다리는 중인가, 그리고 온 답 */
+    asking: boolean
+    reply?: Uint8Array
+    replyQ: WaitQueue
+  }
 }
 
 export interface ProcessHandle {
@@ -162,6 +172,27 @@ export class Kernel {
     if (!gui || gui.events.length >= GUI_EVENT_BACKLOG) return
     gui.events.push(data)
     this.wake(gui.queue)
+  }
+
+  /** 사용자가 입력 칸의 글을 고쳤다. 글을 보관하고, 프로세스에는 바뀌었다는 것만 알린다. */
+  guiText(pid: number, field: number, data: Uint8Array): void {
+    const gui = this.procs.get(pid)?.gui
+    if (!gui) return
+    gui.fields.set(field, { data, version: (gui.fields.get(field)?.version ?? 0) + 1 })
+    // 프로세스가 아직 가져가지 않은 같은 칸의 알림이 맨 뒤에 있으면 그것을 고쳐 쓴다 (빠르게 칠 때 쌓이지 않게).
+    const last = gui.events.at(-1)
+    const view = last && new DataView(last.buffer, last.byteOffset)
+    if (view && view.getInt32(0, true) === GuiEvent.input && view.getInt32(4, true) === field) gui.events.pop()
+    gui.events.push(encodeEvent(GuiEvent.input, field, data.length))
+    this.wake(gui.queue)
+  }
+
+  /** 화면 쪽이 글자 폭을 재서 답했다. */
+  guiMeasured(pid: number, data: Uint8Array): void {
+    const gui = this.procs.get(pid)?.gui
+    if (!gui?.asking) return
+    gui.reply = data
+    this.wake(gui.replyQ)
   }
 
   /** 새 터미널 장치를 만들고 거기에 셸을 띄운다. */
@@ -642,7 +673,7 @@ export class Kernel {
       case Sys.guiopen:
         if (proc.gui) throw new KernelError(Errno.EXIST)
         if (!(a0 > 0 && a1 > 0)) throw new KernelError(Errno.INVAL)
-        proc.gui = { events: [], queue: new WaitQueue() }
+        proc.gui = { events: [], queue: new WaitQueue(), fields: new Map(), asking: false, replyQ: new WaitQueue() }
         this.host.emit({ type: 'gui-open', pid: proc.pid, title: req.path ?? '', w: a0, h: a1 })
         return { errno: 0 }
       case Sys.guidraw:
@@ -655,6 +686,36 @@ export class Kernel {
         if (event) return { errno: 0, ret: 1, data: event }
         if (a0 === 0) return { errno: 0, ret: 0 }
         throw new Block(proc.gui.queue, a0 < 0 ? undefined : a0)
+      }
+      case Sys.guitext: {
+        if (!proc.gui) throw new KernelError(Errno.BADF)
+        const field = proc.gui.fields.get(a0)
+        if (!field) return { errno: 0, ret: 0, data: new Uint8Array(0) }
+        const max = Math.min(req.args[2] ?? 0, PAYLOAD_MAX)
+        return { errno: 0, ret: field.version, data: field.data.subarray(a1, a1 + max) }
+      }
+      case Sys.guisettext: {
+        if (!proc.gui) throw new KernelError(Errno.BADF)
+        const data = req.data ?? new Uint8Array(0)
+        proc.gui.fields.set(a0, { data, version: (proc.gui.fields.get(a0)?.version ?? 0) + 1 })
+        this.host.emit({ type: 'gui-text', pid: proc.pid, field: a0, data })
+        return { errno: 0 }
+      }
+      case Sys.guimeasure: {
+        const gui = proc.gui
+        if (!gui) throw new KernelError(Errno.BADF)
+        if (!gui.asking) {
+          gui.asking = true
+          gui.reply = undefined
+          this.host.emit({ type: 'gui-measure', pid: proc.pid, data: req.data ?? new Uint8Array(0) })
+        }
+        // 답은 화면 쪽에서 온다. (테스트처럼 그 자리에서 바로 답하는 경우에는 이미 와 있다.)
+        if (!gui.reply) throw new Block(gui.replyQ)
+        const data = gui.reply
+        gui.reply = undefined
+        gui.asking = false
+        if (data.length > PAYLOAD_MAX) throw new KernelError(Errno.INVAL)
+        return { errno: 0, data }
       }
       case Sys.getpid:
         return { errno: 0, ret: proc.pid }
