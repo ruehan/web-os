@@ -48,9 +48,14 @@ const onDisk = (page: Page, folder: string) =>
     const walk = async (dir: FileSystemDirectoryHandle, prefix: string) => {
       const entries = (dir as unknown as { entries(): AsyncIterable<[string, FileSystemHandle]> }).entries()
       for await (const [name, handle] of entries) {
-        if (handle.kind === 'directory') await walk(handle as FileSystemDirectoryHandle, `${prefix}${name}/`)
-        else if (prefix === 'bin/') programs++
-        else files[prefix + name] = await (await (handle as FileSystemFileHandle).getFile()).text()
+        try {
+          if (handle.kind === 'directory') await walk(handle as FileSystemDirectoryHandle, `${prefix}${name}/`)
+          else if (prefix === 'bin/') programs++
+          else files[prefix + name] = await (await (handle as FileSystemFileHandle).getFile()).text()
+        } catch (e) {
+          // 훑는 사이에 커널이 그 파일을 지웠을 수 있다 (부팅 때 /tmp 를 비우는 경우 등). 없는 것으로 친다.
+          if (!(e instanceof DOMException && e.name === 'NotFoundError')) throw e
+        }
       }
     }
     await walk(await (await navigator.storage.getDirectory()).getDirectoryHandle(folder), '')

@@ -33,12 +33,32 @@ const settle = (page: Page) =>
 const animations = (page: Page, selector: string) =>
   page.locator(selector).first().evaluate((el) => el.getAnimations().map((a) => (a as CSSAnimation).animationName ?? 'transition'))
 
+/**
+ * 버튼을 누르고, 바로 다음 화면 갱신 때 창에 걸린 움직임과 클래스를 읽는다.
+ * 움직임은 0.2초도 안 되어 끝나므로, 누르는 것과 읽는 것을 페이지 안에서 한 번에 해야 놓치지 않는다.
+ */
+const clickAndObserve = (page: Page, button: string, windowSelector: string) =>
+  page.evaluate(
+    ({ button, windowSelector }) => {
+      ;(document.querySelector(button) as HTMLElement).click()
+      return new Promise<{ classes: string; animations: string[] }>((resolve) =>
+        requestAnimationFrame(() => {
+          const el = document.querySelector(windowSelector)!
+          resolve({ classes: el.className, animations: el.getAnimations().map((a) => (a as CSSAnimation).animationName) })
+        }),
+      )
+    },
+    { button, windowSelector },
+  )
+
 test('a window appears with a short animation when opened', async ({ page }) => {
   await open(page)
-  await launch(page, '설정')
+  await page.getByRole('button', { name: '앱', exact: true }).click()
+  const seen = await clickAndObserve(page, '.launcher-app[aria-label="설정"]', '.window[data-app="settings"]')
+  expect(seen.classes).toContain('opening')
+  expect(seen.animations).toContain('window-in')
+
   const settings = appWindow(page, 'settings')
-  await expect(settings).toHaveClass(/opening/)
-  expect(await animations(page, '.window[data-app="settings"]')).toContain('window-in')
   await expect(settings).not.toHaveClass(/opening/)
   // 끝난 뒤에는 온전한 크기와 불투명도로 남는다.
   expect(await settings.evaluate((el) => [getComputedStyle(el).opacity, getComputedStyle(el).scale])).toEqual(['1', 'none'])
@@ -49,10 +69,10 @@ test('closing fades the window out before it is removed, and focus moves on at o
   await launch(page, '설정')
   const settings = appWindow(page, 'settings')
   await expect(settings).not.toHaveClass(/opening/)
-  await settings.getByRole('button', { name: '닫기' }).click()
 
-  await expect(settings).toHaveClass(/closing/)
-  expect(await animations(page, '.window[data-app="settings"]')).toContain('window-out')
+  const seen = await clickAndObserve(page, '.window[data-app="settings"] button[aria-label="닫기"]', '.window[data-app="settings"]')
+  expect(seen.classes).toContain('closing')
+  expect(seen.animations).toContain('window-out')
   // 사라지는 동안 이미 다음 창이 입력을 받는다.
   await expect(terminal(page)).toHaveClass(/focused/)
   await expect(settings).toHaveCount(0)
