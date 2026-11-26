@@ -1488,12 +1488,12 @@ input {
   color: var(--muted);
 }
 
-/* ───────────── 메모 ───────────── */
+/* ───────────── 메모 보관함 ───────────── */
 
 .notes {
   height: 100%;
   display: grid;
-  grid-template-columns: 220px 1fr;
+  grid-template-columns: 250px 1fr;
 }
 
 .notes-side {
@@ -1506,12 +1506,14 @@ input {
 }
 
 .notes-side .toolbar {
+  flex-wrap: wrap;
   border-bottom: 0;
 }
 
 .notes-side select.tool {
   flex: 1;
-  min-width: 0;
+  /* 글자가 잘릴 만큼 좁아지면 다음 줄로 넘어간다. */
+  min-width: 130px;
   color: var(--text);
 }
 
@@ -1519,16 +1521,94 @@ input {
   margin: 0 8px 6px;
 }
 
-.notes-list {
-  flex: 1;
-  min-height: 0;
+.notes-tree,
+.notes-tree ul {
   margin: 0;
-  padding: 0 6px 6px;
-  overflow-y: auto;
+  padding: 0;
   list-style: none;
 }
 
-.notes-item {
+.notes-tree {
+  flex: 1;
+  min-height: 0;
+  padding: 0 6px 6px;
+  overflow-y: auto;
+}
+
+.tree-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  padding: 3px 8px;
+  border-radius: var(--radius-s);
+  cursor: default;
+  user-select: none;
+  transition: background-color 0.1s ease;
+}
+
+.tree-row:hover {
+  background: var(--hover);
+}
+
+.tree-row[aria-selected='true'] {
+  background: var(--accent-soft);
+}
+
+.tree-dir.active {
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.tree-icon {
+  flex: none;
+  display: grid;
+  color: var(--muted);
+  scale: 0.85;
+}
+
+.tree-icon.dir {
+  color: var(--accent);
+}
+
+.tree-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.tree-ext {
+  flex: none;
+  font: 10.5px var(--mono);
+  color: var(--muted);
+}
+
+.tree-rename {
+  flex: 1;
+  min-width: 0;
+  padding: 1px 5px;
+}
+
+.tree-action {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: var(--muted);
+  line-height: 1;
+  cursor: pointer;
+}
+
+.tree-action:hover {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.notes-hit {
   display: grid;
   gap: 1px;
   padding: 6px 8px;
@@ -1536,11 +1616,11 @@ input {
   cursor: default;
 }
 
-.notes-item:hover {
+.notes-hit:hover {
   background: var(--hover);
 }
 
-.notes-item[aria-selected='true'] {
+.notes-hit[aria-selected='true'] {
   background: var(--accent-soft);
 }
 
@@ -1574,7 +1654,188 @@ input {
   flex-direction: column;
 }
 
-/* 좁은 화면에서는 목록을 위에, 내용을 아래에 둔다. */
+.note-head {
+  flex-wrap: wrap;
+}
+
+/* 제목은 파일 이름이다. 평소에는 글처럼 보이다가 누르면 고칠 수 있다. */
+.note-title {
+  flex: 1;
+  min-width: 120px;
+  padding: 3px 6px;
+  border-color: transparent;
+  background: none;
+  font-size: 15px;
+  font-weight: 650;
+}
+
+.note-title:hover {
+  border-color: var(--line);
+}
+
+.note-title:focus {
+  border-color: var(--line-strong);
+  background: var(--surface);
+}
+
+.note-title.static {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.note-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.note-body > * {
+  flex: 1;
+  min-width: 0;
+}
+
+/* 나란히 보기: 왼쪽에서 쓰고 오른쪽에서 결과를 본다. */
+.note-body.split > .preview {
+  border-left: 1px solid var(--line);
+}
+
+.link-bar {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-top: 1px solid var(--line);
+  background: var(--surface-2);
+  animation: reveal 0.14s var(--ease-out);
+}
+
+.hint-inline {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.backlinks {
+  flex: none;
+  max-height: 30%;
+  overflow-y: auto;
+  border-top: 1px solid var(--line);
+  font-size: 12.5px;
+}
+
+.backlinks summary {
+  padding: 6px 12px;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+}
+
+.backlinks ul {
+  margin: 0;
+  padding: 0 12px 8px;
+  list-style: none;
+}
+
+.backlinks li {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 2px 0;
+}
+
+.backlinks .notes-excerpt {
+  flex: 1;
+  min-width: 0;
+}
+
+.note-image {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 16px;
+  overflow: auto;
+}
+
+.note-image img {
+  max-width: 100%;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-s);
+}
+
+/* 읽기 화면 안의 메모 링크, 태그, 그림, 체크 목록 */
+.md-wikilink {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: var(--accent);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--accent) 40%, transparent);
+  text-underline-offset: 2px;
+}
+
+button.md-wikilink {
+  cursor: pointer;
+}
+
+/* 아직 없는 메모를 가리키는 링크 */
+.md-wikilink.missing {
+  color: var(--muted);
+  text-decoration-style: dashed;
+}
+
+.md-tag {
+  padding: 0 7px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  font: inherit;
+  font-size: 0.92em;
+  color: var(--accent);
+}
+
+button.md-tag {
+  cursor: pointer;
+}
+
+.md-image {
+  display: block;
+  max-width: 100%;
+  margin: 0.4em 0;
+  border-radius: var(--radius-s);
+}
+
+.md-missing {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.preview li.md-task {
+  list-style: none;
+  margin-left: -1.3em;
+}
+
+.md-task input {
+  margin: 0 6px 0 0;
+  vertical-align: -1px;
+  accent-color: var(--accent);
+}
+
+.md-task.done {
+  color: var(--muted);
+  text-decoration: line-through;
+}
+
+.md-table {
+  margin: 0 0 0.9em;
+}
+
+/* 좁은 화면에서는 목록을 위에, 내용을 아래에 둔다. 나란히 보기는 위아래로 나눈다. */
 .desktop.compact .notes {
   grid-template-columns: 1fr;
   grid-template-rows: minmax(120px, 34%) 1fr;
@@ -1583,6 +1844,15 @@ input {
 .desktop.compact .notes-side {
   border-right: 0;
   border-bottom: 1px solid var(--line);
+}
+
+.desktop.compact .note-body.split {
+  flex-direction: column;
+}
+
+.desktop.compact .note-body.split > .preview {
+  border-left: 0;
+  border-top: 1px solid var(--line);
 }
 
 /* ═════════════ 움직임 ═════════════ */
