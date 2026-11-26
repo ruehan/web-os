@@ -156,7 +156,7 @@ test('its menus are the system menus', async ({ page }) => {
   await launch(page, '메모')
   await press(page, 'treeitem', '가', { button: 'right' })
   const menu = page.getByRole('menu')
-  await expect(menu.getByRole('menuitem')).toHaveText(['열기', '옆에 열기', '이름 바꾸기', '다른 폴더로 옮기기…', '삭제…'])
+  await expect(menu.getByRole('menuitem')).toHaveText(['열기', '옆에 열기', '이름 바꾸기', '링크 복사', '다른 폴더로 옮기기…', '삭제…'])
   // 고르지 않고 닫으면 아무 일도 없다.
   await page.keyboard.press('Escape')
   await expect(menu).toHaveCount(0)
@@ -541,4 +541,36 @@ test('keys pressed while the last Korean letter is still being composed do what 
   await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, text: '\r' })
   await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 })
   await expect(editor(page)).toHaveValue('- 우유\n- ')
+})
+
+test('copies a note link to the real clipboard, and reopens with the same tabs', async ({ page }) => {
+  await page.context().grantPermissions(['clipboard-read', 'clipboard-write'])
+  await shell(page, 'mkdir notes; echo A > notes/가.md; echo B > notes/나.md', /\$$/)
+  await launch(page, '메모')
+  await press(page, 'treeitem', '나')
+  await press(page, 'treeitem', '나', { button: 'right' })
+  await page.getByRole('menu').getByRole('menuitem', { name: '링크 복사' }).click()
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe('[[나]]')
+
+  // 닫았다가 다시 열면 탭과 보던 메모가 그대로다.
+  await pad(page).getByRole('button', { name: '닫기', exact: true }).click()
+  await expect(pad(page)).toHaveCount(0)
+  await launch(page, '메모')
+  await expect(pad(page).getByRole('tab')).toHaveCount(2)
+  await expect(spot(page, 'tab', '나')).toHaveAttribute('aria-selected', 'true')
+  await expect(editor(page)).toHaveValue('B\n')
+})
+
+test('opens an outside link from the preview in a new browser tab', async ({ page }) => {
+  await shell(page, 'mkdir notes; echo "[바깥](https://example.invalid/page)" > notes/링크.md', /\$$/)
+  await launch(page, '메모')
+  await press(page, 'button', '읽기')
+  // 실제로 나가지는 않게, 그 주소로 가는 요청을 가로채 답한다.
+  await page.context().route('https://example.invalid/**', (route) => route.fulfill({ contentType: 'text/html', body: '<title>바깥</title>' }))
+  const opened = page.waitForEvent('popup')
+  await press(page, 'link', '바깥')
+  const popup = await opened
+  await popup.waitForURL('https://example.invalid/page')
+  // 새 탭은 이 페이지에 접근할 수 없다.
+  expect(await popup.evaluate(() => window.opener)).toBeNull()
 })

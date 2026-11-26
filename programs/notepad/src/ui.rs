@@ -19,6 +19,11 @@ pub struct Theme {
     pub accent_soft: Color,
     pub danger: Color,
     pub danger_soft: Color,
+    // 문법 색상 (--syn-string 등)
+    pub syn_string: Color,
+    pub syn_number: Color,
+    pub syn_keyword: Color,
+    pub syn_name: Color,
 }
 
 pub const LIGHT: Theme = Theme {
@@ -33,6 +38,10 @@ pub const LIGHT: Theme = Theme {
     accent_soft: Color::rgba(69, 83, 214, 31),
     danger: Color::rgb(194, 51, 42),
     danger_soft: Color::rgba(194, 51, 42, 31),
+    syn_string: Color::rgb(26, 127, 55),
+    syn_number: Color::rgb(138, 97, 0),
+    syn_keyword: Color::rgb(139, 63, 199),
+    syn_name: Color::rgb(15, 123, 138),
 };
 
 pub const DARK: Theme = Theme {
@@ -47,6 +56,10 @@ pub const DARK: Theme = Theme {
     accent_soft: Color::rgba(142, 155, 255, 41),
     danger: Color::rgb(255, 143, 133),
     danger_soft: Color::rgba(255, 143, 133, 41),
+    syn_string: Color::rgb(111, 208, 140),
+    syn_number: Color::rgb(229, 192, 123),
+    syn_keyword: Color::rgb(201, 155, 245),
+    syn_name: Color::rgb(102, 207, 220),
 };
 
 /// 모서리의 둥글기 (--radius-s)

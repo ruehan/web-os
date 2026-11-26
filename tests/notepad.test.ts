@@ -76,7 +76,7 @@ async function openNotepad(...args: string[]) {
     press: (label: string, role?: Op<'region'>['role']) => point(label, 0, 1, role),
     doublePress: (label: string) => (point(label, 0, 1), point(label, 0, 2)),
     middlePress: (label: string) => point(label, 1, 1),
-    rightPress: (label: string) => point(label, 2, 1),
+    rightPress: (label: string, role?: Op<'region'>['role']) => point(label, 2, 1, role),
     menu: () => menu()?.items.map((item) => (item.separator ? '---' : item.label)),
     /** 떠 있는 메뉴에서 한 줄을 고른다. */
     choose(label: string) {
@@ -377,7 +377,7 @@ describe('notepad', () => {
     const pad = await openNotepad('가.md')
     pad.rightPress('나')
     await pad.until(() => pad.menu(), 'the menu')
-    expect(pad.menu()).toEqual(['열기', '옆에 열기', '이름 바꾸기', '다른 폴더로 옮기기…', '---', '삭제…'])
+    expect(pad.menu()).toEqual(['열기', '옆에 열기', '이름 바꾸기', '링크 복사', '다른 폴더로 옮기기…', '---', '삭제…'])
     pad.choose('다른 폴더로 옮기기…')
     // 지금 있는 폴더는 빠진다.
     await pad.until(() => pad.menu()?.[0] === '보관함 맨 위', 'the folders')
@@ -1113,6 +1113,82 @@ describe('notepad', () => {
     pad.send(GuiEvent.resize, 900, 580, 0)
     await pad.until(() => pad.regions('treeitem').length && pad.field(EDITOR), 'both side by side')
     expect(pad.region('목록')).toBeUndefined()
+  })
+
+  it('copies links to the clipboard and opens outside links in a new tab', async () => {
+    write('회의록.md', '[사이트](https://example.com/a) 와 [위험](javascript:alert(1))')
+    write('attachments/그림.png', '10x10')
+    const pad = await openNotepad('회의록.md')
+    const sent = <T extends 'copy' | 'open'>(op: T) => all('gui-draw', pad.pid).flatMap((e) => decodeDrawList(e.data).filter((o): o is Op<T> => o.op === op))
+    pad.rightPress('회의록', 'treeitem')
+    await pad.until(() => pad.menu(), 'the menu')
+    pad.choose('링크 복사')
+    await pad.until(() => sent('copy').length, 'the copy')
+    expect(sent('copy')).toEqual([{ op: 'copy', text: '[[회의록]]' }])
+    // 그림은 메모에 넣을 때 쓰는 꼴로 복사한다.
+    pad.press('attachments')
+    await pad.until(() => pad.region('그림.png'), 'the folder to unfold')
+    pad.rightPress('그림.png')
+    await pad.until(() => pad.menu()?.includes('메모에 넣는 글 복사'), 'the menu')
+    pad.choose('메모에 넣는 글 복사')
+    await pad.until(() => sent('copy').length === 2, 'the second copy')
+    expect(sent('copy')[1]).toEqual({ op: 'copy', text: '![[그림.png]]' })
+    // 한 번만 보낸다 (그 뒤의 그림에는 들어 있지 않다).
+    pad.send(GuiEvent.resize, 900, 580, 0)
+    await new Promise((r) => setTimeout(r, 60))
+    expect(sent('copy')).toHaveLength(2)
+
+    // 미리보기의 바깥 링크: 누르면 새 탭으로 열어 달라고 한다. 안전하지 않은 주소는 링크가 아니다.
+    pad.press('읽기')
+    await pad.until(() => pad.region('사이트', 'link'), 'the link')
+    expect(pad.region('위험', 'link')).toBeUndefined()
+    pad.press('사이트')
+    await pad.until(() => sent('open').length, 'the request to open')
+    expect(sent('open')).toEqual([{ op: 'open', url: 'https://example.com/a' }])
+  })
+
+  it('colors code blocks in the preview by their language', async () => {
+    write('코드.md', '```rust\nfn main() { // 시작\n    let s = "hi";\n}\n```\n\n```\nfn plain\n```')
+    const pad = await openNotepad('코드.md')
+    pad.press('읽기')
+    await pad.until(() => !pad.field(EDITOR), 'the preview')
+    const ink = (text: string) => (pad.latest().find((op) => op.op === 'text' && op.text === text) as Extract<DrawOp, { op: 'text' }> | undefined)?.color
+    expect(ink('fn')).toBe('#8b3fc7')
+    expect(ink('// 시작')).toBe('#6b6e7b')
+    expect(ink('"hi"')).toBe('#1a7f37')
+    expect(ink(' main() { ')).toBe('#191a20')
+    // 조각들은 앞 조각의 폭만큼 옆으로 이어 그려진다 (테스트의 화면에서 영문 한 글자는 6.25).
+    const at = (text: string) => (pad.latest().find((op) => op.op === 'text' && op.text === text) as { x: number }).x
+    expect(at(' main() { ') - at('fn')).toBe(12.5)
+    // 언어를 적지 않은 블록은 색이 없다.
+    expect(ink('fn plain')).toBe('#191a20')
+  })
+
+  it('remembers the open tabs, the note and the view for the next time', async () => {
+    for (const name of ['가', '나', '다']) write(`${name}.md`, name)
+    const first = await openNotepad()
+    first.press('다')
+    first.press('나')
+    first.press('읽기')
+    await first.until(() => !first.field(EDITOR) && first.region('나', 'tab')?.on, 'the second note in reading mode')
+    first.send(GuiEvent.close)
+    await host.until(() => all('exit', first.pid).length > 0, 'exit')
+    // 상태는 보관함 밖에 적어 둔다.
+    expect(new TextDecoder().decode(host.kernel.fs.readFile('/home/guest/.config/notepad/state'))).toBe(
+      'mode\tread\ntab\t가.md\ntab\t다.md\ntab\t나.md\ncurrent\t나.md\nrecent\t나.md\nrecent\t다.md\nrecent\t가.md\n',
+    )
+
+    // 그사이 없어진 메모는 건너뛴다.
+    host.kernel.fs.unlink(host.kernel.fs.lookup(host.kernel.fs.root, VAULT) as never, '다.md')
+    const second = await openNotepad()
+    expect(second.regions('tab')).toEqual(['가', '나'])
+    expect(second.region('나', 'tab')).toMatchObject({ on: true })
+    expect(second.region('읽기')).toMatchObject({ on: true })
+    expect(second.field(EDITOR)).toBeUndefined()
+    // 빠른 열기의 "최근에 연 메모"도 이어진다.
+    second.send(GuiEvent.key, keyCode('o'), Mod.ctrl)
+    await second.until(() => second.regions('option').length, 'the quick open list')
+    expect(second.regions('option')).toEqual(['나', '가'])
   })
 
   it('scrolls a long tree with the wheel, drawing only the visible rows', async () => {

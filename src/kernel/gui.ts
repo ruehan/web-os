@@ -94,7 +94,7 @@ export function keyCode(key: string): number | undefined {
 
 // ───────────── 그리기 명령 ─────────────
 
-const Op = { clear: 1, rect: 2, frame: 3, line: 4, circle: 5, text: 6, clip: 7, unclip: 8, field: 9, region: 10, menu: 11, select: 12, overlay: 13, image: 14, pick: 15 } as const
+const Op = { clear: 1, rect: 2, frame: 3, line: 4, circle: 5, text: 6, clip: 7, unclip: 8, field: 9, region: 10, menu: 11, select: 12, overlay: 13, image: 14, pick: 15, copy: 16, open: 17 } as const
 
 /** 입력 칸의 성질 (field 명령의 flags) */
 export const FieldFlag = { multiline: 1, mono: 2, focus: 4, bold: 8, select: 16, keys: 32, grabEnter: 64, where: 128 } as const
@@ -198,6 +198,10 @@ export type DrawOp =
    * menu처럼 묶음 하나에만 넣는다. accept는 고를 수 있는 종류 ("image/*" 등), multiple은 여러 개를 고를 수 있는지.
    */
   | { op: 'pick'; multiple: boolean; accept: string }
+  /** 글을 클립보드에 넣는다 (링크 복사 등). menu처럼 묶음 하나에만 넣는다. */
+  | { op: 'copy'; text: string }
+  /** 바깥 사이트의 주소를 브라우저의 새 탭으로 연다 (http, https, mailto만). 묶음 하나에만 넣는다. */
+  | { op: 'open'; url: string }
   | { op: 'menu'; x: number; y: number; items: { label: string; disabled: boolean; danger: boolean; separator: boolean }[] }
 
 const ALIGN = ['left', 'center', 'right'] as const
@@ -340,6 +344,12 @@ export function decodeDrawList(data: Uint8Array): DrawOp[] {
         break
       case Op.pick:
         ops.push({ op: 'pick', multiple: u8() !== 0, accept: str() })
+        break
+      case Op.copy:
+        ops.push({ op: 'copy', text: str() })
+        break
+      case Op.open:
+        ops.push({ op: 'open', url: str() })
         break
       case Op.select:
         ops.push({ op: 'select', id: u32(), start: u32(), end: u32() })

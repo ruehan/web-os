@@ -270,6 +270,18 @@ impl Frame {
         self.s(accept);
     }
 
+    /// 글을 클립보드에 넣는다. 넣고 싶을 때의 묶음 하나에만 넣는다.
+    pub fn copy(&mut self, text: &str) {
+        self.op(16);
+        self.s(text);
+    }
+
+    /// 바깥 사이트의 주소(http, https, mailto)를 브라우저의 새 탭으로 연다. 열고 싶을 때의 묶음 하나에만 넣는다.
+    pub fn open_url(&mut self, url: &str) {
+        self.op(17);
+        self.s(url);
+    }
+
     /// 이 뒤에 그리는 것은 입력 칸보다 위에 온다 (입력 칸을 덮는 창 등).
     /// 이 뒤에 놓는 입력 칸은 그 위층보다도 위에 온다.
     pub fn overlay(&mut self) {

@@ -4,6 +4,7 @@
 //! 글을 치는 곳만은 화면 쪽의 실제 입력 칸을 빌려 쓰고(한글 조합, 선택, 복사·붙여넣기를 위해서),
 //! 메뉴는 시스템의 것을 띄워 달라고 한다. 파일을 읽고 쓰는 것은 다른 프로그램과 똑같은 파일 시스템 콜이다.
 
+mod code;
 mod editing;
 mod graph;
 mod markdown;
@@ -179,6 +180,10 @@ enum Action {
     ClosePopup,
     /// 그림 파일을 골라 메모에 넣는다
     PickImage,
+    /// 글을 클립보드에 넣는다 (링크 복사)
+    Copy(String),
+    /// 바깥 사이트의 주소를 새 탭으로 연다
+    OpenUrl(String),
     /// 좁은 화면에서 보관함과 메모 사이를 오간다
     ShowList,
     ShowNote,
@@ -260,6 +265,11 @@ struct App {
     images: RefCell<HashMap<String, Option<(f32, f32)>>>,
     /// 다음에 그릴 때 그림 파일을 고르는 창을 띄운다.
     picking: bool,
+    /// 다음에 그릴 때 클립보드에 넣을 글, 새 탭으로 열 주소
+    copying: Option<String>,
+    opening: Option<String>,
+    /// 마지막으로 파일에 적어 둔 창의 상태 (탭, 최근 목록 등). 달라지면 다시 적는다.
+    remembered: String,
     /// 좁은 화면에서: 메모 대신 보관함을 보여 주고 있다.
     list_shown: bool,
     /// 좁은 화면에서 누르고 있는 손가락: 떼면 할 일, 누른 자리, 마지막 높이, 밀어서 스크롤했는지
@@ -299,6 +309,11 @@ fn match_score(name: &str, typed: &str) -> Option<usize> {
         rest = &rest[rest.find(ch)? + ch.len_utf8()..];
     }
     Some(1000 + name.chars().count())
+}
+
+/// 창의 상태를 적어 두는 파일 (보관함 밖에 둔다: 메모가 아니므로)
+fn state_file() -> PathBuf {
+    Path::new(&env::var("HOME").unwrap_or_else(|_| "/home/guest".into())).join(".config/notepad/state")
 }
 
 fn describe(what: &str, e: &io::Error) -> String {
@@ -699,6 +714,66 @@ impl App {
         if let (Some(view), Some(&(_, y))) = (preview.view, preview.headings.iter().find(|(at, _)| *at == line)) {
             self.preview_scroll = (y - 8.0).clamp(0.0, (preview.height - view.h).max(0.0));
         }
+    }
+
+    // ───────────── 창의 상태 기억하기 ─────────────
+
+    /// 다음에 열었을 때 이어서 쓸 수 있도록 남겨 둘 것들: 보기 방식, 열어 둔 탭, 보던 메모, 최근에 연 메모.
+    /// 한 줄에 하나씩 "종류<탭>값"으로 적는다.
+    fn state(&self) -> String {
+        let mode = match self.mode {
+            Mode::Edit => "edit",
+            Mode::Split => "split",
+            Mode::Read => "read",
+        };
+        let mut out = format!("mode\t{mode}\n");
+        for tab in &self.tabs {
+            out.push_str(&format!("tab\t{tab}\n"));
+        }
+        if let Some(current) = &self.current {
+            out.push_str(&format!("current\t{current}\n"));
+        }
+        for path in &self.recent {
+            out.push_str(&format!("recent\t{path}\n"));
+        }
+        out
+    }
+
+    /// 상태가 지난번에 적은 것과 달라졌으면 파일에 적는다.
+    fn remember(&mut self) {
+        let state = self.state();
+        if state == self.remembered {
+            return;
+        }
+        let file = state_file();
+        let written = file.parent().map_or(Ok(()), fs::create_dir_all).and_then(|_| fs::write(&file, &state));
+        if written.is_ok() {
+            self.remembered = state;
+        }
+    }
+
+    /// 지난번의 상태를 되살린다. 그사이 없어진 메모는 건너뛴다.
+    fn restore(&mut self) {
+        let Ok(state) = fs::read_to_string(state_file()) else { return };
+        let exists = |app: &App, path: &str| app.kind(path).is_some_and(|kind| kind != Kind::Dir);
+        let mut current = None;
+        for line in state.lines() {
+            match line.split_once('\t') {
+                Some(("mode", "split")) => self.mode = Mode::Split,
+                Some(("mode", "read")) => self.mode = Mode::Read,
+                Some(("tab", path)) if exists(self, path) && !self.tabs.iter().any(|tab| tab == path) => self.tabs.push(path.to_string()),
+                Some(("recent", path)) if exists(self, path) && !self.recent.iter().any(|p| p == path) => self.recent.push(path.to_string()),
+                Some(("current", path)) if exists(self, path) => current = Some(path.to_string()),
+                _ => {}
+            }
+        }
+        // 보던 메모를 다시 올린다. 최근 목록의 순서는 적혀 있던 대로 둔다.
+        if let Some(path) = current.or_else(|| self.tabs.last().cloned()) {
+            let recent = std::mem::take(&mut self.recent);
+            self.show(&path, true);
+            self.recent = recent;
+        }
+        self.remembered = self.state();
     }
 
     // ───────────── 편집 화면의 색 ─────────────
@@ -1290,6 +1365,12 @@ impl App {
             ui.f.select(EDITOR, start, end);
         }
         self.color_source();
+        if let Some(text) = self.copying.take() {
+            ui.f.copy(&text);
+        }
+        if let Some(url) = self.opening.take() {
+            ui.f.open_url(&url);
+        }
         if std::mem::take(&mut self.picking) {
             ui.f.pick(true, "image/*");
         }
@@ -1798,6 +1879,7 @@ impl App {
             Target::Link(to) => Action::Link(to),
             Target::Tag(name) => Action::Tag(name),
             Target::Toggle(line) => Action::Toggle(line),
+            Target::Url(url) => Action::OpenUrl(url),
         };
         // 먼저 높이만 재서 스크롤의 끝을 정하고, 그다음에 그린다.
         let image = |target: &str| self.picture(target);
@@ -2069,6 +2151,9 @@ impl App {
                 if kind_of(&path) == Kind::Note {
                     items.push(item("옆에 열기", Action::Beside(path.clone())));
                     items.push(item("이름 바꾸기", Action::RenameNote(path.clone())));
+                    items.push(item("링크 복사", Action::Copy(format!("[[{}]]", stem_of(&path)))));
+                } else {
+                    items.push(item("메모에 넣는 글 복사", Action::Copy(format!("![[{}]]", base_of(&path)))));
                 }
                 items.extend([item("다른 폴더로 옮기기…", Action::MoveMenu(path.clone())), separator(), danger("삭제…", Action::AskDelete(path))]);
                 items
@@ -2208,6 +2293,8 @@ impl App {
             }
             Action::ClosePopup => self.close_choices(),
             Action::PickImage => self.picking = true,
+            Action::Copy(text) => self.copying = Some(text),
+            Action::OpenUrl(url) => self.opening = Some(url),
             Action::Nothing => {}
         }
     }
@@ -2392,6 +2479,7 @@ impl App {
             Event::Close => {
                 self.commit_title();
                 self.save();
+                self.remember();
                 process::exit(0);
             }
             _ => return false,
@@ -2456,6 +2544,9 @@ fn main() {
         caret_at: None,
         images: RefCell::new(HashMap::new()),
         picking: false,
+        copying: None,
+        opening: None,
+        remembered: String::new(),
         list_shown: true,
         touch: None,
         styled: None,
@@ -2485,7 +2576,16 @@ fn main() {
                 app.error = format!("그런 파일이 없습니다: {name}");
             }
         }
-        None => app.load(),
+        None => {
+            // 지난번에 열어 두었던 탭과 보던 메모를 되살린다. 없으면 첫 메모를 연다.
+            app.stay_empty = true;
+            app.load();
+            app.restore();
+            app.stay_empty = false;
+            if app.current.is_none() {
+                app.load();
+            }
+        }
     }
     let frame = app.draw();
     let _ = app.window.present(&frame);
@@ -2503,6 +2603,7 @@ fn main() {
         while let Some(event) = app.window.poll_event() {
             redraw |= app.handle(event);
         }
+        app.remember();
         if redraw {
             let frame = app.draw();
             let _ = app.window.present(&frame);

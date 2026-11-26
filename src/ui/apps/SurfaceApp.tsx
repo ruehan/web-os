@@ -99,6 +99,8 @@ function paint(ctx: CanvasRenderingContext2D, ops: DrawOp[], width: number, heig
       case 'select': // 입력 칸의 커서를 옮긴다
       case 'overlay': // 위층과의 경계 (아래에서 나눠 그린다)
       case 'pick': // 파일 고르기 창을 띄운다
+      case 'copy': // 클립보드에 넣는다
+      case 'open': // 새 탭으로 연다
         break
       case 'image': {
         const image = imageAt(op.path)
@@ -585,6 +587,11 @@ export function SurfaceApp(props: AppProps) {
         if (menu) openMenu(menu)
         const pick = ops.find((op) => op.op === 'pick')
         if (pick?.op === 'pick') pickFiles(pick)
+        for (const op of ops) {
+          if (op.op === 'copy') void navigator.clipboard?.writeText(op.text).catch(() => {})
+          // 이 페이지에 접근할 수 없는 새 탭으로만 연다. 프로그램이 준 주소라도 웹 주소가 아니면 열지 않는다.
+          else if (op.op === 'open' && /^(https?:|mailto:)/i.test(op.url)) window.open(op.url, '_blank', 'noopener,noreferrer')
+        }
       },
       setText(field, text) {
         texts.set(field, text)

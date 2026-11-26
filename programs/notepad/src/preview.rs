@@ -17,6 +17,8 @@ pub enum Target {
     Tag(String),
     /// 체크 목록의 체크 (원문의 줄 번호)
     Toggle(usize),
+    /// 바깥 사이트로 가는 링크
+    Url(String),
 }
 
 pub struct Laid {
@@ -157,13 +159,14 @@ impl<A: Clone> Preview<'_, '_, A> {
                 Inline::Code(text) => out.push(Span { style: Style { mono: true, ..style }, ..plain(text, Kind::Code) }),
                 Inline::Strong(children) => self.spans(children, Style { bold: true, ..style }, out),
                 Inline::Em(children) => self.spans(children, Style { italic: true, ..style }, out),
-                Inline::Link { children, .. } => {
-                    // 바깥 사이트로 가는 링크: 모양만 링크다 (프로그램이 브라우저의 탭을 열 수는 없다).
+                Inline::Link { href, children } => {
+                    // 바깥 사이트로 가는 링크: 누르면 브라우저의 새 탭으로 열어 달라고 한다.
                     let from = out.len();
                     self.spans(children, style, out);
                     for span in &mut out[from..] {
                         if span.kind == Kind::Plain {
                             span.kind = Kind::Link;
+                            span.target = Some(Target::Url(href.clone()));
                         }
                     }
                 }
@@ -456,7 +459,7 @@ impl<A: Clone> Preview<'_, '_, A> {
                     }
                     self.gap = GAP;
                 }
-                Block::Code { text, .. } => {
+                Block::Code { text, lang } => {
                     self.margin(0.0);
                     let lines: Vec<&str> = text.split('\n').collect();
                     let h = lines.len() as f32 * CODE_LINE + 20.0;
@@ -464,10 +467,43 @@ impl<A: Clone> Preview<'_, '_, A> {
                         self.ui.f.rect(x, self.y, width, h, 10.0, theme.surface2);
                         // 긴 줄은 블록 안에서 잘린다.
                         self.ui.f.clip(x, self.y, width - 6.0, h);
+                        // 아는 언어면 주석·문자열·숫자·예약어에 색을 입힌다.
+                        let tokens = crate::code::lang_of(lang).map(|lang| crate::code::highlight(text, lang)).unwrap_or_default();
+                        let mut line_start = 0;
                         for (i, line) in lines.iter().enumerate() {
+                            let (from, to) = (line_start, line_start + line.len());
+                            line_start = to + 1;
                             let mid = self.y + 10.0 + i as f32 * CODE_LINE + CODE_LINE / 2.0;
-                            if self.visible(mid - CODE_LINE / 2.0, CODE_LINE) {
-                                self.ui.f.styled(x + 12.0, mid, CODE_SIZE, theme.text, Align::Left, Style::MONO, &line.replace('\t', "  "));
+                            if !self.visible(mid - CODE_LINE / 2.0, CODE_LINE) {
+                                continue;
+                            }
+                            // 이 줄에 걸친 색 범위들로 줄을 조각낸다 (여러 줄에 걸친 주석도 줄마다 잘라 그린다).
+                            let mut pieces: Vec<(&str, Color)> = Vec::new();
+                            let mut at = from;
+                            for &(start, end, kind) in tokens.iter().filter(|(start, end, _)| *start < to && *end > from) {
+                                let (start, end) = (start.max(from), end.min(to));
+                                if start > at {
+                                    pieces.push((&text[at..start], theme.text));
+                                }
+                                let color = match kind {
+                                    crate::code::Kind::Comment => theme.muted,
+                                    crate::code::Kind::Str => theme.syn_string,
+                                    crate::code::Kind::Number => theme.syn_number,
+                                    crate::code::Kind::Keyword => theme.syn_keyword,
+                                    crate::code::Kind::Name => theme.syn_name,
+                                };
+                                pieces.push((&text[start..end], color));
+                                at = end;
+                            }
+                            if at < to {
+                                pieces.push((&text[at..to], theme.text));
+                            }
+                            let shown: Vec<String> = pieces.iter().map(|(piece, _)| piece.replace('\t', "  ")).collect();
+                            let widths = self.ui.widths_of(&shown.iter().map(String::as_str).collect::<Vec<_>>(), CODE_SIZE, Style::MONO);
+                            let mut piece_x = x + 12.0;
+                            for ((piece, w), (_, color)) in shown.iter().zip(widths).zip(&pieces) {
+                                self.ui.f.styled(piece_x, mid, CODE_SIZE, *color, Align::Left, Style::MONO, piece);
+                                piece_x += w;
                             }
                         }
                         self.ui.f.unclip();
