@@ -2,8 +2,9 @@
 import { For, Show, createSignal, onCleanup, onMount } from 'solid-js'
 import { APPS, appById, type AppDef } from '../apps/registry.tsx'
 import type { System } from '../system.ts'
+import { ContextMenuHost, showMenu } from '../contextmenu.tsx'
 import { AppsIcon } from '../icons.tsx'
-import { settings } from '../settings.ts'
+import { setSettings, settings } from '../settings.ts'
 import { compact } from './compact.ts'
 import { Launcher } from './Launcher.tsx'
 import { frameFor } from './geometry.ts'
@@ -91,7 +92,19 @@ export function Desktop(props: { system: System }) {
           </button>
           <For each={pinned()}>
             {(app) => (
-              <button class="rail-button pinned" aria-label={app.name} title={app.name} onClick={() => launch(app)}>
+              <button
+                class="rail-button pinned"
+                aria-label={app.name}
+                title={app.name}
+                onClick={() => launch(app)}
+                onContextMenu={(e) =>
+                  showMenu(e, [
+                    { label: `${app.name} 열기`, onSelect: () => launch(app) },
+                    'separator',
+                    { label: '막대에서 떼기', onSelect: () => setSettings('pins', (pins) => pins.filter((id) => id !== app.id)) },
+                  ])
+                }
+              >
                 {app.icon()}
               </button>
             )}
@@ -108,6 +121,14 @@ export function Desktop(props: { system: System }) {
                 aria-label={`창: ${win.title}`}
                 title={win.title}
                 onClick={() => wm.toggle(win.id)}
+                onContextMenu={(e) =>
+                  showMenu(e, [
+                    { label: '앞으로 가져오기', onSelect: () => wm.focus(win.id), disabled: wm.focused() === win.id },
+                    { label: '최소화', onSelect: () => wm.minimize(win.id), disabled: win.minimized },
+                    'separator',
+                    { label: '닫기', onSelect: () => wm.requestClose(win.id), danger: true },
+                  ])
+                }
               >
                 {appById(win.app).icon()}
               </button>
@@ -122,7 +143,24 @@ export function Desktop(props: { system: System }) {
         <Launcher onLaunch={(app) => launch(app)} onClose={() => setMenuOpen(false)} />
       </Show>
 
-      <div class="window-layer" ref={layer}>
+      <ContextMenuHost />
+
+      <div
+        class="window-layer"
+        ref={layer}
+        // 창이 아닌 빈 바탕을 우클릭했을 때
+        onContextMenu={(e) =>
+          e.target === e.currentTarget &&
+          showMenu(e, [
+            { label: '새 터미널', onSelect: () => launch(appById('terminal')) },
+            { label: '파일 열기', onSelect: () => launch(appById('files')) },
+            { label: '메모 열기', onSelect: () => launch(appById('notes')) },
+            'separator',
+            { label: '모든 앱…', onSelect: () => setMenuOpen(true) },
+            { label: '설정', onSelect: () => launch(appById('settings')) },
+          ])
+        }
+      >
         <Show when={preview()}>
           {(box) => (
             <div

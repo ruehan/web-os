@@ -7,6 +7,7 @@ import { CodeArea } from '../editor/CodeArea.tsx'
 import { languageOf } from '../editor/highlight.ts'
 import { toggleTask } from '../editor/markdown.ts'
 import { Preview, type PreviewContext } from '../editor/Preview.tsx'
+import { isTextField, showMenu } from '../contextmenu.tsx'
 import { FileIcon, FolderIcon, NoteIcon } from '../icons.tsx'
 import {
   ATTACHMENTS,
@@ -537,6 +538,28 @@ export function NotesApp(props: AppProps) {
               style={{ 'padding-left': `${8 + (tree.level - 1) * 14}px` }}
               onClick={() => open(item.path)}
               onKeyDown={(e) => e.key === 'Enter' && open(item.path)}
+              onContextMenu={(e) =>
+                showMenu(e, [
+                  { label: '열기', onSelect: () => open(item.path) },
+                  item.kind === 'note' && {
+                    label: '이름 바꾸기',
+                    onSelect: () => {
+                      open(item.path)
+                      queueMicrotask(() => titleInput?.select())
+                    },
+                  },
+                  item.kind !== 'note' && {
+                    label: '메모에 넣는 글 복사',
+                    onSelect: () => void navigator.clipboard?.writeText(`![[${baseOf(item.path)}]]`),
+                  },
+                  item.kind === 'note' && {
+                    label: '링크 복사',
+                    onSelect: () => void navigator.clipboard?.writeText(`[[${stemOf(item.path)}]]`),
+                  },
+                  'separator',
+                  { label: '삭제…', onSelect: () => setConfirmingDelete(item.path), danger: true },
+                ])
+              }
             >
               <span class="tree-icon">{iconFor(item.kind)}</span>
               <span class="tree-name">{shown(item)}</span>
@@ -556,6 +579,17 @@ export function NotesApp(props: AppProps) {
                 toggleDir(item.path)
               }}
               onDblClick={() => setRenamingDir(item.path)}
+              onContextMenu={(e) => {
+                if (isTextField(e.target)) return
+                setActiveDir(item.path)
+                showMenu(e, [
+                  { label: '여기에 새 메모', onSelect: newNote },
+                  { label: '여기에 새 폴더', onSelect: () => void newFolder() },
+                  'separator',
+                  { label: '이름 바꾸기', onSelect: () => setRenamingDir(item.path) },
+                  { label: '삭제…', onSelect: () => setConfirmingDelete(item.path), danger: true },
+                ])
+              }}
             >
               <span class="tree-icon dir">{iconFor('dir')}</span>
               <Show when={renamingDir() === item.path} fallback={<span class="tree-name">{baseOf(item.path)}</span>}>
@@ -658,7 +692,21 @@ export function NotesApp(props: AppProps) {
         <Show
           when={query().trim()}
           fallback={
-            <ul class="notes-tree" role="tree" aria-label="보관함" onClick={(e) => e.target === e.currentTarget && setActiveDir('')}>
+            <ul
+              class="notes-tree"
+              role="tree"
+              aria-label="보관함"
+              onClick={(e) => e.target === e.currentTarget && setActiveDir('')}
+              // 항목이 아닌 빈 곳: 보관함 맨 위에 만든다.
+              onContextMenu={(e) => {
+                if (e.target !== e.currentTarget) return
+                setActiveDir('')
+                showMenu(e, [
+                  { label: '새 메모', onSelect: newNote },
+                  { label: '새 폴더', onSelect: () => void newFolder() },
+                ])
+              }}
+            >
               <Show when={entries.length} fallback={<li class="notes-empty">아직 메모가 없습니다.</li>}>
                 <Tree dir="" level={1} />
               </Show>
@@ -703,7 +751,21 @@ export function NotesApp(props: AppProps) {
           )}
         </Show>
 
-        <Show when={entry()} fallback={<p class="editor-note">“새 메모”를 눌러 적기 시작하세요.</p>}>
+        <Show
+          when={entry()}
+          fallback={
+            <p class="editor-note">
+              “새 메모”를 눌러 적기 시작하세요.
+              {/* 열어 둔 메모가 없으면 상태 줄도 없으므로, 오류는 여기에 보여 준다. */}
+              <Show when={error()}>
+                <span class="status-error" role="alert">
+                  <br />
+                  {error()}
+                </span>
+              </Show>
+            </p>
+          }
+        >
           {(file) => (
             <>
               <div class="toolbar note-head">

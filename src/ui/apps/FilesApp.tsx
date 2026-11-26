@@ -3,6 +3,7 @@ import { For, Show, createEffect, createSignal } from 'solid-js'
 import { createStore, reconcile } from 'solid-js/store'
 import type { FsEntry } from '../../kernel/abi.ts'
 import { Errno } from '../../kernel/errno.ts'
+import { isTextField, showMenu } from '../contextmenu.tsx'
 import { FileIcon, FolderIcon, UpIcon } from '../icons.tsx'
 import { basename, crumbs, dirname, formatSize, join } from '../path.ts'
 import { FsError } from '../system.ts'
@@ -206,7 +207,28 @@ export function FilesApp(props: AppProps) {
         </div>
       </Show>
 
-      <ul class="file-list" ref={list} tabindex="0" role="listbox" aria-label="파일 목록" onKeyDown={onKeyDown}>
+      <ul
+        class="file-list"
+        ref={list}
+        tabindex="0"
+        role="listbox"
+        aria-label="파일 목록"
+        onKeyDown={onKeyDown}
+        // 항목이 아닌 빈 곳을 우클릭했을 때
+        onContextMenu={(e) =>
+          isTextField(e.target) ||
+          showMenu(e, [
+            { label: '새 폴더', onSelect: () => void create(freshName('새 폴더'), fs.mkdir) },
+            ...FILE_TYPES.map((type) => ({
+              label: `새 ${type.name} 파일 (${type.ext})`,
+              onSelect: () => void create(freshName('새 파일', type.ext), (path) => fs.write(path, new TextEncoder().encode(type.content))),
+            })),
+            'separator',
+            { label: '위 폴더로', onSelect: () => go(dirname(cwd())), disabled: cwd() === '/' },
+            { label: '이 폴더의 경로 복사', onSelect: () => void navigator.clipboard?.writeText(cwd()) },
+          ])
+        }
+      >
         <For each={entries} fallback={<li class="file-empty">비어 있는 폴더입니다. 파일을 끌어다 놓으면 여기에 올라갑니다.</li>}>
           {(entry) => (
             <li
@@ -215,6 +237,18 @@ export function FilesApp(props: AppProps) {
               aria-selected={selected() === entry.name}
               onClick={() => select(entry.name)}
               onDblClick={() => renaming() || open(entry)}
+              onContextMenu={(e) => {
+                if (isTextField(e.target)) return
+                // 우클릭한 항목이 선택된다 (메뉴가 무엇에 대한 것인지 보이도록).
+                select(entry.name)
+                showMenu(e, [
+                  { label: entry.dir ? '열기' : '편집기로 열기', onSelect: () => open(entry) },
+                  { label: '이름 바꾸기', onSelect: () => setRenaming(entry.name) },
+                  { label: '경로 복사', onSelect: () => void navigator.clipboard?.writeText(join(cwd(), entry.name)) },
+                  'separator',
+                  { label: '삭제…', onSelect: () => setConfirmingDelete(true), danger: true },
+                ])
+              }}
             >
               <span class="file-icon" classList={{ dir: entry.dir }}>
                 {entry.dir ? <FolderIcon /> : <FileIcon />}

@@ -1,6 +1,7 @@
 // 창 하나의 틀: 제목 표시줄, 조절 손잡이, 그 안의 앱.
 import { For, Show, createEffect, createSignal, on, onCleanup } from 'solid-js'
 import type { AppDef } from '../apps/registry.tsx'
+import { showMenu } from '../contextmenu.tsx'
 import { CloseIcon, MaximizeIcon, MinimizeIcon, RestoreIcon } from '../icons.tsx'
 import { DURATION, motion } from '../motion.ts'
 import type { System } from '../system.ts'
@@ -198,7 +199,25 @@ export function Window(props: {
       onPointerDown={() => wm.focus(win.id)}
       onFocusIn={() => wm.focus(win.id)}
     >
-      <header class="titlebar" onPointerDown={startMove} onDblClick={() => compact() || wm.toggleMaximize(win.id)}>
+      <header
+        class="titlebar"
+        onPointerDown={startMove}
+        onDblClick={() => compact() || wm.toggleMaximize(win.id)}
+        onContextMenu={(e) =>
+          showMenu(e, [
+            { label: '최소화', onSelect: () => wm.minimize(win.id) },
+            // 좁은 화면에서는 창이 늘 화면 전체를 쓰므로 크기와 자리를 바꾸는 항목이 없다.
+            !compact() && {
+              label: win.mode === 'max' ? '원래 크기로' : '최대화',
+              onSelect: () => wm.setMode(win.id, win.mode === 'max' ? 'normal' : 'max'),
+            },
+            !compact() && { label: '왼쪽 절반에 붙이기', onSelect: () => wm.setMode(win.id, 'left'), disabled: win.mode === 'left' },
+            !compact() && { label: '오른쪽 절반에 붙이기', onSelect: () => wm.setMode(win.id, 'right'), disabled: win.mode === 'right' },
+            'separator',
+            { label: '닫기', onSelect: () => wm.requestClose(win.id), danger: true },
+          ])
+        }
+      >
         <span class="title-icon">{props.app.icon()}</span>
         <span class="title">{win.title}</span>
         <div class="controls">

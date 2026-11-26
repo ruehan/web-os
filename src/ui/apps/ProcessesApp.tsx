@@ -1,4 +1,5 @@
 import { For } from 'solid-js'
+import { showMenu } from '../contextmenu.tsx'
 import type { AppProps } from './registry.tsx'
 
 export function ProcessesApp(props: AppProps) {
@@ -18,7 +19,12 @@ export function ProcessesApp(props: AppProps) {
         <tbody>
           <For each={procs}>
             {(p) => (
-              <tr class="proc">
+              <tr
+                class="proc"
+                onContextMenu={(e) =>
+                  showMenu(e, [{ label: `${p.pid}번 프로세스 종료`, onSelect: () => props.system.kill(p.pid), danger: true }])
+                }
+              >
                 <td class="num">{p.pid}</td>
                 <td class="num">{p.ppid || '–'}</td>
                 <td class="name">{p.name}</td>

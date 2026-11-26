@@ -2,6 +2,7 @@
 // 왼쪽 막대에는 자주 쓰는 앱만 고정해 두고, 나머지는 여기서 연다.
 import { For, Show, createMemo, createSignal, onCleanup, onMount } from 'solid-js'
 import { APPS, type AppDef } from '../apps/registry.tsx'
+import { showMenu } from '../contextmenu.tsx'
 import { PinIcon } from '../icons.tsx'
 import { setSettings, settings } from '../settings.ts'
 
@@ -28,7 +29,8 @@ export function Launcher(props: { onLaunch(app: AppDef): void; onClose(): void }
     // 메뉴 밖을 누르면 닫는다. 메뉴를 연 버튼을 다시 눌렀을 때 닫혔다 곧바로 다시 열리지 않도록 그 버튼은 뺀다.
     const outside = (e: PointerEvent) => {
       const target = e.target as Element
-      if (!panel.contains(target) && !target.closest('[data-launcher-button]')) props.onClose()
+      // 우클릭 메뉴는 이 메뉴 밖에 그려지지만, 이 메뉴에서 띄운 것이므로 밖으로 치지 않는다.
+      if (!panel.contains(target) && !target.closest('[data-launcher-button], .context-menu')) props.onClose()
     }
     document.addEventListener('pointerdown', outside, true)
     onCleanup(() => document.removeEventListener('pointerdown', outside, true))
@@ -58,7 +60,15 @@ export function Launcher(props: { onLaunch(app: AppDef): void; onClose(): void }
       <ul class="launcher-list">
         <For each={matches()} fallback={<li class="launcher-empty">찾는 앱이 없습니다.</li>}>
           {(app) => (
-            <li class="launcher-item">
+            <li
+              class="launcher-item"
+              onContextMenu={(e) =>
+                showMenu(e, [
+                  { label: '열기', onSelect: () => launch(app) },
+                  { label: settings.pins.includes(app.id) ? '막대에서 떼기' : '막대에 고정', onSelect: () => togglePin(app.id) },
+                ])
+              }
+            >
               <button class="launcher-app" aria-label={app.name} onClick={() => launch(app)}>
                 <span class="launcher-icon">{app.icon()}</span>
                 {app.name}

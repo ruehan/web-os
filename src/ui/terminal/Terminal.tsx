@@ -1,5 +1,6 @@
 // 터미널 화면. 에뮬레이터의 글자 격자를 DOM으로 그리고, 키보드 입력을 바이트 시퀀스로 바꿔 내보낸다.
 import { onCleanup, onMount } from 'solid-js'
+import { showMenu } from '../contextmenu.tsx'
 import { Emulator, type Cell, type Line } from './emulator.ts'
 
 export interface TerminalHandle {
@@ -191,7 +192,28 @@ export function Terminal(props: {
       ref={root}
       onScroll={() => (followOutput = root.scrollHeight - root.scrollTop - root.clientHeight < cell.h)}
       // 드래그로 글자를 선택한 경우에는 선택을 유지하고, 그냥 클릭했을 때만 입력을 받는다.
-      onMouseUp={() => getSelection()?.isCollapsed && input.focus({ preventScroll: true })}
+      onMouseUp={(e) => e.button === 0 && getSelection()?.isCollapsed && input.focus({ preventScroll: true })}
+      onContextMenu={(e) => {
+        const selected = getSelection()?.toString() ?? ''
+        showMenu(e, [
+          { label: '복사', onSelect: () => void navigator.clipboard?.writeText(selected), disabled: !selected },
+          {
+            label: '붙여넣기',
+            // 클립보드를 읽으려면 브라우저가 한 번 허락을 구한다. 거절하면 아무 일도 일어나지 않는다.
+            onSelect: () =>
+              void navigator.clipboard
+                ?.readText()
+                .then((text) => text && send(text.replace(/\r?\n/g, '\r')))
+                .catch(() => {})
+                .finally(() => input.focus({ preventScroll: true })),
+          },
+          'separator',
+          {
+            label: '모두 선택',
+            onSelect: () => getSelection()?.selectAllChildren(screen),
+          },
+        ])
+      }}
     >
       <div class="screen" ref={screen}>
         <span class="probe" ref={probe} aria-hidden="true">
