@@ -1,13 +1,12 @@
 //! 음악 보관함의 파일들을 읽는다. 모두 사람이 손으로 고치는 글 파일이다.
 //!
-//! **곡 목록** (`songs.txt`): 등록한 곡마다 한 줄. 그 아래에 들여 쓴 줄들은 그 곡에 대한 글이다.
+//! **곡 목록** (`songs.txt`): 등록한 곡마다 한 줄. 아티스트별·앨범별 보기는 여기서 나온다. 글은 여기에 쓰지 않는다.
 //!
 //! ```text
 //! https://youtu.be/영상번호 | 제목 | 아티스트 | 앨범
-//!     이 곡에 대해 쓰고 싶은 글.
 //! ```
 //!
-//! **플레이리스트** (`playlists/*.md`): 글 한 편이 플레이리스트 하나다. 유튜브 주소만 적은 줄이 곡이고,
+//! **플레이리스트** (`playlists/*.md`): 글 한 편이 플레이리스트 하나다. 글은 여기에만, 자유롭게 쓴다. 유튜브 주소만 적은 줄이 곡이고,
 //! 그 아래의 글은 그 곡에 대한 이야기, 첫 곡보다 앞의 글은 소개글이다.
 //!
 //! ```text
@@ -27,8 +26,6 @@ pub struct Song {
     pub title: Option<String>,
     pub artist: Option<String>,
     pub album: Option<String>,
-    /// 이 곡에 대한 글 (문단은 빈 줄로 나눈다)
-    pub note: String,
 }
 
 /// 플레이리스트의 곡 하나와, 그 자리에 쓴 글
@@ -75,31 +72,15 @@ fn tidy(lines: &[&str]) -> String {
 /// 곡 목록 파일을 읽는다. 알아볼 수 없는 줄은 건너뛴다.
 pub fn parse_songs(text: &str) -> Vec<Song> {
     let mut songs: Vec<Song> = Vec::new();
-    let mut note: Vec<&str> = Vec::new();
-    fn close(songs: &mut [Song], note: &mut Vec<&str>) {
-        if let Some(song) = songs.last_mut() {
-            song.note = tidy(note);
-        }
-        note.clear();
-    }
     for line in text.lines() {
         if line.trim_start().starts_with("//") {
             continue;
         }
-        // 들여 쓴 줄과, 글 사이의 빈 줄은 바로 위 곡의 글이다.
-        if line.starts_with([' ', '\t']) || line.trim().is_empty() {
-            if !songs.is_empty() {
-                note.push(line);
-            }
-            continue;
-        }
         let mut parts = line.split('|').map(str::trim);
         let Some(id) = parts.next().and_then(video_id) else { continue };
-        close(&mut songs, &mut note);
         let mut field = || parts.next().filter(|p| !p.is_empty()).map(str::to_string);
-        songs.push(Song { id, title: field(), artist: field(), album: field(), note: String::new() });
+        songs.push(Song { id, title: field(), artist: field(), album: field() });
     }
-    close(&mut songs, &mut note);
     songs
 }
 
@@ -210,18 +191,12 @@ mod tests {
     }
 
     #[test]
-    fn reads_the_catalog_with_notes() {
-        let songs = parse_songs(
-            "// 설명\nhttps://youtu.be/first000001 | 하나 | 가수 | 첫 앨범\n    이 곡은 이렇다.\n\n    둘째 문단.\nsecond00002 | 둘 | 가수\nthird000003\n알 수 없는 줄\n\tfourth 아님\n",
-        );
+    fn reads_the_catalog() {
+        let songs = parse_songs("// 설명\nhttps://youtu.be/first000001 | 하나 | 가수 | 첫 앨범\n\nsecond00002 | 둘 | 가수\n  third000003\n알 수 없는 줄\n");
         assert_eq!(songs.len(), 3);
-        assert_eq!(
-            songs[0],
-            Song { id: "first000001".into(), title: Some("하나".into()), artist: Some("가수".into()), album: Some("첫 앨범".into()), note: "이 곡은 이렇다.\n\n둘째 문단.".into() }
-        );
-        assert_eq!((songs[1].album.as_deref(), songs[1].note.as_str()), (None, ""));
-        // 알아볼 수 없는 줄은 건너뛰고, 그 아래의 들여 쓴 글은 바로 위 곡의 것이 된다.
-        assert_eq!((songs[2].title.as_deref(), songs[2].note.as_str()), (None, "fourth 아님"));
+        assert_eq!(songs[0], Song { id: "first000001".into(), title: Some("하나".into()), artist: Some("가수".into()), album: Some("첫 앨범".into()) });
+        assert_eq!((songs[1].title.as_deref(), songs[1].album.as_deref()), (Some("둘"), None));
+        assert_eq!((songs[2].id.as_str(), songs[2].title.as_deref()), ("third000003", None));
     }
 
     #[test]

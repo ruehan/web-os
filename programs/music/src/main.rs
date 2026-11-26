@@ -4,8 +4,8 @@
 //! 놓아 주는 유튜브의 공식 플레이어가 낸다. 프로그램은 "이 영상을 틀어라", "멈춰라"를 시키고 상태를 돌려받는다.
 //!
 //! 보관함은 글 파일들이다 (/usr/share/music과 사용자의 ~/music 아래):
-//! - `songs.txt`: 등록한 곡들 (제목, 아티스트, 앨범, 그 곡에 대한 글). 아티스트별·앨범별 보기는 여기서 나온다.
-//! - `playlists/*.md`: 글 한 편이 플레이리스트 하나다. 소개글, 곡, 곡마다의 이야기.
+//! - `songs.txt`: 등록한 곡들 (제목, 아티스트, 앨범). 아티스트별·앨범별 보기는 여기서 나온다.
+//! - `playlists/*.md`: 글 한 편이 플레이리스트 하나다. 글은 여기에만 쓴다: 소개글, 곡, 곡마다의 이야기.
 
 mod library;
 
@@ -720,7 +720,6 @@ impl App {
     fn layout(&self, ui: &mut Ui<Action>, width: f32, pad: f32) -> Vec<Item> {
         let room = (width - pad * 2.0).max(80.0);
         let mut items = Vec::new();
-        let current = self.playing.and_then(|at| self.queue.get(at).copied());
         let cover = |songs: &[usize]| songs.first().map(|&i| self.songs[i].id.clone());
         match &self.view {
             View::Posts => {
@@ -763,12 +762,6 @@ impl App {
                 }
                 for (at, song) in songs.into_iter().enumerate() {
                     items.push(Item::Song { at, song });
-                    // 틀고 있는 곡에 써 둔 글이 있으면 그 아래에 펼친다.
-                    let note = &self.songs[song].note;
-                    if current == Some(song) && !note.is_empty() {
-                        Self::prose(ui, note, 12.5, (room - 112.0).max(60.0), 94.0, true, &mut items);
-                        items.push(Item::Gap(10.0));
-                    }
                 }
             }
             View::Post(i) => {
@@ -781,11 +774,10 @@ impl App {
                 for (at, entry) in post.entries.iter().enumerate() {
                     let Some(&song) = self.index.get(&entry.id) else { continue };
                     items.push(Item::Song { at, song });
-                    // 이 글에서 그 곡에 대해 쓴 것. 없으면 곡에 써 둔 글을 보여 준다.
-                    let (text, quiet) = if entry.text.is_empty() { (&self.songs[song].note, true) } else { (&entry.text, false) };
-                    if !text.is_empty() {
+                    // 그 곡 아래에 쓴 글
+                    if !entry.text.is_empty() {
                         items.push(Item::Gap(4.0));
-                        Self::prose(ui, text, 13.5, room - 12.0, 6.0, quiet, &mut items);
+                        Self::prose(ui, &entry.text, 13.5, room - 12.0, 6.0, false, &mut items);
                     }
                     items.push(Item::Gap(16.0));
                 }

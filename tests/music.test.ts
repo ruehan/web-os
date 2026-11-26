@@ -27,7 +27,7 @@ function library(songs: string, posts: Record<string, string> = {}) {
   write('/usr/share/music/songs.txt', songs)
   for (const [name, text] of Object.entries(posts)) write(`/usr/share/music/playlists/${name}.md`, text)
 }
-const THREE = 'aaaaaaaaaa1 | 하나 | 가 | 첫 앨범\n    하나에 대한 글.\naaaaaaaaaa2 | 둘 | 나 | 첫 앨범\naaaaaaaaaa3 | 셋 | 가\n'
+const THREE = 'aaaaaaaaaa1 | 하나 | 가 | 첫 앨범\naaaaaaaaaa2 | 둘 | 나 | 첫 앨범\naaaaaaaaaa3 | 셋 | 가\n'
 const NAV = ['플레이리스트', '모든 곡', '아티스트', '앨범']
 const RAIN = '# 비 오는 날\n날짜: 2026-11-26\n\n소개글이다.\n\nhttps://youtu.be/aaaaaaaaaa2\n둘을 고른 까닭.\n\naaaaaaaaaa1\n'
 
@@ -95,8 +95,6 @@ describe('music', () => {
     await app.until(() => app.loaded().join() === 'aaaaaaaaaa2', 'the second song of the album')
     app.press('다음 곡')
     await app.until(() => app.loaded().at(-1) === 'aaaaaaaaaa1', 'around to the first of the album')
-    // 곡에 써 둔 글은 그 곡을 틀고 있을 때 아래에 펼쳐진다.
-    expect(app.texts()).toContain('하나에 대한 글.')
   })
 
   it('reads a playlist like a post: an introduction, the songs, and what was written about each', async () => {
@@ -113,9 +111,9 @@ describe('music', () => {
 
     app.press('비 오는 날', 'option')
     await app.until(() => app.labels('option').slice(0, 2).join() === '둘,하나', 'the songs in the order of the post')
-    // 소개글, 그 글에서 곡에 대해 쓴 것. 쓴 것이 없는 곡은 곡에 써 둔 글이 나온다.
+    // 소개글과, 곡 아래에 쓴 글. 글은 플레이리스트에만 있다.
     const texts = app.texts()
-    expect(texts).toEqual(expect.arrayContaining(['플레이리스트', '비 오는 날', '소개글이다.', '둘을 고른 까닭.', '하나에 대한 글.']))
+    expect(texts).toEqual(expect.arrayContaining(['플레이리스트', '비 오는 날', '소개글이다.', '둘을 고른 까닭.']))
     expect(texts.indexOf('소개글이다.')).toBeLessThan(texts.indexOf('둘을 고른 까닭.'))
     // 글의 차례대로 튼다.
     app.press('모두 재생')
