@@ -50,8 +50,8 @@ async function openNotepad(...args: string[]) {
   const texts = () => of('text').map((op) => op.text)
   const region = (label: string, role?: Op<'region'>['role']) => of('region').find((r) => r.label === label && (!role || r.role === role))
   const send = (kind: number, a = 0, b = 0, c = 0) => host.kernel.guiEvent(pid, encodeEvent(kind, a, b, c))
-  function point(label: string, button: number, clicks: number) {
-    const r = region(label)
+  function point(label: string, button: number, clicks: number, role?: Op<'region'>['role']) {
+    const r = region(label, role)
     if (!r) throw new Error(`no "${label}" on screen; there are: ${of('region').map((x) => x.label).join(', ')}`)
     const [x, y] = [r.x + r.w / 2, r.y + r.h / 2]
     host.kernel.guiEvent(pid, encodePointer(GuiEvent.pointerDown, x, y, button + 256 * (clicks - 1)))
@@ -73,7 +73,7 @@ async function openNotepad(...args: string[]) {
       const set = all('gui-text', pid).findLast((e) => e.field === field)
       return set && new TextDecoder().decode(set.data)
     },
-    press: (label: string) => point(label, 0, 1),
+    press: (label: string, role?: Op<'region'>['role']) => point(label, 0, 1, role),
     doublePress: (label: string) => (point(label, 0, 1), point(label, 0, 2)),
     middlePress: (label: string) => point(label, 1, 1),
     rightPress: (label: string) => point(label, 2, 1),
@@ -136,7 +136,7 @@ describe('notepad', () => {
     // 글의 내용은 그리기 명령에 들어 있지 않다. 칸의 자리와 모양만 있다.
     expect(pad.field(EDITOR)).toEqual({
       op: 'field', id: EDITOR, x: 264, y: 95, w: 622, h: 437, size: 13, color: '#191a20', background: '#ffffff',
-      multiline: true, mono: true, bold: false, focus: true, select: false, keys: true, grabEnter: false, label: '메모 내용', placeholder: '',
+      multiline: true, mono: true, bold: false, focus: true, select: false, keys: true, grabEnter: false, where: false, label: '메모 내용', placeholder: '',
     })
     expect(pad.field(TITLE)).toMatchObject({ multiline: false, bold: true, size: 15, label: '제목', focus: false })
     expect(pad.field(SEARCH)).toMatchObject({ placeholder: '메모 찾기' })
@@ -825,41 +825,113 @@ describe('notepad', () => {
       await ed.lands(len('가 ***나*** 다[['))
     })
 
-    it('offers notes to link while the cursor is inside an open [[', async () => {
+    it('offers notes to link, under the cursor, while it is inside an open [[', async () => {
       write('회의록.md', '')
-      write('회계.md', '')
+      write('일/회계.md', '')
       write('그림.png', '')
       write('무관.md', '')
       const ed = await editing('보기 [[회')
       ed.caret(len('보기 [[회'))
-      await ed.pad.see('링크할 메모 (Tab으로 첫 번째 선택)')
-      expect(ed.pad.regions('button').filter((label) => label.startsWith('회'))).toEqual(['회계', '회의록'])
-      // 고르는 동안에는 Enter가 줄바꿈이 아니라 "이것으로"다.
+      // 고를 것이 생기면 커서가 창의 어디에 있는지 묻고, Enter와 위·아래 키를 가져간다.
+      await ed.pad.until(() => ed.pad.field(EDITOR)?.where, 'the question about the cursor')
       expect(ed.pad.field(EDITOR)).toMatchObject({ grabEnter: true })
-      ed.key('Tab')
-      await ed.becomes('보기 [[회계]]')
-      await ed.pad.until(() => !ed.pad.region('회의록', 'button'), 'the choices to go')
-      await ed.lands(len('보기 [[회계]]'))
-      expect(ed.pad.field(EDITOR)).toMatchObject({ grabEnter: false })
+      expect(ed.pad.regions('option')).toEqual([])
+      ed.pad.send(GuiEvent.caretAt, EDITOR, 400, 200)
+      await ed.pad.until(() => ed.pad.regions('option').length, 'the list')
+      expect(ed.pad.regions('option')).toEqual(['회계', '회의록'])
+      // 목록은 입력 칸 위에, 커서 바로 아래에 뜬다. 어느 폴더의 것인지 옆에 나온다.
+      const ops = ed.pad.latest()
+      expect(ops.findIndex((op) => op.op === 'overlay')).toBeGreaterThan(ops.findIndex((op) => op.op === 'field' && op.id === EDITOR))
+      expect(ed.pad.region('회계', 'option')).toMatchObject({ x: 404, y: 208, on: true })
+      expect(ed.pad.texts()).toContain('일')
 
-      // 단추를 눌러 고를 수도 있다. 뒤에 이미 ]]가 있으면 다시 붙이지 않는다.
+      ed.key('ArrowDown')
+      await ed.pad.until(() => ed.pad.region('회의록', 'option')?.on, 'the second row')
+      ed.key('Enter')
+      await ed.becomes('보기 [[회의록]]')
+      await ed.lands(len('보기 [[회의록]]'))
+      await ed.pad.until(() => !ed.pad.regions('option').length, 'the list to go')
+      expect(ed.pad.field(EDITOR)).toMatchObject({ grabEnter: false, where: false })
+
+      // 눌러서 고를 수도 있다. 뒤에 이미 ]]가 있으면 다시 붙이지 않는다.
       ed.type('[[그]] 끝')
       ed.caret(len('[[그'))
-      await ed.pad.until(() => ed.pad.region('그림.png', 'button'), 'the image to be offered')
-      ed.pad.press('그림.png')
+      ed.pad.send(GuiEvent.caretAt, EDITOR, 300, 120)
+      await ed.pad.until(() => ed.pad.region('그림.png', 'option'), 'the image to be offered')
+      ed.pad.press('그림.png', 'option')
       await ed.becomes('[[그림.png]] 끝')
-      // 커서가 [[ 밖으로 나가거나 Esc를 누르면 사라진다.
+      // Esc로 닫으면 같은 자리에서는 다시 뜨지 않고, 커서가 [[ 밖으로 나가도 사라진다.
       ed.type('[[')
       ed.caret(2)
-      await ed.pad.until(() => ed.pad.region('회계', 'button'), 'everything to be offered')
+      ed.pad.send(GuiEvent.caretAt, EDITOR, 280, 120)
+      await ed.pad.until(() => ed.pad.region('회계', 'option'), 'everything to be offered')
       ed.key('Escape')
-      await ed.pad.until(() => !ed.pad.region('회계', 'button'), 'the choices to go')
-      ed.caret(2)
+      await ed.pad.until(() => !ed.pad.regions('option').length, 'the list to go')
       ed.type('[[회')
       ed.caret(len('[[회'))
-      await ed.pad.until(() => ed.pad.region('회계', 'button'), 'the choices again')
+      await new Promise((r) => setTimeout(r, 60))
+      expect(ed.pad.field(EDITOR)).toMatchObject({ where: false })
+      ed.type('[[회 [[회')
+      ed.caret(len('[[회 [[회'))
+      ed.pad.send(GuiEvent.caretAt, EDITOR, 330, 120)
+      await ed.pad.until(() => ed.pad.region('회계', 'option'), 'the list at another place')
       ed.caret(0)
-      await ed.pad.until(() => !ed.pad.region('회계', 'button'), 'the choices to go')
+      await ed.pad.until(() => !ed.pad.regions('option').length, 'the list to go')
+    })
+
+    it('offers things to insert when / is typed, like a command palette', async () => {
+      write('회의록.md', '')
+      const ed = await editing('앞 줄\n/')
+      ed.caret(len('앞 줄\n/'))
+      await ed.pad.until(() => ed.pad.field(EDITOR)?.where, 'the question about the cursor')
+      ed.pad.send(GuiEvent.caretAt, EDITOR, 280, 150)
+      await ed.pad.until(() => ed.pad.regions('option').length, 'the commands')
+      expect(ed.pad.regions('option')).toEqual(['제목 1', '제목 2', '제목 3', '글머리 목록', '번호 목록', '할 일', '인용', '코드 블록'])
+      // 여덟 줄까지 보이고, 아래로 내려가면 나머지가 나온다.
+      for (let i = 0; i < 9; i++) ed.key('ArrowDown')
+      await ed.pad.until(() => ed.pad.region('구분선', 'option')?.on, 'the tenth command')
+      expect(ed.pad.regions('option')).toContain('표')
+
+      // 이어서 친 글자로 거른다. 한글 이름이나 영문 별명 어느 쪽으로도 찾는다.
+      ed.type('앞 줄\n/제목')
+      ed.caret(len('앞 줄\n/제목'))
+      await ed.pad.until(() => ed.pad.regions('option').length === 3, 'the headings')
+      ed.type('앞 줄\n/todo')
+      ed.caret(len('앞 줄\n/todo'))
+      await ed.pad.until(() => ed.pad.regions('option').join() === '할 일', 'the task command')
+      ed.key('Enter')
+      await ed.becomes('앞 줄\n- [ ] ')
+      await ed.lands(len('앞 줄\n- [ ] '))
+
+      // 커서가 넣은 것의 안쪽으로 가는 명령도 있다.
+      ed.type('/코드')
+      ed.caret(len('/코드'))
+      ed.pad.send(GuiEvent.caretAt, EDITOR, 280, 130)
+      await ed.pad.until(() => ed.pad.regions('option').join() === '코드 블록', 'the code command')
+      ed.key('Tab')
+      await ed.becomes('```\n\n```')
+      await ed.lands(4)
+      // "메모 링크"는 [[ 를 넣고, 곧바로 링크할 메모를 고르게 한다.
+      ed.type('/링크')
+      ed.caret(len('/링크'))
+      ed.pad.send(GuiEvent.caretAt, EDITOR, 280, 130)
+      await ed.pad.until(() => ed.pad.regions('option').join() === '메모 링크', 'the link command')
+      ed.key('Enter')
+      await ed.becomes('[[')
+      ed.pad.send(GuiEvent.caretAt, EDITOR, 290, 150)
+      await ed.pad.until(() => ed.pad.region('회의록', 'option'), 'the notes to link')
+
+      // 맞는 명령이 없거나, 주소 속의 / 이거나, 텍스트 메모면 뜨지 않는다.
+      for (const text of ['/없는명령', 'http://example']) {
+        ed.type(text)
+        ed.caret(len(text))
+        await new Promise((r) => setTimeout(r, 50))
+        expect(ed.pad.field(EDITOR)).toMatchObject({ where: false, grabEnter: false })
+      }
+      const plain = await editing('/', '그냥.txt')
+      plain.caret(1)
+      await new Promise((r) => setTimeout(r, 50))
+      expect(plain.pad.field(EDITOR)).toMatchObject({ where: false })
     })
   })
 

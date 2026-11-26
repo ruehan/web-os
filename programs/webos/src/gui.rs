@@ -137,8 +137,10 @@ pub struct Field<'a> {
     /// 여러 줄 칸에서: Tab과 Enter를 `Event::Key`로도 받는다. Tab은 칸이 처리하지 않고(다음 칸으로 넘어가지 않는다),
     /// Enter는 줄바꿈이 된 뒤에, 그 `Event::Input`과 `Event::Caret` 다음에 온다 (커서 바로 앞이 그 줄바꿈이다).
     pub keys: bool,
-    /// `keys`와 함께: Enter도 줄바꿈 없이 프로그램에만 온다 (고를 것을 띄워 두었을 때).
+    /// `keys`와 함께: Enter와 위·아래 방향키가 칸에서 쓰이지 않고 프로그램에만 온다 (고를 것을 띄워 두었을 때).
     pub grab_enter: bool,
+    /// 커서가 창의 어디에 있는지 `Event::CaretAt`으로 알려 달라 (켜 둔 동안, 자리가 바뀔 때마다).
+    pub locate: bool,
     /// 화면 낭독기 등에 알려 줄 이름
     pub label: &'a str,
     /// 비어 있을 때 흐리게 보이는 글
@@ -299,7 +301,8 @@ impl Frame {
                 | (field.bold as u8) << 3
                 | (field.select as u8) << 4
                 | (field.keys as u8) << 5
-                | (field.grab_enter as u8) << 6,
+                | (field.grab_enter as u8) << 6
+                | (field.locate as u8) << 7,
         );
         self.s(field.label);
         self.s(field.placeholder);
@@ -364,6 +367,8 @@ pub enum Event {
     /// 입력 칸의 커서가 옮겨졌다 (`start`와 `end`가 다르면 그 사이를 골랐다). 자리는 글의 바이트 위치다.
     /// 글이 바뀌어 옮겨진 경우에는 그 `Input` 다음에 온다.
     Caret { field: u32, start: usize, end: usize },
+    /// 입력 칸의 커서가 창의 어디에 있는지 (`Field::locate`로 물었을 때). `y`는 커서가 있는 줄의 아래쪽이다.
+    CaretAt { field: u32, x: f32, y: f32 },
 }
 
 fn decode(raw: [i32; 4]) -> Option<Event> {
@@ -399,6 +404,7 @@ fn decode(raw: [i32; 4]) -> Option<Event> {
         10 => Event::FieldFocus { field: a as u32, on: b != 0 },
         11 => Event::Menu(usize::try_from(a).ok()),
         12 => Event::PointerLeave,
+        14 => Event::CaretAt { field: a as u32, x: b as f32, y: c as f32 },
         13 => Event::Caret { field: a as u32, start: b.max(0) as usize, end: c.max(0) as usize },
         _ => return None,
     })

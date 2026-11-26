@@ -125,6 +125,23 @@ pub fn open_link(text: &str, pos: usize) -> Option<(usize, &str)> {
     (!typed.contains(['[', ']', '\n', '|', '#'])).then_some((from, typed))
 }
 
+/// 커서가 방금 친 `/명령` 바로 뒤에 있으면, 그 `/`의 자리와 뒤에 친 글자.
+/// 줄의 맨 앞이나 공백 뒤의 `/`만 친다 (주소나 날짜의 `/`는 아니다).
+pub fn open_slash(text: &str, pos: usize) -> Option<(usize, &str)> {
+    let before = text.get(..pos)?;
+    let line = line_start(text, pos);
+    let slash = line + before[line..].rfind('/')?;
+    let typed = &before[slash + 1..];
+    let free = before[..slash].chars().next_back().is_none_or(char::is_whitespace);
+    (free && !typed.contains(char::is_whitespace)).then_some((slash, typed))
+}
+
+/// `from`부터 `pos`까지(친 `/명령`)를 `insert`로 바꾼다. 커서는 넣은 글의 `caret`번째 바이트에 둔다.
+pub fn replace(text: &str, from: usize, pos: usize, insert: &str, caret: usize) -> Edit {
+    let at = from + caret.min(insert.len());
+    Edit { text: format!("{}{insert}{}", &text[..from], &text[pos..]), start: at, end: at }
+}
+
 /// `[[` 뒤에 친 글자를 `name`으로 바꿔 링크를 완성한다. 뒤에 이미 `]]`가 있으면 다시 붙이지 않는다.
 pub fn complete_link(text: &str, from: usize, pos: usize, name: &str) -> Edit {
     let closed = text[pos..].starts_with("]]");
@@ -177,6 +194,18 @@ mod tests {
     fn wraps_the_selection() {
         assert_eq!(wrap("가 나 다", 4, 7, "**", "**"), Edit { text: "가 **나** 다".into(), start: 6, end: 9 });
         assert_eq!(wrap("ab", 1, 1, "[[", "]]"), Edit { text: "a[[]]b".into(), start: 3, end: 3 });
+    }
+
+    #[test]
+    fn finds_a_slash_command_being_typed() {
+        assert_eq!(open_slash("/", 1), Some((0, "")));
+        assert_eq!(open_slash("앞 줄\n  /제목", 17), Some((10, "제목")));
+        assert_eq!(open_slash("글 /h1", 7), Some((4, "h1")));
+        // 주소나 날짜의 /, 그리고 뒤에 공백을 친 것은 명령이 아니다.
+        assert_eq!(open_slash("http://a", 8), None);
+        assert_eq!(open_slash("11/26", 5), None);
+        assert_eq!(open_slash("/제목 뒤", 11), None);
+        assert_eq!(replace("앞 /코", 4, 8, "```\n\n```", 4), Edit { text: "앞 ```\n\n```".into(), start: 8, end: 8 });
     }
 
     #[test]

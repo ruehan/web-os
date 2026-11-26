@@ -58,6 +58,49 @@ struct PreviewInfo {
     headings: Vec<(usize, f32)>,
 }
 
+/// 커서 아래의 목록에서 고를 수 있는 한 줄
+#[derive(Clone, PartialEq, Debug)]
+struct Choice {
+    label: String,
+    /// 오른쪽에 흐리게 보이는 덧말 (메모가 든 폴더, 명령이 넣는 기호)
+    hint: String,
+    pick: Pick,
+}
+
+#[derive(Clone, PartialEq, Debug)]
+enum Pick {
+    /// 링크할 파일의 이름
+    Link(String),
+    /// COMMANDS의 순번
+    Command(usize),
+}
+
+/// 글에서 /를 치면 고를 수 있는 것
+struct Command {
+    label: &'static str,
+    hint: &'static str,
+    /// 영문 등 다른 이름으로도 찾을 수 있게 (공백으로 나눈다)
+    keys: &'static str,
+    /// 친 /명령 자리에 넣을 글
+    insert: &'static str,
+    /// 넣은 글에서 커서를 둘 자리 (바이트)
+    caret: usize,
+}
+
+const COMMANDS: [Command; 11] = [
+    Command { label: "제목 1", hint: "#", keys: "h1 heading title 제목1", insert: "# ", caret: 2 },
+    Command { label: "제목 2", hint: "##", keys: "h2 heading 제목2", insert: "## ", caret: 3 },
+    Command { label: "제목 3", hint: "###", keys: "h3 heading 제목3", insert: "### ", caret: 4 },
+    Command { label: "글머리 목록", hint: "-", keys: "list bullet ul 목록", insert: "- ", caret: 2 },
+    Command { label: "번호 목록", hint: "1.", keys: "number ordered ol 목록", insert: "1. ", caret: 3 },
+    Command { label: "할 일", hint: "- [ ]", keys: "todo task check 체크 할일", insert: "- [ ] ", caret: 6 },
+    Command { label: "인용", hint: ">", keys: "quote", insert: "> ", caret: 2 },
+    Command { label: "코드 블록", hint: "```", keys: "code 코드블록", insert: "```\n\n```", caret: 4 },
+    Command { label: "표", hint: "| |", keys: "table", insert: "| 제목 | 제목 |\n|---|---|\n|  |  |", caret: 2 },
+    Command { label: "구분선", hint: "---", keys: "hr line divider rule", insert: "---\n", caret: 4 },
+    Command { label: "메모 링크", hint: "[[ ]]", keys: "link 링크", insert: "[[", caret: 2 },
+];
+
 const FORMATS: [(&str, &str); 2] = [("md", "마크다운 (.md)"), ("txt", "텍스트 (.txt)")];
 
 /// 보관함 안의 폴더나 파일. path는 보관함 기준이다.
@@ -113,8 +156,9 @@ enum Action {
     /// 옆에 참고로 펼친다
     Beside(String),
     CloseBeside,
-    /// 링크할 메모를 골랐다
-    CompleteLink(String),
+    /// 커서 아래에 뜬 목록에서 골랐다 (그 줄의 순번)
+    Choose(usize),
+    ClosePopup,
     /// 눌러도 아무 일도 없는 자리 (아래에 깔린 것이 눌리지 않게 막는다)
     Nothing,
 }
@@ -181,6 +225,14 @@ struct App {
     sel: (usize, usize),
     /// 커서가 닫히지 않은 [[ 안에 있을 때: 그 안쪽이 시작하는 자리와 지금까지 친 글자
     linking: Option<(usize, String)>,
+    /// 커서가 방금 친 /명령 뒤에 있을 때: 그 /의 자리와 뒤에 친 글자
+    slashing: Option<(usize, String)>,
+    /// 고를 것들 중 지금 골라진 줄
+    pick_at: usize,
+    /// Esc로 닫은 목록이 시작한 자리. 같은 자리에서는 다시 띄우지 않는다.
+    dismissed: Option<usize>,
+    /// 본문 칸의 커서가 창의 어디에 있는지 (고를 것을 그 아래에 띄운다)
+    caret_at: Option<(f32, f32)>,
     backlinks_open: bool,
     outline_open: bool,
     tags_open: bool,
@@ -378,6 +430,8 @@ impl App {
         self.preview_scroll = 0.0;
         self.sel = (0, 0);
         self.linking = None;
+        self.slashing = None;
+        self.dismissed = None;
         let Some(path) = path else { return };
         if kind_of(path) == Kind::Note {
             match fs::read_to_string(self.absolute(path)) {
@@ -635,37 +689,84 @@ impl App {
         start <= end && self.text.is_char_boundary(start) && self.text.is_char_boundary(end)
     }
 
-    /// 커서가 닫히지 않은 [[ 안에 있는지 다시 본다.
+    /// 커서가 닫히지 않은 [[ 안이나 방금 친 /명령 뒤에 있는지 다시 본다.
     fn track_link(&mut self) {
         let (start, end) = self.sel;
-        self.linking = (start == end && self.sel_ok())
-            .then(|| editing::open_link(&self.text, start))
-            .flatten()
-            .map(|(from, typed)| (from, typed.to_string()));
-    }
-
-    /// [[ 뒤에 친 글자로 고를 수 있는 파일들 (메모는 제목, 그림은 파일 이름)
-    fn suggestions(&self) -> Vec<String> {
-        let Some((_, typed)) = &self.linking else { return Vec::new() };
-        let typed = typed.trim().to_lowercase();
-        let mut names: Vec<String> = Vec::new();
-        for entry in &self.entries {
-            if matches!(entry.kind, Kind::Dir | Kind::Other) || self.current.as_deref() == Some(entry.path.as_str()) {
-                continue;
-            }
-            let name = shown(&entry.path);
-            if name.to_lowercase().contains(&typed) && !names.iter().any(|n| n == name) {
-                names.push(name.to_string());
+        let was = (self.linking.take(), self.slashing.take());
+        if start == end && self.sel_ok() {
+            let fresh = |from: usize| self.dismissed != Some(from);
+            self.linking = editing::open_link(&self.text, start).filter(|(from, _)| fresh(*from)).map(|(from, typed)| (from, typed.to_string()));
+            if self.linking.is_none() && self.is_markdown() {
+                self.slashing = editing::open_slash(&self.text, start).filter(|(from, _)| fresh(*from)).map(|(from, typed)| (from, typed.to_string()));
             }
         }
-        names.truncate(6);
-        names
+        if (&self.linking, &self.slashing) != (&was.0, &was.1) {
+            self.pick_at = 0;
+        }
+        if self.linking.is_none() && self.slashing.is_none() {
+            // 다음에 뜰 때는 그때의 자리를 새로 받는다.
+            self.caret_at = None;
+            if !editing::open_link(&self.text, start.min(self.text.len())).is_some_and(|(from, _)| self.dismissed == Some(from))
+                && !editing::open_slash(&self.text, start.min(self.text.len())).is_some_and(|(from, _)| self.dismissed == Some(from))
+            {
+                self.dismissed = None;
+            }
+        }
     }
 
-    fn complete_link(&mut self, name: &str) {
-        let Some((from, _)) = self.linking.take() else { return };
-        if self.sel_ok() && from <= self.sel.0 {
-            self.apply_edit(editing::complete_link(&self.text, from, self.sel.0, name));
+    /// 커서 아래에 띄워 고르게 할 것들: [[ 뒤에서는 링크할 파일, / 뒤에서는 넣을 것
+    fn choices(&self) -> Vec<Choice> {
+        if let Some((_, typed)) = &self.linking {
+            // 메모는 제목, 그림은 파일 이름으로 고른다.
+            let typed = typed.trim().to_lowercase();
+            let mut found: Vec<Choice> = Vec::new();
+            for entry in &self.entries {
+                if matches!(entry.kind, Kind::Dir | Kind::Other) || self.current.as_deref() == Some(entry.path.as_str()) {
+                    continue;
+                }
+                let name = shown(&entry.path);
+                if name.to_lowercase().contains(&typed) && !found.iter().any(|c| c.label == name) {
+                    found.push(Choice { label: name.to_string(), hint: dir_of(&entry.path).to_string(), pick: Pick::Link(name.to_string()) });
+                }
+            }
+            found.truncate(8);
+            return found;
+        }
+        let Some((_, typed)) = &self.slashing else { return Vec::new() };
+        let typed = typed.to_lowercase();
+        COMMANDS
+            .iter()
+            .enumerate()
+            .filter(|(_, command)| command.label.replace(' ', "").contains(&typed) || command.label.contains(&typed) || command.keys.split(' ').any(|key| key.starts_with(&typed)))
+            .map(|(i, command)| Choice { label: command.label.to_string(), hint: command.hint.to_string(), pick: Pick::Command(i) })
+            .collect()
+    }
+
+    fn accept(&mut self, choice: &Choice) {
+        if !self.sel_ok() {
+            return;
+        }
+        let pos = self.sel.0;
+        match &choice.pick {
+            Pick::Link(name) => {
+                if let Some((from, _)) = self.linking.take().filter(|(from, _)| *from <= pos) {
+                    self.apply_edit(editing::complete_link(&self.text, from, pos, name));
+                }
+            }
+            Pick::Command(i) => {
+                if let Some((from, _)) = self.slashing.take().filter(|(from, _)| *from <= pos) {
+                    let command = &COMMANDS[*i];
+                    self.apply_edit(editing::replace(&self.text, from, pos, command.insert, command.caret));
+                }
+            }
+        }
+    }
+
+    fn close_choices(&mut self) {
+        self.dismissed = self.linking.take().or(self.slashing.take()).map(|(from, _)| from);
+        self.caret_at = None;
+        if self.view_mode() != Mode::Read {
+            self.select = Some(self.sel);
         }
     }
 
@@ -689,12 +790,22 @@ impl App {
         if !self.is_markdown() {
             return false;
         }
-        let first = self.suggestions().into_iter().next();
-        match (key, first) {
-            (Key::Tab | Key::Enter, Some(name)) => self.complete_link(&name),
-            (Key::Tab, None) => self.apply_edit(editing::indent(&self.text, start, end, mods.shift)),
+        // 고를 것이 떠 있으면 키는 그 목록의 것이다.
+        let choices = self.choices();
+        if !choices.is_empty() {
+            let at = self.pick_at.min(choices.len() - 1);
+            match key {
+                Key::Down => self.pick_at = (at + 1) % choices.len(),
+                Key::Up => self.pick_at = (at + choices.len() - 1) % choices.len(),
+                Key::Tab | Key::Enter => self.accept(&choices[at]),
+                _ => return false,
+            }
+            return true;
+        }
+        match key {
+            Key::Tab => self.apply_edit(editing::indent(&self.text, start, end, mods.shift)),
             // 줄바꿈은 입력 칸이 이미 했다 (커서 바로 앞이 그 줄바꿈이다). 목록의 항목에서 친 것이면 다음 항목을 이어 쓴다.
-            (Key::Enter, None) => {
+            Key::Enter => {
                 let Some(at) = start.checked_sub(1).filter(|at| start == end && !mods.shift && self.text.get(*at..start) == Some("\n")) else {
                     return false;
                 };
@@ -994,6 +1105,11 @@ impl App {
         ui.set_mouse(self.mouse);
         if self.quick.is_some() {
             self.draw_quick(&mut ui, focus);
+        } else if let (Some(at), false, true) = (self.caret_at, self.graph_open, self.current.is_some() && self.view_mode() != Mode::Read) {
+            let choices = self.choices();
+            if !choices.is_empty() {
+                self.draw_choices(&mut ui, &choices, at);
+            }
         } else if let (Some(path), Some((x, y))) = (&self.dragging, self.mouse) {
             // 끌고 있는 것의 이름표: 입력 칸 위로도 따라다니도록 위층에 그린다.
             ui.f.overlay();
@@ -1036,6 +1152,7 @@ impl App {
             select: focus.is_some_and(|(field, select)| field == id && select),
             keys: false,
             grab_enter: false,
+            locate: false,
             label,
             placeholder,
         });
@@ -1382,23 +1499,7 @@ impl App {
             body_bottom = top;
         }
 
-        // 링크할 메모 고르기: 커서가 [[ 뒤에 있는 동안 나온다.
-        let suggestions = if is_note { self.suggestions() } else { Vec::new() };
-        if !suggestions.is_empty() {
-            const BAR: f32 = 39.0;
-            let top = body_bottom - BAR;
-            ui.f.rect(x0, top, width, BAR, 0.0, theme.surface2);
-            ui.hline(x0, top, width);
-            let hint = "링크할 메모 (Tab으로 첫 번째 선택)";
-            ui.text(x0 + 8.0, top + 20.0, 12.0, theme.muted, Style::PLAIN, hint);
-            let mut x = x0 + 14.0 + ui.width(hint, 12.0, Style::PLAIN);
-            ui.clip(Rect::new(x0, top + 1.0, width, BAR - 1.0));
-            for name in &suggestions {
-                x += ui.tool(x, top + 7.0, name, Tool::Plain, false, Some(Action::CompleteLink(name.clone()))) + 6.0;
-            }
-            ui.unclip();
-            body_bottom = top;
-        }
+        let choosing = is_note && !self.choices().is_empty();
 
         // 본문
         let body = Rect::new(x0, y, width, (body_bottom - y).max(0.0));
@@ -1446,8 +1547,10 @@ impl App {
                 select: false,
                 // 마크다운 메모에서는 Tab(들여쓰기)과 Enter(목록 이어 쓰기)를 받는다.
                 keys: self.is_markdown(),
-                // 링크할 메모를 고르는 중에는 Enter가 줄바꿈이 아니라 "이것으로"다.
-                grab_enter: !suggestions.is_empty(),
+                // 고를 것(링크할 메모, / 명령)이 떠 있는 동안에는 Enter와 위·아래가 그 목록의 것이다.
+                grab_enter: choosing,
+                // 그 목록은 커서 바로 아래에 뜬다.
+                locate: choosing,
                 label: "메모 내용",
                 placeholder: "",
             });
@@ -1565,6 +1668,45 @@ impl App {
         );
         ui.label(area.x + 12.0, area.bottom() - 17.0, 12.0, theme.muted, Style::PLAIN, area.w - 24.0, &hint);
         ui.unclip();
+    }
+
+    /// 커서 바로 아래에 뜨는 고르기 목록 ([[ 뒤의 메모들, / 뒤의 명령들). 자리가 모자라면 커서 위로 뜬다.
+    fn draw_choices(&self, ui: &mut Ui<Action>, choices: &[Choice], (x, y): (f32, f32)) {
+        const ROW: f32 = 28.0;
+        const SHOWN: usize = 8;
+        let theme = ui.theme;
+        ui.f.overlay();
+        // 목록 밖을 누르면 닫힌다.
+        ui.hit(Rect::new(0.0, 0.0, self.w, self.h), Action::ClosePopup);
+        let at = self.pick_at.min(choices.len() - 1);
+        // 줄이 많으면 골라진 줄이 보이는 쪽으로 민다.
+        let first = at.saturating_sub(SHOWN - 1);
+        let shown = &choices[first..choices.len().min(first + SHOWN)];
+        let width = 260f32.min(self.w - 16.0).max(120.0);
+        let height = shown.len() as f32 * ROW + 8.0;
+        let left = x.clamp(8.0, (self.w - width - 8.0).max(8.0));
+        // 글 한 줄의 높이(13px × 1.6)만큼 위가 커서가 있는 줄의 위쪽이다.
+        let top = if y + 4.0 + height > self.h - 8.0 { (y - 21.0 - 4.0 - height).max(8.0) } else { y + 4.0 };
+        let panel = Rect::new(left.round(), top.round(), width, height);
+        ui.f.rect(panel.x - 1.0, panel.y + 5.0, panel.w + 2.0, panel.h + 5.0, 13.0, webos::gui::Color::rgba(0, 0, 0, 20));
+        ui.f.rect(panel.x, panel.y + 2.0, panel.w, panel.h + 2.0, 11.0, webos::gui::Color::rgba(0, 0, 0, 24));
+        ui.f.rect(panel.x, panel.y, panel.w, panel.h, 10.0, theme.surface);
+        ui.f.frame(panel.x, panel.y, panel.w, panel.h, 10.0, theme.line_strong, 1.0);
+        ui.hit(panel, Action::Nothing);
+        for (i, choice) in shown.iter().enumerate() {
+            let rect = Rect::new(panel.x + 4.0, panel.y + 4.0 + i as f32 * ROW, panel.w - 8.0, ROW);
+            let selected = first + i == at;
+            if selected {
+                ui.f.rect(rect.x, rect.y, rect.w, rect.h, RADIUS, theme.accent_soft);
+            }
+            let hint_w = if choice.hint.is_empty() { 0.0 } else { ui.width(&choice.hint, 11.5, Style::MONO).min(rect.w * 0.4) };
+            ui.label(rect.x + 10.0, rect.mid_y(), 13.0, theme.text, Style::PLAIN, rect.w - 28.0 - hint_w, &choice.label);
+            if hint_w > 0.0 {
+                let fitted = ui.fit(&choice.hint, 11.5, Style::MONO, hint_w + 1.0);
+                ui.f.styled(rect.right() - 10.0, rect.mid_y(), 11.5, theme.muted, Align::Right, Style::MONO, &fitted);
+            }
+            ui.target(rect, Role::Option, selected, &choice.label, Action::Choose(first + i));
+        }
     }
 
     /// 빠른 열기: 이름 몇 글자로 메모를 찾아 연다. 입력 칸들 위에 뜬다.
@@ -1811,7 +1953,12 @@ impl App {
                 self.beside_scroll = 0.0;
             }
             Action::CloseBeside => self.beside = None,
-            Action::CompleteLink(name) => self.complete_link(&name),
+            Action::Choose(i) => {
+                if let Some(choice) = self.choices().get(i) {
+                    self.accept(choice);
+                }
+            }
+            Action::ClosePopup => self.close_choices(),
             Action::Nothing => {}
         }
     }
@@ -1836,10 +1983,14 @@ impl App {
                 }
                 let over = self.hit_at(self.mouse);
                 // 빠른 열기의 목록은 포인터를 올린 줄이 골라진다.
-                if let Some(Action::QuickPick(path)) = over.map(|i| &self.hits[i].1) {
-                    if let Some(at) = self.quick_hits().iter().position(|hit| hit == path) {
-                        self.quick_at = at;
+                match over.map(|i| &self.hits[i].1) {
+                    Some(Action::QuickPick(path)) => {
+                        if let Some(at) = self.quick_hits().iter().position(|hit| hit == path) {
+                            self.quick_at = at;
+                        }
                     }
+                    Some(Action::Choose(i)) => self.pick_at = *i,
+                    _ => {}
                 }
                 return over != self.hot;
             }
@@ -1929,12 +2080,18 @@ impl App {
             }
             Event::Caret { field: EDITOR, start, end } => {
                 self.sel = (start, end);
-                let was = self.linking.clone();
+                let was = (self.linking.clone(), self.slashing.clone());
                 self.track_link();
-                return self.linking != was;
+                return (&self.linking, &self.slashing) != (&was.0, &was.1);
+            }
+            Event::CaretAt { field: EDITOR, x, y } => {
+                if self.caret_at == Some((x, y)) || self.choices().is_empty() {
+                    return false;
+                }
+                self.caret_at = Some((x, y));
             }
             Event::Key { key: key @ (Key::Up | Key::Down | Key::Enter | Key::Escape), .. } if self.quick.is_some() => self.quick_key(key),
-            Event::Key { key: Key::Escape, .. } if self.linking.is_some() => self.linking = None,
+            Event::Key { key: Key::Escape, .. } if self.linking.is_some() || self.slashing.is_some() => self.close_choices(),
             Event::Key { key, mods } if self.focused == Some(EDITOR) && self.editor_key(key, mods) => {}
             Event::Key { key: Key::Enter, .. } if self.focused == Some(TITLE) => {
                 self.commit_title();
@@ -2033,6 +2190,10 @@ fn main() {
         select: None,
         sel: (0, 0),
         linking: None,
+        slashing: None,
+        pick_at: 0,
+        dismissed: None,
+        caret_at: None,
         backlinks_open: false,
         outline_open: true,
         tags_open: false,

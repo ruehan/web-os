@@ -309,10 +309,15 @@ test('helps with writing: continues lists, indents, wraps, and completes links',
 
   // [[ 를 치면 링크할 메모를 고를 수 있고, Tab이나 Enter로 완성한다.
   await page.keyboard.type('[[회')
-  await expect(spot(page, 'button', '회의록')).toBeVisible()
+  await expect(spot(page, 'option', '회의록')).toBeVisible()
+  // 목록은 커서 바로 아래에 뜬다: 커서가 있는 셋째 줄(줄 높이 20.8)의 아래.
+  const [field, row] = [(await editor(page).boundingBox())!, (await spot(page, 'option', '회의록').boundingBox())!]
+  expect(row.y - field.y).toBeGreaterThan(3 * 20.8)
+  expect(row.y - field.y).toBeLessThan(3 * 20.8 + 14)
+  expect(row.x - field.x).toBeGreaterThan(20)
   await page.keyboard.press('Enter')
   await value('- 우유\n- 빵\n[[회의록]]')
-  await expect(spot(page, 'button', '회의록')).toHaveCount(0)
+  await expect(spot(page, 'option', '회의록')).toHaveCount(0)
   await page.keyboard.type(' 참고')
   await value('- 우유\n- 빵\n[[회의록]] 참고')
 
@@ -323,11 +328,32 @@ test('helps with writing: continues lists, indents, wraps, and completes links',
   await value('- 우유\n- 빵\n[[회의록]] **참고**')
   expect(await editor(page).evaluate((el: HTMLTextAreaElement) => el.value.slice(el.selectionStart, el.selectionEnd))).toBe('참고')
 
-  // 보통의 줄에서는 Enter가 그냥 줄바꿈이다.
+  // / 를 치면 넣을 것들이 뜨고, 이어서 친 글자로 거른 뒤 고른다.
   await page.keyboard.press('End')
   await page.keyboard.press('Enter')
+  await page.keyboard.type('/')
+  await expect(pad(page).getByRole('option')).toHaveCount(8)
+  await page.keyboard.type('제목')
+  await expect(pad(page).getByRole('option')).toHaveCount(3)
+  await page.keyboard.press('ArrowDown')
+  await expect(spot(page, 'option', '제목 2')).toHaveAttribute('aria-selected', 'true')
+  await page.keyboard.press('Enter')
+  await value('- 우유\n- 빵\n[[회의록]] **참고**\n## ')
+  // 목록이 닫힌 것을 보고 이어서 친다 (닫히기 전의 Enter는 아직 목록의 것이다).
+  await expect(pad(page).getByRole('option')).toHaveCount(0)
+  await page.keyboard.type('둘째')
+  // 눌러서 고를 수도 있고, 그 뒤에도 커서는 칸에 남는다.
+  await page.keyboard.press('Enter')
+  await page.keyboard.type('/')
+  await press(page, 'option', '인용')
+  await value('- 우유\n- 빵\n[[회의록]] **참고**\n## 둘째\n> ')
+  await expect(editor(page)).toBeFocused()
+  await expect(pad(page).getByRole('option')).toHaveCount(0)
+  await page.keyboard.type('말')
+  // 보통의 줄에서는 Enter가 그냥 줄바꿈이다.
+  await page.keyboard.press('Enter')
   await page.keyboard.type('끝')
-  await value('- 우유\n- 빵\n[[회의록]] **참고**\n끝')
+  await value('- 우유\n- 빵\n[[회의록]] **참고**\n## 둘째\n> 말\n끝')
   await shell(page, 'cat notes/글.md', '[[회의록]] **참고**')
 
   // 텍스트(.txt) 메모에서는 Tab이 평소대로 다음 칸으로 넘어간다.

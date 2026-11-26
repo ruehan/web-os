@@ -40,6 +40,11 @@ export const GuiEvent = {
    * 글이 바뀌어 옮겨진 경우에는 그 input 이벤트 다음에 온다.
    */
   caret: 13,
+  /**
+   * 입력 칸의 커서가 창의 어디에 있는지 (칸이 where로 물었을 때만 온다). a 칸의 번호, b x, c y (픽셀. 커서가 있는 줄의 아래쪽).
+   * 커서 옆에 고를 것을 띄울 때 쓴다.
+   */
+  caretAt: 14,
 } as const
 
 /** key 이벤트의 특수 키 */
@@ -81,7 +86,7 @@ export function keyCode(key: string): number | undefined {
 const Op = { clear: 1, rect: 2, frame: 3, line: 4, circle: 5, text: 6, clip: 7, unclip: 8, field: 9, region: 10, menu: 11, select: 12, overlay: 13 } as const
 
 /** 입력 칸의 성질 (field 명령의 flags) */
-export const FieldFlag = { multiline: 1, mono: 2, focus: 4, bold: 8, select: 16, keys: 32, grabEnter: 64 } as const
+export const FieldFlag = { multiline: 1, mono: 2, focus: 4, bold: 8, select: 16, keys: 32, grabEnter: 64, where: 128 } as const
 
 /** 글자의 꾸밈 (text 명령의 flags에서 정렬 두 비트 다음) */
 export const TextFlag = { bold: 4, mono: 8, italic: 16, strike: 32, underline: 64 } as const
@@ -143,8 +148,10 @@ export type DrawOp =
        * 커서 바로 앞이 방금 들어간 줄바꿈이고, 그 결과를 고칠 수 있다 (목록 이어 쓰기 등).
        */
       keys: boolean
-      /** keys와 함께: Enter도 줄바꿈을 하지 않고 프로그램에만 알린다 (고를 것이 떠 있을 때) */
+      /** keys와 함께: Enter와 위·아래 방향키를 칸이 쓰지 않고 프로그램에만 알린다 (고를 것이 떠 있을 때) */
       grabEnter: boolean
+      /** 커서가 창의 어디에 있는지 caretAt 이벤트로 알려 달라 (켜져 있는 동안, 자리가 바뀔 때마다) */
+      where: boolean
       /** 화면 낭독기 등에 알려 줄 이름 */
       label: string
       /** 비어 있을 때 흐리게 보여 줄 글 */
@@ -272,6 +279,7 @@ export function decodeDrawList(data: Uint8Array): DrawOp[] {
           select: (flags & FieldFlag.select) !== 0,
           keys: (flags & FieldFlag.keys) !== 0,
           grabEnter: (flags & FieldFlag.grabEnter) !== 0,
+          where: (flags & FieldFlag.where) !== 0,
         })
         break
       }

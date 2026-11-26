@@ -122,6 +122,8 @@ export function SurfaceApp(props: AppProps) {
   const fieldOps = new Map<number, FieldOp>()
   /** 방금 Enter를 눌러 줄바꿈을 기다리는 칸들과, 그때 함께 누른 키 */
   const enters = new Map<number, number>()
+  /** 칸마다 프로그램에 마지막으로 알린 커서의 화면 자리 */
+  const points = new Map<number, [number, number]>()
   /** 칸마다 프로그램에 마지막으로 알린 커서 자리 */
   const carets = new Map<number, [number, number]>()
   let layer!: HTMLDivElement
@@ -197,7 +199,8 @@ export function SurfaceApp(props: AppProps) {
       if (!command) {
         const op = fieldOps.get(id)
         const single = field instanceof HTMLInputElement
-        const asked = !single && op?.keys === true && (e.key === 'Tab' || e.key === 'Enter')
+        const grabbed = !single && op?.keys === true && op.grabEnter && ['Enter', 'ArrowUp', 'ArrowDown'].includes(e.key)
+        const asked = grabbed || (!single && op?.keys === true && (e.key === 'Tab' || e.key === 'Enter'))
         const free = e.key === 'Escape' || (single && ['Enter', 'ArrowUp', 'ArrowDown'].includes(e.key)) || asked
         if (!free) return
         // 여러 줄 칸의 Enter는 줄바꿈도 하고 프로그램에도 알린다 (프로그램이 막아 달라고 한 때는 빼고).
@@ -220,6 +223,32 @@ export function SurfaceApp(props: AppProps) {
     if (last && last[0] === start && last[1] === end) return
     carets.set(id, [start, end])
     send(GuiEvent.caret, id, start, end)
+    reportCaretPoint(id, el)
+  }
+
+  /** 프로그램이 물었으면(where), 커서가 창의 어디에 있는지 알린다. */
+  function reportCaretPoint(id: number, el: FieldElement) {
+    if (!fieldOps.get(id)?.where || document.activeElement !== el) return points.delete(id)
+    // 입력 칸은 커서의 자리를 알려 주지 않는다. 같은 모양의 보이지 않는 글 상자에 커서 앞까지의 글을 넣어 그 끝을 잰다.
+    const style = getComputedStyle(el)
+    const mirror = document.createElement('div')
+    Object.assign(mirror.style, {
+      position: 'absolute', left: '0', top: '0', visibility: 'hidden', boxSizing: 'border-box',
+      width: `${el.clientWidth}px`, font: style.font, lineHeight: style.lineHeight, letterSpacing: style.letterSpacing,
+      tabSize: style.tabSize, whiteSpace: el instanceof HTMLTextAreaElement ? 'pre-wrap' : 'pre', overflowWrap: 'break-word',
+    })
+    mirror.textContent = el.value.slice(0, el.selectionStart ?? 0)
+    const mark = document.createElement('span')
+    mark.textContent = '\u200b'
+    mirror.append(mark)
+    host.append(mirror)
+    const x = Math.round(el.offsetLeft + mark.offsetLeft - el.scrollLeft)
+    const y = Math.round(el.offsetTop + mark.offsetTop + mark.offsetHeight - el.scrollTop)
+    mirror.remove()
+    const last = points.get(id)
+    if (last && last[0] === x && last[1] === y) return
+    points.set(id, [x, y])
+    send(GuiEvent.caretAt, id, x, y)
   }
 
   function makeField(op: FieldOp): FieldElement {
@@ -336,6 +365,7 @@ export function SurfaceApp(props: AppProps) {
       fields.delete(id)
       fieldOps.delete(id)
       carets.delete(id)
+      points.delete(id)
     }
     for (const op of wanted) {
       let el = fields.get(op.id)
@@ -358,6 +388,7 @@ export function SurfaceApp(props: AppProps) {
         // overlay 뒤에 놓은 칸은 위층보다도 위에 온다.
         zIndex: split >= 0 && ops.indexOf(op) > split ? '3' : '',
       })
+      reportCaretPoint(op.id, el)
       // 프로그램은 커서를 옮기고 싶은 그림에만 focus를 켜서 보낸다 (파일을 새로 열었을 때 등).
       if (op.focus) {
         lastField = op.id
