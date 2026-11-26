@@ -1,7 +1,7 @@
 //! 셸. 명령 줄을 해석해 프로세스를 띄우고, 파이프와 리다이렉션으로 연결한다.
 //!
 //! 지원: 파이프(|), 리다이렉션(< > >>), 순차·조건 실행(; && ||), 배경 실행(&),
-//! 따옴표와 백슬래시, 변수($VAR ${VAR} $? $$), 주석(#), 스크립트 파일 실행.
+//! 따옴표와 백슬래시, 변수($VAR ${VAR} $? $$), 와일드카드(* ?), 주석(#), 스크립트 파일 실행.
 
 use std::collections::BTreeMap;
 use std::env;
@@ -11,6 +11,7 @@ use std::os::fd::{AsRawFd, OwnedFd};
 use std::process::exit;
 
 mod editor;
+mod glob;
 
 use editor::{Editor, Input};
 
@@ -241,12 +242,16 @@ impl Shell {
         let mut cur = String::new();
         // 빈 따옴표("")도 단어 하나로 쳐야 하므로 내용과 별도로 추적한다.
         let mut in_word = false;
+        // 지금 단어에서 와일드카드로 쓰인 글자의 위치들. 따옴표 밖의 * 와 ? 만 해당한다.
+        let mut wild: Vec<usize> = Vec::new();
         let mut i = 0;
 
         macro_rules! flush {
             () => {
                 if in_word {
-                    toks.push(Tok::Word(std::mem::take(&mut cur)));
+                    // 와일드카드가 있으면 맞는 파일 이름들로 펼쳐져 단어가 여러 개가 될 수 있다.
+                    let words = glob::expand(&std::mem::take(&mut cur), &std::mem::take(&mut wild));
+                    toks.extend(words.into_iter().map(Tok::Word));
                     in_word = false;
                 }
             };
@@ -326,6 +331,11 @@ impl Shell {
                     cur.push_str(&self.var("HOME"));
                     in_word = true;
                 }
+                '*' | '?' => {
+                    wild.push(cur.chars().count());
+                    cur.push(c);
+                    in_word = true;
+                }
                 _ => {
                     cur.push(c);
                     in_word = true;
@@ -333,7 +343,7 @@ impl Shell {
             }
         }
         if in_word {
-            toks.push(Tok::Word(cur));
+            toks.extend(glob::expand(&cur, &wild).into_iter().map(Tok::Word));
         }
         Ok(toks)
     }

@@ -286,6 +286,41 @@ describe('/proc', () => {
   })
 })
 
+describe('wildcards', () => {
+  /** /tmp 에 파일들을 만들어 둔 뒤 명령을 실행한다. */
+  const inTmp = (line: string) => start().sh(`cd /tmp; touch a.txt b.txt c.md .hidden; mkdir d1 d2; touch d1/x.txt d2/x.txt d2/y.md; ${line}`)
+
+  it('* and ? expand to matching file names, in order', async () => {
+    const r = await inTmp('echo *.txt; echo ?.md; echo *; echo d?')
+    expect(r.stdout).toBe('a.txt b.txt\nc.md\na.txt b.txt c.md d1 d2\nd1 d2\n')
+  })
+
+  it('hidden files match only when the pattern starts with a dot', async () => {
+    const r = await inTmp('echo .*; echo *hidden')
+    expect(r.stdout).toBe('.hidden\n*hidden\n')
+  })
+
+  it('matches across directories, relative and absolute', async () => {
+    const r = await inTmp('echo d*/x.txt; echo */*.md; echo /tmp/d?/x*; echo /bin/c*')
+    expect(r.stdout).toBe('d1/x.txt d2/x.txt\nd2/y.md\n/tmp/d1/x.txt /tmp/d2/x.txt\n/bin/cat /bin/clear /bin/cp\n')
+  })
+
+  it('stays literal when quoted, escaped, or when nothing matches', async () => {
+    const r = await inTmp(`echo "*.txt" '?' \\* a\\?; echo *.none no/such/*; echo "a b"*`)
+    expect(r.stdout).toBe('*.txt ? * a?\n*.none no/such/*\na b*\n')
+  })
+
+  it('works as arguments to real commands', async () => {
+    const r = await inTmp('echo one > a.txt; echo two > b.txt; cat *.txt | wc -l; rm *.txt d*/*.txt; ls; ls d1 | wc -l')
+    expect(r.stdout).toBe('2\nc.md\nd1\nd2\n0\n')
+  })
+
+  it('does not treat $? or text from variables as a pattern', async () => {
+    const r = await inTmp('false; echo $?; A="*"; echo $A "$A"')
+    expect(r.stdout).toBe('1\n* *\n')
+  })
+})
+
 describe('mv and cp', () => {
   it('renames and moves files and directories', async () => {
     const r = await start().sh(
