@@ -102,6 +102,13 @@ export const GuideIcon = () => (
   </Icon>
 )
 
+export const PortfolioIcon = () => (
+  <Icon>
+    <circle cx="10" cy="7.5" r="3" />
+    <path d="M4 16.5c.6-3 3-4.5 6-4.5s5.400 1.500 6 4.500" />
+  </Icon>
+)
+
 export const TraceIcon = () => (
   <Icon>
     <path d="M3 5.5h8M3 10h5M3 14.5h8" />

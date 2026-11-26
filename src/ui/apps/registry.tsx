@@ -7,6 +7,7 @@ import {
   GuideIcon,
   LogIcon,
   NoteIcon,
+  PortfolioIcon,
   PaintIcon,
   ProcessesIcon,
   ProgramIcon,
@@ -23,6 +24,7 @@ import { SettingsApp } from './SettingsApp.tsx'
 import { SurfaceApp } from './SurfaceApp.tsx'
 import { TerminalApp } from './TerminalApp.tsx'
 import { TraceApp } from './TraceApp.tsx'
+import { PortfolioApp } from './PortfolioApp.tsx'
 import { WelcomeApp } from './WelcomeApp.tsx'
 
 export interface AppProps {
@@ -69,6 +71,7 @@ export const APPS: AppDef[] = [
   { id: 'trace', name: '시스템 콜', icon: TraceIcon, component: TraceApp, size: { w: 700, h: 420 }, single: true },
   { id: 'log', name: '시스템 로그', icon: LogIcon, component: LogApp, size: { w: 560, h: 320 }, single: true },
   { id: 'settings', name: '설정', icon: SettingsIcon, component: SettingsApp, size: { w: 480, h: 600 }, single: true },
+  { id: 'portfolio', name: '포트폴리오', icon: PortfolioIcon, component: PortfolioApp, size: { w: 560, h: 620 }, single: true },
   { id: 'welcome', name: '시작하기', icon: GuideIcon, component: WelcomeApp, size: { w: 380, h: 580 }, single: true },
   { id: 'paint', name: '그림판', icon: PaintIcon, component: SurfaceApp, size: { w: 720, h: 480 }, exec: '/bin/paint' },
   // 프로세스가 연 창은 모두 이 앱으로 뜬다. 직접 실행하는 것이 아니므로 메뉴에는 없다.

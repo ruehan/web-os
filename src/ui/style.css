@@ -1038,6 +1038,108 @@ input {
   border-color: var(--accent);
 }
 
+/* ───────────── 포트폴리오 ───────────── */
+
+.portfolio {
+  padding: 22px 24px;
+  line-height: 1.7;
+  user-select: text;
+}
+
+.portfolio-head h1 {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 650;
+}
+
+.portfolio-title {
+  margin: 2px 0 0;
+  color: var(--muted);
+}
+
+.portfolio-section {
+  margin-top: 22px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+
+.portfolio-section h2 {
+  margin: 0 0 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.portfolio p {
+  margin: 0 0 8px;
+}
+
+.portfolio-empty {
+  color: var(--muted);
+}
+
+.portfolio-item + .portfolio-item {
+  margin-top: 14px;
+}
+
+.portfolio-item h3 {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0 0 2px;
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.portfolio-item small {
+  flex: none;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--muted);
+}
+
+.portfolio-item ul {
+  margin: 4px 0 0;
+  padding-left: 1.4em;
+}
+
+.portfolio a {
+  color: var(--accent);
+}
+
+.portfolio-skills,
+.portfolio-contacts {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.portfolio-skills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.portfolio-skills li {
+  padding: 1px 9px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 12px;
+}
+
+.portfolio-contacts li {
+  display: flex;
+  gap: 12px;
+}
+
+.portfolio-contacts span {
+  flex: none;
+  width: 72px;
+  color: var(--muted);
+}
+
 /* ───────────── 시작 안내 ───────────── */
 
 .welcome {

@@ -248,3 +248,14 @@ test.describe('settings', () => {
     expect(await wall()).toBe(light)
   })
 })
+
+test('the portfolio page says it is not filled in yet', async ({ page }) => {
+  await launch(page, '포트폴리오')
+  const portfolio = appWindow(page, 'portfolio')
+  await expect(portfolio.getByRole('heading', { level: 1 })).toHaveText('포트폴리오')
+  await expect(portfolio).toContainText('아직 내용을 채우지 않았습니다.')
+  // 구역은 모두 자리가 잡혀 있고, 비어 있는 동안에는 준비 중으로 보인다.
+  for (const name of ['소개', '기술', '프로젝트', '경력', '연락처']) {
+    await expect(portfolio.getByRole('region', { name })).toContainText('준비 중입니다.')
+  }
+})
