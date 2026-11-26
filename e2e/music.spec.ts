@@ -1,4 +1,4 @@
-// 음악: 목록과 재생 순서는 WASM 프로세스가 정하고, 영상과 소리는 화면 쪽이 창에 놓아 주는 유튜브의 플레이어가 낸다.
+// 음악: 보관함(곡, 아티스트·앨범, 글처럼 쓴 플레이리스트)과 재생 순서는 WASM 프로세스가 정하고, 영상과 소리는 화면 쪽이 창에 놓아 주는 유튜브의 플레이어가 낸다.
 // 실제 유튜브에 기대면 검사가 흔들리므로, 플레이어의 자리에 같은 말(IFrame API의 메시지)을 하는 가짜 페이지를 끼운다.
 import { expect, test, type Page } from '@playwright/test'
 import { appWindow, boot, expectScreen, launch, raise, typeIn } from './helpers.ts'
@@ -50,16 +50,20 @@ test.beforeEach(async ({ page }) => {
   await page.context().route('https://www.youtube.com/oembed**', (route) => route.fulfill({ status: 404, body: 'Not Found' }))
   await page.context().route('https://i.ytimg.com/**', (route) => route.fulfill({ status: 404, body: 'Not Found' }))
   await boot(page)
-  await typeIn(page, term(page), 'mkdir music; echo "# 내 목록" > music/mine.txt; echo "first000001 | 하나 | 가" >> music/mine.txt; echo "blocked0002 | 막힌 곡 | 나" >> music/mine.txt; echo "third000003 | 셋 | 다" >> music/mine.txt')
+  await typeIn(page, term(page), 'mkdir -p music/playlists; echo "first000001 | 하나 | 가 | 첫 앨범" > music/songs.txt; echo "blocked0002 | 막힌 곡 | 나" >> music/songs.txt; echo "third000003 | 셋 | 다" >> music/songs.txt')
+  await expectScreen(page, term(page)).toMatch(/\$$/)
+  // 글처럼 쓴 플레이리스트: 소개글, 곡, 그 곡에 대한 이야기
+  await typeIn(page, term(page), 'cd music/playlists; echo "# 내 글" > mine.md; echo "날짜: 2099-01-01" >> mine.md; echo "소개하는 글." >> mine.md; echo first000001 >> mine.md; echo "하나를 고른 까닭." >> mine.md; echo blocked0002 >> mine.md; echo third000003 >> mine.md; cd')
   await expectScreen(page, term(page)).toMatch(/\$$/)
 })
 
 test('plays a picked song in a YouTube player placed inside the window', async ({ page }) => {
   await launch(page, '음악')
-  // 시스템의 목록(예시) 다음에 사용자의 목록이 나온다.
-  await expect(music(page).getByRole('option', { name: '내 목록' })).toBeVisible()
+  // 글의 목록부터 보인다. 새 글이 위에 온다.
+  await expect(music(page).getByRole('link')).toHaveText(['내 글', '플레이리스트 쓰는 법'])
   await expect(player(page)).toHaveCount(0)
-  await music(page).getByRole('option', { name: '내 목록' }).click()
+  await music(page).getByRole('link', { name: '내 글' }).click()
+  await expect(music(page).getByRole('option', { name: '하나', exact: true })).toBeVisible()
   await music(page).getByRole('option', { name: '하나', exact: true }).click()
 
   // 플레이어는 쿠키 없이 여는 iframe이다 (이 페이지의 격리 설정에서도 뜬다). 프로그램은 영상의 번호만 넘긴다.
@@ -87,8 +91,14 @@ test('plays a picked song in a YouTube player placed inside the window', async (
 
 test('moves to the next song when one ends, skipping what cannot be embedded', async ({ page }) => {
   await launch(page, '음악')
-  await music(page).getByRole('option', { name: '내 목록' }).click()
-  await music(page).getByRole('option', { name: '하나', exact: true }).click()
+  // 아티스트별로 찾아가도 같은 곡이 있다.
+  await music(page).getByRole('option', { name: '아티스트' }).click()
+  await music(page).getByRole('link', { name: '가', exact: true }).click()
+  await expect(music(page).getByRole('option', { name: '하나', exact: true })).toBeVisible()
+  await expect(music(page).getByRole('option', { name: '셋', exact: true })).toHaveCount(0)
+  // 글을 펼쳐 처음부터 튼다.
+  await music(page).getByRole('option', { name: '내 글' }).click()
+  await music(page).getByRole('button', { name: '모두 재생' }).click()
   await expect(music(page).getByRole('button', { name: '일시정지' })).toBeVisible()
   const current = () => inside(page).evaluate(() => (window as unknown as { current(): string }).current())
 
