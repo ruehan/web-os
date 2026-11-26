@@ -1,298 +1,1038 @@
-//! 메모장. 메모 보관함(~/notes)의 글 파일을 골라 고치는 작은 편집기다.
+//! 메모장. 메모 보관함(~/notes)의 글을 폴더로 정리하고, 탭으로 여러 개를 열어 고친다.
 //!
-//! 창의 목록, 단추, 상태 표시는 이 프로그램이 직접 그린다. 글을 치는 곳만은 화면 쪽의 실제 입력 칸을
-//! 빌려 쓴다 (한글 조합, 선택, 복사·붙여넣기를 위해서). 칸의 내용은 시스템 콜로 주고받고,
-//! 파일을 읽고 쓰는 것은 다른 프로그램과 똑같은 파일 시스템 콜이다.
+//! 창에 보이는 것(보관함 트리, 탭, 단추, 상태 줄)은 모두 이 프로그램이 그리기 명령으로 보낸 것이다.
+//! 글을 치는 곳만은 화면 쪽의 실제 입력 칸을 빌려 쓰고(한글 조합, 선택, 복사·붙여넣기를 위해서),
+//! 메뉴는 시스템의 것을 띄워 달라고 한다. 파일을 읽고 쓰는 것은 다른 프로그램과 똑같은 파일 시스템 콜이다.
 
-use std::collections::HashMap;
+mod ui;
+mod vault;
+
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::{env, fs, io, process};
-use webos::gui::{Align, Color, Event, Field, Frame, Key, Window};
+use ui::{Rect, Tool, Ui, Widths, DARK, LIGHT, RADIUS, TOOL_H};
+use vault::{base_of, dir_of, ext_of, is_inside, join, kind_of, shown, stem_of, Kind, ATTACHMENTS};
+use webos::gui::{Align, Event, Field, Frame, Key, MenuItem, Role, Style, Window};
 
+// 입력 칸의 번호
 const EDITOR: u32 = 1;
-const BAR: f32 = 44.0;
-const ROW: f32 = 30.0;
-const PAD: f32 = 10.0;
-const INSET: f32 = 18.0;
+const TITLE: u32 = 2;
+const SEARCH: u32 = 3;
+const DIR_NAME: u32 = 4;
+
 /// 마지막 입력 뒤 이만큼 조용하면 저장한다.
-const SAVE_DELAY_MS: u32 = 500;
-const NEW_LABEL: &str = "새 메모";
+const SAVE_DELAY_MS: u32 = 400;
+const TREE_ROW: f32 = 28.0;
+const HIT_ROW: f32 = 50.0;
+const TABS_H: f32 = 37.0;
+const HEAD_H: f32 = 44.0;
+const PROMPT_H: f32 = 38.0;
+const STATUS_H: f32 = 36.0;
+const SIDE_TOP: f32 = 104.0;
 
-struct Theme {
-    side: Color,
-    page: Color,
-    line: Color,
-    text: Color,
-    muted: Color,
-    button: Color,
-    selected: Color,
-    danger: Color,
+const FORMATS: [(&str, &str); 2] = [("md", "마크다운 (.md)"), ("txt", "텍스트 (.txt)")];
+
+/// 보관함 안의 폴더나 파일. path는 보관함 기준이다.
+#[derive(Clone, PartialEq, Debug)]
+struct Entry {
+    path: String,
+    kind: Kind,
 }
 
-const LIGHT: Theme = Theme {
-    side: Color::rgb(244, 245, 248),
-    page: Color::rgb(255, 255, 255),
-    line: Color::rgb(214, 216, 224),
-    text: Color::rgb(25, 26, 32),
-    muted: Color::rgb(107, 110, 123),
-    button: Color::rgb(255, 255, 255),
-    selected: Color::rgb(221, 225, 250),
-    danger: Color::rgb(194, 51, 42),
-};
-
-const DARK: Theme = Theme {
-    side: Color::rgb(30, 32, 38),
-    page: Color::rgb(23, 24, 29),
-    line: Color::rgb(58, 60, 70),
-    text: Color::rgb(232, 232, 236),
-    muted: Color::rgb(141, 144, 156),
-    button: Color::rgb(44, 46, 54),
-    selected: Color::rgb(50, 54, 92),
-    danger: Color::rgb(255, 143, 133),
-};
-
-/// 글의 폭을 재되, 한 번 잰 것은 기억해 둔다 (잴 때마다 화면 쪽에 물어봐야 하므로).
-struct Widths {
-    known: HashMap<(String, u32, bool), f32>,
+/// 누를 수 있는 자리마다 적어 두는 "할 일"
+#[derive(Clone, PartialEq, Debug)]
+enum Action {
+    NewNote,
+    NewFolder,
+    FormatMenu,
+    SetFormat(&'static str),
+    /// 트리나 찾은 목록의 파일
+    Open(String),
+    Dir(String),
+    /// 트리의 빈 곳
+    TreeBlank,
+    Tab(String),
+    CloseTab(String),
+    CloseOthers(String),
+    Back,
+    Forward,
+    AskDelete(String),
+    Delete,
+    CancelDelete,
+    RenameNote(String),
+    RenameDir(String),
+    MoveMenu(String),
+    Move(String, String),
+    NewNoteIn(String),
+    NewFolderIn(String),
 }
 
-impl Widths {
-    fn of(&mut self, window: &Window, texts: &[&str], size: f32, bold: bool) -> Vec<f32> {
-        let key = |text: &str| (text.to_string(), size.to_bits(), bold);
-        let unknown: Vec<&str> = texts.iter().copied().filter(|t| !self.known.contains_key(&key(t))).collect();
-        for (text, width) in unknown.iter().zip(window.measure(&unknown, size, bold)) {
-            self.known.insert(key(text), width);
-        }
-        texts.iter().map(|t| self.known[&key(t)]).collect()
-    }
+struct Row {
+    path: String,
+    kind: Kind,
+    level: usize,
 }
 
-struct Notepad {
+struct App {
     window: Window,
     widths: Widths,
     w: f32,
     h: f32,
     dark: bool,
-    dir: PathBuf,
-    /// 보관함 기준의 경로들 (폴더 안의 것은 "폴더/이름")
-    files: Vec<String>,
+    root: PathBuf,
+    entries: Vec<Entry>,
+    /// 메모의 내용: 경로 → 글 (찾기와 링크 고치기에 쓴다)
+    texts: HashMap<String, String>,
+    /// 열어 둔 파일
     current: Option<String>,
     /// 열어 둔 메모의 글 (입력 칸에 있는 것과 같다)
     text: String,
     /// 아직 저장하지 않은 변경이 있다.
     dirty: bool,
-    /// 저장에 실패했을 때의 설명
-    error: Option<String>,
-    scroll: f32,
-    /// 입력 칸이 방금 나타났다: 이번에 그릴 때 커서를 준다.
-    focus_editor: bool,
+    tabs: Vec<String>,
+    /// 지나온 파일들과 그 안에서의 지금 위치 (뒤로, 앞으로)
+    trail: Vec<String>,
+    trail_at: usize,
+    /// 사용자가 탭을 모두 닫았다. 다른 메모를 열 때까지는 알아서 열지 않는다.
+    stay_empty: bool,
+    /// 새 메모와 새 폴더가 만들어질 폴더
+    active_dir: String,
+    collapsed: HashSet<String>,
+    query: String,
+    format: &'static str,
+    /// 제목 칸에 적혀 있는 글
+    title_draft: String,
+    renaming_dir: Option<String>,
+    dir_draft: String,
+    confirming: Option<String>,
+    error: String,
+    tree_scroll: f32,
+    mouse: Option<(f32, f32)>,
+    /// 커서가 있는 입력 칸
+    focused: Option<u32>,
+    /// 다음에 그릴 때 커서를 옮길 칸 (true면 글 전체를 고른 채로)
+    focus: Option<(u32, bool)>,
+    /// 다음에 그릴 때 띄울 메뉴: 자리, 그리고 줄마다의 글과 할 일
+    menu: Option<((f32, f32), Vec<(MenuItem, Option<Action>)>)>,
+    /// 지금 떠 있는 메뉴의 줄마다 할 일
+    menu_actions: Vec<Option<Action>>,
+    /// 마지막으로 그린 화면에서 누를 수 있는 자리들
+    hits: Vec<(Rect, Action)>,
+    /// 포인터 아래에 있는 자리 (hits의 순번). 바뀔 때만 다시 그린다.
+    hot: Option<usize>,
 }
 
-fn is_note(name: &str) -> bool {
-    name.ends_with(".md") || name.ends_with(".txt")
+fn describe(what: &str, e: &io::Error) -> String {
+    format!("{what}: {}", webos::describe(e))
 }
 
-/// 보관함의 글 파일들을 폴더 안까지 찾는다. 숨김 파일은 건너뛴다.
-fn find_notes(dir: &Path, prefix: &str, out: &mut Vec<String>) {
-    let Ok(entries) = fs::read_dir(dir) else { return };
-    for entry in entries.flatten() {
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if name.starts_with('.') {
-            continue;
+/// 1234567 → "1,234,567"
+fn grouped(n: usize) -> String {
+    let digits = n.to_string();
+    let mut out = String::new();
+    for (i, ch) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i) % 3 == 0 {
+            out.push(',');
         }
-        let path = format!("{prefix}{name}");
-        match entry.file_type() {
-            Ok(kind) if kind.is_dir() => find_notes(&entry.path(), &format!("{path}/"), out),
-            Ok(_) if is_note(&name) => out.push(path),
-            _ => {}
-        }
+        out.push(ch);
     }
+    out
 }
 
-impl Notepad {
-    fn side(&self) -> f32 {
-        if self.w < 520.0 {
-            (self.w * 0.36).max(110.0)
+impl App {
+    // ───────────── 보관함 읽기 ─────────────
+
+    fn absolute(&self, path: &str) -> PathBuf {
+        if path.is_empty() {
+            self.root.clone()
         } else {
-            210.0
+            self.root.join(path)
         }
     }
 
-    fn list_height(&self) -> f32 {
-        (self.h - BAR).max(0.0)
+    fn files(&self) -> Vec<String> {
+        self.entries.iter().filter(|e| e.kind != Kind::Dir).map(|e| e.path.clone()).collect()
     }
 
-    fn max_scroll(&self) -> f32 {
-        (self.files.len() as f32 * ROW - self.list_height()).max(0.0)
+    fn notes(&self) -> impl Iterator<Item = &str> {
+        self.entries.iter().filter(|e| e.kind == Kind::Note).map(|e| e.path.as_str())
     }
 
-    fn refresh(&mut self) {
-        let mut files = Vec::new();
-        find_notes(&self.dir, "", &mut files);
-        files.sort_by_key(|f| f.to_lowercase());
-        self.files = files;
-        self.scroll = self.scroll.min(self.max_scroll());
+    fn kind(&self, path: &str) -> Option<Kind> {
+        self.entries.iter().find(|e| e.path == path).map(|e| e.kind)
     }
 
-    /// 창이 다시 앞으로 왔을 때: 그사이 다른 프로그램이 파일을 바꿨을 수 있다.
-    fn sync(&mut self) {
-        self.refresh();
-        let Some(name) = self.current.clone() else { return };
-        if self.dirty {
-            return; // 치고 있던 것이 더 새것이다
-        }
-        match fs::read_to_string(self.dir.join(&name)) {
-            Ok(text) if text != self.text => {
-                let _ = self.window.set_text(EDITOR, &text);
-                self.text = text;
-            }
-            Ok(_) => {}
-            Err(_) => self.current = None, // 지워졌다
-        }
-    }
-
-    fn open(&mut self, name: &str) {
-        self.save();
-        match fs::read_to_string(self.dir.join(name)) {
-            Ok(text) => {
-                let _ = self.window.set_text(EDITOR, &text);
-                self.text = text;
-                self.current = Some(name.to_string());
-                self.error = None;
-                self.focus_editor = true;
-            }
-            Err(e) => self.error = Some(format!("열지 못했습니다: {}", webos::describe(&e))),
-        }
-    }
-
-    fn create(&mut self) {
-        self.save();
-        let made = fs::create_dir_all(&self.dir).and_then(|_| {
-            // "새 메모.md", "새 메모 2.md", … 중 아직 없는 첫 이름
-            let name = (1..)
-                .map(|n| if n == 1 { format!("{NEW_LABEL}.md") } else { format!("{NEW_LABEL} {n}.md") })
-                .find(|name| !self.dir.join(name).exists())
-                .expect("some name is free");
-            fs::write(self.dir.join(&name), "").map(|_| name)
+    /// 폴더 바로 아래의 항목들: 폴더 먼저, 그다음 보이는 이름순
+    fn children_of(&self, dir: &str) -> Vec<&Entry> {
+        let mut found: Vec<&Entry> = self.entries.iter().filter(|e| dir_of(&e.path) == dir).collect();
+        found.sort_by(|a, b| {
+            (b.kind == Kind::Dir).cmp(&(a.kind == Kind::Dir)).then_with(|| vault::natural_cmp(shown(&a.path), shown(&b.path)))
         });
-        match made {
-            Ok(name) => {
-                self.refresh();
-                self.open(&name);
+        found
+    }
+
+    fn names_in(&self, dir: &str) -> Vec<&str> {
+        self.entries.iter().filter(|e| dir_of(&e.path) == dir).map(|e| base_of(&e.path)).collect()
+    }
+
+    fn walk(&self, dir: &str, out: &mut Vec<Entry>) {
+        let Ok(list) = fs::read_dir(self.absolute(dir)) else { return };
+        for item in list.flatten() {
+            let name = item.file_name().to_string_lossy().into_owned();
+            if name.starts_with('.') {
+                continue;
             }
-            Err(e) => self.error = Some(format!("만들지 못했습니다: {}", webos::describe(&e))),
+            let path = join(dir, &name);
+            if item.file_type().is_ok_and(|t| t.is_dir()) {
+                out.push(Entry { path: path.clone(), kind: Kind::Dir });
+                self.walk(&path, out);
+            } else {
+                out.push(Entry { kind: kind_of(&path), path });
+            }
         }
     }
+
+    /// 보관함을 다시 읽는다. 처음 열 때, 무언가를 바꾼 뒤, 그리고 창이 다시 앞으로 왔을 때
+    /// (그사이 다른 프로그램이 파일을 바꿨을 수 있다) 부른다.
+    fn load(&mut self) {
+        if let Err(e) = fs::create_dir_all(&self.root) {
+            self.error = describe("보관함을 만들지 못했습니다", &e);
+        }
+        let mut found = Vec::new();
+        self.walk("", &mut found);
+        found.sort_by(|a, b| a.path.cmp(&b.path));
+        let mut texts = HashMap::new();
+        for entry in found.iter().filter(|e| e.kind == Kind::Note) {
+            if let Ok(text) = fs::read_to_string(self.absolute(&entry.path)) {
+                texts.insert(entry.path.clone(), text);
+            }
+        }
+        self.entries = found;
+        self.texts = texts;
+        // 사라진 파일은 탭과 지나온 길에서도 뺀다.
+        let known: HashSet<String> = self.entries.iter().map(|e| e.path.clone()).collect();
+        self.remap(|path| known.contains(path).then(|| path.to_string()));
+        match self.current.clone() {
+            // 치고 있어서 아직 저장하지 않은 것은 화면의 글이 더 새것이다.
+            Some(path) if self.dirty => {
+                self.texts.insert(path, self.text.clone());
+            }
+            Some(path) => {
+                let on_disk = self.texts.get(&path).cloned().unwrap_or_default();
+                if on_disk != self.text {
+                    let _ = self.window.set_text(EDITOR, &on_disk);
+                    self.text = on_disk;
+                }
+            }
+            None if !self.stay_empty => {
+                let next = self.tabs.last().cloned().or_else(|| self.notes().next().map(str::to_string));
+                if let Some(path) = next {
+                    self.show(&path, true);
+                }
+            }
+            None => {}
+        }
+        if self.renaming_dir.as_ref().is_some_and(|dir| !known.contains(dir)) {
+            self.renaming_dir = None;
+        }
+        if self.confirming.as_ref().is_some_and(|path| !known.contains(path)) {
+            self.confirming = None;
+        }
+    }
+
+    // ───────────── 저장 ─────────────
 
     fn save(&mut self) {
-        let Some(name) = &self.current else { return };
+        let Some(path) = self.current.clone() else { return };
         if !self.dirty {
             return;
         }
-        match fs::write(self.dir.join(name), &self.text) {
+        match fs::write(self.absolute(&path), &self.text) {
             Ok(()) => {
                 self.dirty = false;
-                self.error = None;
+                self.error.clear();
             }
-            Err(e) => self.error = Some(format!("저장하지 못했습니다: {}", webos::describe(&e))),
+            Err(e) => self.error = describe("저장하지 못했습니다", &e),
         }
     }
 
-    fn typed(&mut self) -> io::Result<()> {
-        let text = self.window.text(EDITOR)?;
-        if text != self.text {
-            self.text = text;
-            self.dirty = true;
-        }
-        Ok(())
-    }
-
-    /// 폭에 맞지 않는 이름은 뒤를 자르고 "…"를 붙인다.
-    fn fitted(&mut self, names: &[&str], size: f32, room: f32) -> Vec<String> {
-        let widths = self.widths.of(&self.window, names, size, false);
-        names
-            .iter()
-            .zip(widths)
-            .map(|(name, width)| {
-                if width <= room {
-                    return name.to_string();
+    fn typed(&mut self) {
+        match self.window.text(EDITOR) {
+            Ok(text) if text != self.text => {
+                if let Some(path) = &self.current {
+                    self.texts.insert(path.clone(), text.clone());
                 }
-                let keep = ((name.chars().count() as f32 * room / width) as usize).saturating_sub(2).max(1);
-                format!("{}…", name.chars().take(keep).collect::<String>())
+                self.text = text;
+                self.dirty = true;
+            }
+            Ok(_) => {}
+            Err(e) => self.error = describe("글을 읽지 못했습니다", &e),
+        }
+    }
+
+    // ───────────── 탭과 지나온 길 ─────────────
+
+    /// 화면에 올릴 파일을 바꾼다. 쓰던 것은 저장하고, 입력 칸들의 글을 새 파일의 것으로 채운다.
+    fn set_current(&mut self, path: Option<&str>) {
+        if self.current.as_deref() == path {
+            return;
+        }
+        self.save();
+        self.dirty = false;
+        self.current = path.map(str::to_string);
+        self.text.clear();
+        let Some(path) = path else { return };
+        if kind_of(path) == Kind::Note {
+            match fs::read_to_string(self.absolute(path)) {
+                Ok(text) => self.text = text,
+                Err(e) => self.error = describe("열지 못했습니다", &e),
+            }
+            self.texts.insert(path.to_string(), self.text.clone());
+        }
+        let _ = self.window.set_text(EDITOR, &self.text);
+        self.sync_title();
+    }
+
+    fn sync_title(&mut self) {
+        self.title_draft = self.current.as_deref().map(stem_of).unwrap_or_default().to_string();
+        let _ = self.window.set_text(TITLE, &self.title_draft);
+    }
+
+    /// 파일을 화면에 올린다: 탭에 없으면 탭을 만들고, 지나온 길에 적는다.
+    fn show(&mut self, path: &str, record: bool) {
+        self.set_current(Some(path));
+        if !self.tabs.iter().any(|tab| tab == path) {
+            self.tabs.push(path.to_string());
+        }
+        if record && self.trail.get(self.trail_at).map(String::as_str) != Some(path) {
+            self.trail.truncate((self.trail_at + 1).min(self.trail.len()));
+            self.trail.push(path.to_string());
+            self.trail_at = self.trail.len() - 1;
+        }
+    }
+
+    fn open(&mut self, path: &str, record: bool) {
+        self.stay_empty = false;
+        self.error.clear();
+        self.show(path, record);
+        self.active_dir = dir_of(path).to_string();
+        self.confirming = None;
+        // 그 파일이 든 폴더들이 접혀 있으면 펼친다.
+        self.collapsed.retain(|dir| !is_inside(path, dir));
+        if kind_of(path) == Kind::Note {
+            self.focus = Some((EDITOR, false));
+        }
+    }
+
+    /// 경로가 바뀌거나(이름 바꾸기, 옮기기) 없어졌을 때(None), 경로를 기억하는 모든 곳을 함께 고친다.
+    fn remap(&mut self, to: impl Fn(&str) -> Option<String>) {
+        let mut tabs: Vec<String> = Vec::new();
+        for path in self.tabs.iter().filter_map(|p| to(p)) {
+            if !tabs.contains(&path) {
+                tabs.push(path);
+            }
+        }
+        self.tabs = tabs;
+        let mut trail: Vec<String> = Vec::new();
+        let mut at = 0;
+        for (i, path) in self.trail.iter().enumerate() {
+            if let Some(moved) = to(path) {
+                if trail.last() != Some(&moved) {
+                    trail.push(moved);
+                }
+            }
+            if i == self.trail_at {
+                at = trail.len().saturating_sub(1);
+            }
+        }
+        (self.trail, self.trail_at) = (trail, at);
+        if let Some(path) = self.current.clone() {
+            match to(&path) {
+                Some(moved) if moved == path => {}
+                // 같은 파일이 자리만 옮겼다: 쓰던 글은 그대로다.
+                Some(moved) => {
+                    self.current = Some(moved);
+                    self.sync_title();
+                }
+                None => {
+                    self.dirty = false;
+                    self.set_current(None);
+                }
+            }
+        }
+    }
+
+    fn can_go(&self, step: isize) -> bool {
+        self.trail_at.checked_add_signed(step).is_some_and(|at| at < self.trail.len())
+    }
+
+    /// 뒤로(-1), 앞으로(+1)
+    fn go(&mut self, step: isize) {
+        if !self.can_go(step) {
+            return;
+        }
+        self.trail_at = self.trail_at.wrapping_add_signed(step);
+        let path = self.trail[self.trail_at].clone();
+        self.open(&path, false);
+    }
+
+    fn close_tab(&mut self, path: &str) {
+        let Some(at) = self.tabs.iter().position(|tab| tab == path) else { return };
+        self.tabs.remove(at);
+        if self.current.as_deref() != Some(path) {
+            return;
+        }
+        // 닫은 탭의 오른쪽, 없으면 왼쪽 탭으로 간다.
+        match self.tabs.get(at).or_else(|| at.checked_sub(1).and_then(|left| self.tabs.get(left))).cloned() {
+            Some(next) => self.open(&next, true),
+            None => {
+                self.stay_empty = true;
+                self.set_current(None);
+            }
+        }
+    }
+
+    // ───────────── 만들기, 이름 바꾸기, 옮기기, 지우기 ─────────────
+
+    fn new_note(&mut self, dir: &str) {
+        let name = vault::unique_name(&self.names_in(dir), "제목 없음", self.format);
+        let path = join(dir, &name);
+        match fs::create_dir_all(self.absolute(dir)).and_then(|_| fs::write(self.absolute(&path), "")) {
+            Ok(()) => {
+                self.query.clear();
+                let _ = self.window.set_text(SEARCH, "");
+                self.load();
+                self.open(&path, true);
+                // 새 메모는 제목부터 정하도록 제목 칸에 커서를 둔다.
+                self.focus = Some((TITLE, true));
+            }
+            Err(e) => self.error = describe("만들지 못했습니다", &e),
+        }
+    }
+
+    fn new_folder(&mut self, dir: &str) {
+        let path = join(dir, &vault::unique_name(&self.names_in(dir), "새 폴더", ""));
+        match fs::create_dir_all(self.absolute(&path)) {
+            Ok(()) => {
+                self.load();
+                self.collapsed.retain(|d| !is_inside(&path, d));
+                self.active_dir = dir.to_string();
+                self.rename_dir_start(&path);
+            }
+            Err(e) => self.error = describe("폴더를 만들지 못했습니다", &e),
+        }
+    }
+
+    /// 다른 메모들 안의, 옛 경로를 가리키던 링크를 새 경로로 고쳐 쓴다.
+    fn relink(&mut self, old: &str, new: &str, known: &[String]) {
+        let notes: Vec<String> = self.notes().map(str::to_string).collect();
+        for path in notes {
+            let Some(before) = self.texts.get(&path) else { continue };
+            let after = vault::rename_links(before, old, new, known);
+            if &after == before {
+                continue;
+            }
+            if let Err(e) = fs::write(self.absolute(&path), &after) {
+                self.error = describe("링크를 고치지 못했습니다", &e);
+            }
+            if self.current.as_deref() == Some(path.as_str()) {
+                let _ = self.window.set_text(EDITOR, &after);
+                self.text = after.clone();
+            }
+            self.texts.insert(path, after);
+        }
+    }
+
+    /// 제목 칸에 적힌 이름으로 열어 둔 메모의 파일 이름을 바꾼다.
+    fn commit_title(&mut self) {
+        let Some(from) = self.current.clone() else { return };
+        let stem = self.title_draft.trim().to_string();
+        if kind_of(&from) != Kind::Note || stem == stem_of(&from) {
+            return self.sync_title();
+        }
+        let ext = ext_of(&from);
+        let to = join(dir_of(&from), &format!("{stem}.{ext}"));
+        let problem = vault::name_problem(&stem).or_else(|| {
+            let taken = self.names_in(dir_of(&from)).into_iter().any(|name| name.to_lowercase() == base_of(&to).to_lowercase() && name != base_of(&from));
+            taken.then_some("같은 이름의 파일이 이미 있습니다.")
+        });
+        if let Some(problem) = problem {
+            self.error = problem.to_string();
+            return self.sync_title();
+        }
+        self.save();
+        let known = self.files();
+        match fs::rename(self.absolute(&from), self.absolute(&to)) {
+            Ok(()) => {
+                self.error.clear();
+                self.remap(|path| Some(if path == from { to.clone() } else { path.to_string() }));
+                self.load();
+                self.relink(&from, &to, &known);
+            }
+            Err(e) => {
+                self.error = describe("이름을 바꾸지 못했습니다", &e);
+                self.sync_title();
+            }
+        }
+    }
+
+    fn rename_dir_start(&mut self, dir: &str) {
+        self.renaming_dir = Some(dir.to_string());
+        self.dir_draft = base_of(dir).to_string();
+        let _ = self.window.set_text(DIR_NAME, &self.dir_draft);
+        self.focus = Some((DIR_NAME, true));
+    }
+
+    fn commit_dir_name(&mut self) {
+        let Some(from) = self.renaming_dir.take() else { return };
+        let name = self.dir_draft.trim().to_string();
+        if name == base_of(&from) {
+            return;
+        }
+        let problem = vault::name_problem(&name)
+            .or_else(|| self.names_in(dir_of(&from)).into_iter().any(|n| n.to_lowercase() == name.to_lowercase()).then_some("같은 이름이 이미 있습니다."));
+        if let Some(problem) = problem {
+            self.error = problem.to_string();
+            return;
+        }
+        let to = join(dir_of(&from), &name);
+        self.save();
+        match fs::rename(self.absolute(&from), self.absolute(&to)) {
+            Ok(()) => self.moved(&from, &to),
+            Err(e) => self.error = describe("이름을 바꾸지 못했습니다", &e),
+        }
+    }
+
+    /// 파일이나 폴더가 from에서 to로 옮겨졌다: 그 안의 것을 가리키던 경로들을 모두 고친다.
+    fn moved(&mut self, from: &str, to: &str) {
+        let shift = |path: &str| if is_inside(path, from) { format!("{to}{}", &path[from.len()..]) } else { path.to_string() };
+        self.remap(|path| Some(shift(path)));
+        self.active_dir = shift(&self.active_dir);
+        self.collapsed = self.collapsed.iter().map(|dir| shift(dir)).collect();
+        self.error.clear();
+        self.load();
+    }
+
+    /// 파일이나 폴더를 다른 폴더로 옮긴다 (dest가 빈 문자열이면 보관함 맨 위).
+    fn move_to(&mut self, path: &str, dest: &str) {
+        if let Some(problem) = vault::move_problem(path, dest, &self.names_in(dest)) {
+            if !problem.is_empty() {
+                self.error = problem.to_string();
+            }
+            return;
+        }
+        let to = join(dest, base_of(path));
+        let known = self.files();
+        self.save();
+        match fs::rename(self.absolute(path), self.absolute(&to)) {
+            Ok(()) => {
+                self.moved(path, &to);
+                self.collapsed.retain(|dir| !is_inside(&to, dir));
+                // 이름만 적은 링크는 그대로 통한다. 폴더까지 적은 링크([[폴더/메모]])만 새 자리로 고친다.
+                for old in known.iter().filter(|old| is_inside(old, path)) {
+                    self.relink(old, &format!("{to}{}", &old[path.len()..]), &known);
+                }
+            }
+            Err(e) => self.error = describe("옮기지 못했습니다", &e),
+        }
+    }
+
+    fn remove(&mut self, path: &str) {
+        self.confirming = None;
+        let target = self.absolute(path);
+        let removed = if self.kind(path) == Some(Kind::Dir) { fs::remove_dir_all(target) } else { fs::remove_file(target) };
+        match removed {
+            Ok(()) => {
+                if is_inside(&self.active_dir, path) {
+                    self.active_dir = dir_of(path).to_string();
+                }
+                self.remap(|p| (!is_inside(p, path)).then(|| p.to_string()));
+                self.load();
+            }
+            Err(e) => self.error = describe("지우지 못했습니다", &e),
+        }
+    }
+
+    // ───────────── 찾기 ─────────────
+
+    /// 찾는 글이 든 메모들과, 그 글이 나온 줄
+    fn results(&self) -> Vec<(&str, &str)> {
+        let wanted = self.query.trim().to_lowercase();
+        self.notes()
+            .filter_map(|path| {
+                let body = self.texts.get(path).map_or("", String::as_str);
+                let line = body.lines().find(|line| line.to_lowercase().contains(&wanted));
+                if line.is_none() && !stem_of(path).to_lowercase().contains(&wanted) {
+                    return None;
+                }
+                Some((path, line.or_else(|| body.lines().find(|l| !l.trim().is_empty())).unwrap_or("").trim()))
             })
             .collect()
     }
 
+    // ───────────── 화면 ─────────────
+
+    fn side(&self) -> f32 {
+        if self.w < 620.0 {
+            (self.w * 0.4).clamp(120.0, 250.0)
+        } else {
+            250.0
+        }
+    }
+
+    /// 트리에 보이는 줄들 (접힌 폴더의 안쪽은 뺀다)
+    fn rows(&self) -> Vec<Row> {
+        fn add(app: &App, dir: &str, level: usize, out: &mut Vec<Row>) {
+            for entry in app.children_of(dir) {
+                out.push(Row { path: entry.path.clone(), kind: entry.kind, level });
+                if entry.kind == Kind::Dir && !app.collapsed.contains(&entry.path) {
+                    add(app, &entry.path, level + 1, out);
+                }
+            }
+        }
+        let mut out = Vec::new();
+        add(self, "", 1, &mut out);
+        out
+    }
+
+    fn list_height(&self) -> f32 {
+        if self.query.trim().is_empty() {
+            self.rows().len() as f32 * TREE_ROW
+        } else {
+            self.results().len() as f32 * HIT_ROW
+        }
+    }
+
+    fn max_scroll(&self) -> f32 {
+        (self.list_height() + 6.0 - (self.h - SIDE_TOP)).max(0.0)
+    }
+
     fn draw(&mut self) -> Frame {
         let theme = if self.dark { &DARK } else { &LIGHT };
+        let mut ui = Ui::new(self.window, std::mem::take(&mut self.widths), theme, self.mouse);
+        let focus = self.focus.take();
+        ui.f.clear(theme.surface);
+        self.draw_main(&mut ui, focus);
+        self.draw_side(&mut ui, focus);
+        if let Some(((x, y), items)) = self.menu.take() {
+            let (labels, actions): (Vec<MenuItem>, Vec<Option<Action>>) = items.into_iter().unzip();
+            ui.f.menu(x, y, &labels);
+            self.menu_actions = actions;
+        }
+        self.widths = ui.widths;
+        self.hits = ui.hits;
+        self.hot = self.hit_at(self.mouse);
+        ui.f
+    }
+
+    /// 한 줄짜리 입력 칸을 테두리와 함께 놓는다.
+    #[allow(clippy::too_many_arguments)]
+    fn input(&self, ui: &mut Ui<Action>, rect: Rect, id: u32, size: f32, bold: bool, label: &str, placeholder: &str, focus: Option<(u32, bool)>) {
+        ui.f.field(&Field {
+            id,
+            x: rect.x + 7.0,
+            y: rect.y + 1.5,
+            w: (rect.w - 14.0).max(4.0),
+            h: rect.h - 3.0,
+            size,
+            color: ui.theme.text,
+            background: ui.theme.surface,
+            multiline: false,
+            mono: false,
+            bold,
+            focus: focus.is_some_and(|(field, _)| field == id),
+            select: focus.is_some_and(|(field, select)| field == id && select),
+            label,
+            placeholder,
+        });
+    }
+
+    fn draw_side(&self, ui: &mut Ui<Action>, focus: Option<(u32, bool)>) {
+        let theme = ui.theme;
         let side = self.side();
-        let mut f = Frame::new();
-        f.clear(theme.page);
+        ui.f.rect(0.0, 0.0, side, self.h, 0.0, theme.surface2);
+        ui.vline(side - 1.0, 0.0, self.h);
 
-        // 왼쪽: 새 메모 단추와 메모 목록
-        f.rect(0.0, 0.0, side, self.h, 0.0, theme.side);
-        let button = self.widths.of(&self.window, &[NEW_LABEL], 13.0, false)[0] + 24.0;
-        f.rect(PAD, 8.0, button, BAR - 16.0, 6.0, theme.button);
-        f.frame(PAD, 8.0, button, BAR - 16.0, 6.0, theme.line, 1.0);
-        f.text(PAD + button / 2.0, BAR / 2.0, 13.0, theme.text, Align::Center, false, NEW_LABEL);
-
-        f.clip(0.0, BAR, side, self.list_height());
-        if self.files.is_empty() {
-            f.text(PAD + 4.0, BAR + ROW / 2.0, 12.5, theme.muted, Align::Left, false, "메모가 없습니다");
+        // 단추들: 새 메모, 새 메모의 형식, 새 폴더
+        let mut x = 8.0;
+        x += ui.tool(x, 6.0, "새 메모", Tool::Primary, false, Some(Action::NewNote)) + 6.0;
+        let format = Rect::new(x, 6.0, (side - 9.0 - x).max(0.0), TOOL_H);
+        if format.w >= 48.0 {
+            let name = FORMATS.iter().find(|(ext, _)| *ext == self.format).map_or("", |f| f.1);
+            ui.f.rect(format.x, format.y, format.w, format.h, RADIUS, theme.surface);
+            if ui.hot(format) {
+                ui.f.rect(format.x, format.y, format.w, format.h, RADIUS, theme.hover);
+            }
+            ui.f.frame(format.x, format.y, format.w, format.h, RADIUS, theme.line, 1.0);
+            ui.label(format.x + 9.0, format.mid_y(), 12.0, theme.text, Style::PLAIN, format.w - 30.0, name);
+            let (cx, cy) = (format.right() - 13.0, format.mid_y());
+            ui.f.line(&[(cx - 3.5, cy - 1.5), (cx, cy + 2.0), (cx + 3.5, cy - 1.5)], theme.muted, 1.3);
+            ui.target(format, Role::Button, false, &format!("새 메모의 형식: {name}"), Action::FormatMenu);
         }
-        // 보이는 줄만 그린다.
-        let first = (self.scroll / ROW) as usize;
-        let last = (((self.scroll + self.list_height()) / ROW) as usize + 1).min(self.files.len());
-        let shown: Vec<String> = self.files[first.min(last)..last].iter().map(|name| display_name(name)).collect();
-        let labels = self.fitted(&shown.iter().map(String::as_str).collect::<Vec<_>>(), 13.0, side - PAD * 2.0 - 12.0);
-        for (i, label) in labels.iter().enumerate() {
-            let index = first + i;
-            let y = BAR + index as f32 * ROW - self.scroll;
-            let selected = self.current.as_deref() == Some(self.files[index].as_str());
+        ui.tool(8.0, 38.0, "새 폴더", Tool::Plain, false, Some(Action::NewFolder));
+
+        // 찾기
+        let find = Rect::new(8.0, 70.0, side - 17.0, 28.0);
+        ui.field_box(find, self.focused == Some(SEARCH));
+        self.input(ui, find, SEARCH, 13.0, false, "메모 찾기", "메모 찾기", focus);
+
+        let area = Rect::new(0.0, SIDE_TOP, side - 1.0, (self.h - SIDE_TOP).max(0.0));
+        let scroll = self.tree_scroll.min(self.max_scroll());
+        ui.clip(area);
+        ui.hit(area, Action::TreeBlank);
+        if self.query.trim().is_empty() {
+            self.draw_tree(ui, area, scroll, focus);
+        } else {
+            self.draw_results(ui, area, scroll);
+        }
+        // 넘치는 목록의 스크롤 막대
+        let total = self.list_height() + 6.0;
+        if total > area.h && area.h > 0.0 {
+            let thumb = (area.h * area.h / total).max(24.0);
+            let top = area.y + (area.h - thumb) * scroll / (total - area.h);
+            ui.f.rect(area.right() - 5.0, top, 3.0, thumb, 1.5, theme.line_strong);
+        }
+        ui.unclip();
+    }
+
+    fn draw_tree(&self, ui: &mut Ui<Action>, area: Rect, scroll: f32, focus: Option<(u32, bool)>) {
+        let theme = ui.theme;
+        let rows = self.rows();
+        if rows.is_empty() {
+            ui.f.styled(area.x + area.w / 2.0, area.y + 26.0, 12.0, theme.muted, Align::Center, Style::PLAIN, "아직 메모가 없습니다.");
+        }
+        for (i, row) in rows.iter().enumerate() {
+            let rect = Rect::new(6.0, area.y + i as f32 * TREE_ROW - scroll, area.w - 12.0, TREE_ROW);
+            if rect.bottom() < area.y || rect.y > area.bottom() {
+                continue; // 보이는 줄만 그린다
+            }
+            let is_dir = row.kind == Kind::Dir;
+            let selected = !is_dir && self.current.as_deref() == Some(row.path.as_str());
+            let active = is_dir && self.active_dir == row.path;
+            let renaming = self.renaming_dir.as_deref() == Some(row.path.as_str());
             if selected {
-                f.rect(6.0, y + 1.0, side - 12.0, ROW - 2.0, 6.0, theme.selected);
+                ui.f.rect(rect.x, rect.y, rect.w, rect.h, RADIUS, theme.accent_soft);
+            } else if ui.hot(rect) {
+                ui.f.rect(rect.x, rect.y, rect.w, rect.h, RADIUS, theme.hover);
             }
-            f.text(PAD + 6.0, y + ROW / 2.0, 13.0, theme.text, Align::Left, selected, label);
+            if active {
+                ui.f.rect(rect.x, rect.y + 2.0, 2.0, rect.h - 4.0, 1.0, theme.accent);
+            }
+            let x = rect.x + 9.5 + (row.level - 1) as f32 * 14.0;
+            let (icon, color) = match row.kind {
+                Kind::Dir => (ui::FOLDER, theme.accent),
+                Kind::Note => (ui::NOTE, theme.muted),
+                _ => (ui::FILE, theme.muted),
+            };
+            ui.icon(x, rect.y + 5.5, 0.85, color, icon);
+            let name_x = x + 24.5;
+            let name = shown(&row.path);
+            if renaming {
+                let edit = Rect::new(name_x - 6.0, rect.y + 2.5, (rect.right() - name_x + 2.0).max(30.0), 23.0);
+                ui.field_box(edit, true);
+                self.input(ui, edit, DIR_NAME, 13.0, false, "폴더 이름", "", focus);
+                continue;
+            }
+            let mut room = rect.right() - 8.0 - name_x;
+            let action = if is_dir { Action::Dir(row.path.clone()) } else { Action::Open(row.path.clone()) };
+            ui.target(rect, Role::TreeItem, selected, name, action);
+            if active {
+                // 고른 폴더에는 지우기 단추가 나온다.
+                let close = Rect::new(rect.right() - 26.0, rect.y + 4.0, 20.0, 20.0);
+                ui.close_button(close, true, &format!("{name} 폴더 지우기"), Action::AskDelete(row.path.clone()));
+                room -= 24.0;
+            }
+            let ext = ext_of(&row.path);
+            if row.kind == Kind::Note && ext != "md" {
+                let w = ui.width(&ext, 10.5, Style::MONO);
+                ui.text(rect.right() - 8.0 - w, rect.mid_y(), 10.5, theme.muted, Style::MONO, &ext);
+                room -= w + 6.0;
+            }
+            ui.label(name_x, rect.mid_y(), 13.0, theme.text, Style::PLAIN, room, name);
         }
-        f.unclip();
-        f.rect(side - 1.0, 0.0, 1.0, self.h, 0.0, theme.line);
+    }
 
-        // 오른쪽: 제목 줄과 글 입력 칸
-        let (x, room) = (side + INSET, self.w - side - INSET * 2.0);
-        match self.current.clone() {
-            None => {
-                let hint = self.error.clone().unwrap_or_else(|| "왼쪽에서 메모를 고르거나 새 메모를 만드세요".into());
-                f.text(side + (self.w - side) / 2.0, self.h / 2.0, 13.0, theme.muted, Align::Center, false, &hint);
-            }
-            Some(name) => {
-                let (state, color) = match (&self.error, self.dirty) {
-                    (Some(error), _) => (error.clone(), theme.danger),
-                    (None, true) => ("저장 중…".to_string(), theme.muted),
-                    (None, false) => ("저장됨".to_string(), theme.muted),
-                };
-                let state_width = self.widths.of(&self.window, &[&state], 12.0, false)[0];
-                let shown = display_name(&name);
-                let title = self.fitted(&[&shown], 15.0, (room - state_width - 16.0).max(40.0)).remove(0);
-                f.text(x, BAR / 2.0, 15.0, theme.text, Align::Left, true, &title);
-                f.text(self.w - INSET, BAR / 2.0, 12.0, color, Align::Right, false, &state);
-                f.rect(side, BAR - 1.0, self.w - side, 1.0, 0.0, theme.line);
-                f.field(&Field {
-                    id: EDITOR,
-                    x,
-                    y: BAR + 12.0,
-                    w: room.max(20.0),
-                    h: (self.h - BAR - 24.0).max(20.0),
-                    size: 14.0,
-                    color: theme.text,
-                    background: theme.page,
-                    multiline: true,
-                    mono: false,
-                    focus: std::mem::take(&mut self.focus_editor),
-                    label: "메모 내용",
-                });
-            }
+    fn draw_results(&self, ui: &mut Ui<Action>, area: Rect, scroll: f32) {
+        let theme = ui.theme;
+        let results = self.results();
+        if results.is_empty() {
+            ui.f.styled(area.x + area.w / 2.0, area.y + 26.0, 12.0, theme.muted, Align::Center, Style::PLAIN, "찾는 내용이 든 메모가 없습니다.");
         }
-        f
+        for (i, (path, line)) in results.into_iter().enumerate() {
+            let rect = Rect::new(6.0, area.y + i as f32 * HIT_ROW - scroll, area.w - 12.0, HIT_ROW - 2.0);
+            if rect.bottom() < area.y || rect.y > area.bottom() {
+                continue;
+            }
+            let selected = self.current.as_deref() == Some(path);
+            if selected {
+                ui.f.rect(rect.x, rect.y, rect.w, rect.h, RADIUS, theme.accent_soft);
+            } else if ui.hot(rect) {
+                ui.f.rect(rect.x, rect.y, rect.w, rect.h, RADIUS, theme.hover);
+            }
+            ui.label(rect.x + 8.0, rect.y + 15.0, 13.0, theme.text, Style::BOLD, rect.w - 16.0, stem_of(path));
+            ui.label(rect.x + 8.0, rect.y + 34.0, 12.0, theme.muted, Style::PLAIN, rect.w - 16.0, if line.is_empty() { path } else { line });
+            ui.target(rect, Role::Option, selected, stem_of(path), Action::Open(path.to_string()));
+        }
+    }
+
+    fn draw_main(&self, ui: &mut Ui<Action>, focus: Option<(u32, bool)>) {
+        let theme = ui.theme;
+        let x0 = self.side();
+        let width = (self.w - x0).max(0.0);
+        self.draw_tabs(ui, x0, width);
+        let mut y = TABS_H;
+
+        // 지우기 확인
+        if let Some(target) = &self.confirming {
+            ui.f.rect(x0, y, width, PROMPT_H, 0.0, theme.surface2);
+            ui.hline(x0, y + PROMPT_H - 1.0, width);
+            let what = match self.kind(target) {
+                Some(Kind::Dir) => " 폴더와 그 안의 모든 것을",
+                Some(Kind::Image) => " 그림을",
+                Some(Kind::Note) => " 메모를",
+                _ => " 파일을",
+            };
+            let cancel = ui.tool_width("취소");
+            let remove = ui.tool_width("지우기");
+            let by = y + (PROMPT_H - 1.0 - TOOL_H) / 2.0;
+            ui.tool(x0 + width - 8.0 - cancel, by, "취소", Tool::Plain, false, Some(Action::CancelDelete));
+            ui.tool(x0 + width - 14.0 - cancel - remove, by, "지우기", Tool::Danger, false, Some(Action::Delete));
+            let question = format!("“{}”{what} 지울까요?", base_of(target));
+            ui.label(x0 + 10.0, y + (PROMPT_H - 1.0) / 2.0, 12.0, theme.text, Style::PLAIN, width - 40.0 - cancel - remove, &question);
+            y += PROMPT_H;
+        }
+
+        let Some(path) = self.current.as_deref() else {
+            let mid = y + (self.h - y) / 2.0;
+            ui.f.styled(x0 + width / 2.0, mid, 13.0, theme.muted, Align::Center, Style::PLAIN, "“새 메모”를 눌러 적기 시작하세요.");
+            if !self.error.is_empty() {
+                // 열어 둔 메모가 없으면 상태 줄도 없으므로, 오류는 여기에 보여 준다.
+                ui.f.styled(x0 + width / 2.0, mid + 24.0, 12.0, theme.danger, Align::Center, Style::PLAIN, &self.error);
+            }
+            return;
+        };
+        let is_note = kind_of(path) == Kind::Note;
+
+        // 제목 줄: 제목(파일 이름)과 단추들
+        ui.hline(x0, y + HEAD_H - 1.0, width);
+        let remove = ui.tool_width("삭제");
+        ui.tool(x0 + width - 8.0 - remove, y + 8.5, "삭제", Tool::Plain, false, Some(Action::AskDelete(path.to_string())));
+        let title = Rect::new(x0 + 8.0, y + 6.0, (width - 22.0 - remove).max(40.0), 31.0);
+        if is_note {
+            // 평소에는 글처럼 보이다가 커서가 들어가면 테두리가 생긴다.
+            if self.focused == Some(TITLE) {
+                ui.f.frame(title.x, title.y, title.w, title.h, RADIUS, theme.line_strong, 1.0);
+            }
+            self.input(ui, title, TITLE, 15.0, true, "제목", "", focus);
+        } else {
+            ui.label(title.x + 7.0, title.mid_y(), 15.0, theme.text, Style::BOLD, title.w - 14.0, base_of(path));
+        }
+        y += HEAD_H;
+
+        // 상태 줄
+        let status = Rect::new(x0, self.h - STATUS_H, width, STATUS_H);
+        ui.hline(x0, status.y, width);
+        let count = if is_note { format!("{}자", grouped(self.text.chars().count())) } else { String::new() };
+        let count_w = ui.width(&count, 12.0, Style::PLAIN);
+        ui.f.styled(status.right() - 8.0, status.mid_y(), 12.0, theme.muted, Align::Right, Style::PLAIN, &count);
+        let room = width - 24.0 - count_w;
+        if self.error.is_empty() {
+            let state = if !is_note { "" } else if self.dirty { " · 저장 중…" } else { " · 저장됨" };
+            ui.label(x0 + 8.0, status.mid_y(), 12.0, theme.muted, Style::PLAIN, room, &format!("notes/{path}{state}"));
+        } else {
+            ui.label(x0 + 8.0, status.mid_y(), 12.0, theme.danger, Style::PLAIN, room, &self.error);
+        }
+
+        // 본문
+        let body = Rect::new(x0, y, width, (status.y - y).max(0.0));
+        if is_note {
+            ui.f.field(&Field {
+                id: EDITOR,
+                x: body.x + 14.0,
+                y: body.y + 12.0,
+                w: (body.w - 28.0).max(20.0),
+                h: (body.h - 24.0).max(20.0),
+                size: 13.0,
+                color: theme.text,
+                background: theme.surface,
+                multiline: true,
+                mono: true,
+                bold: false,
+                focus: focus.is_some_and(|(field, _)| field == EDITOR),
+                select: false,
+                label: "메모 내용",
+                placeholder: "",
+            });
+        } else {
+            let hint = if kind_of(path) == Kind::Image {
+                format!("메모에 넣으려면 ![[{}]] 라고 적습니다.", base_of(path))
+            } else {
+                "메모장에서 열 수 없는 파일입니다.".to_string()
+            };
+            ui.f.styled(body.x + body.w / 2.0, body.mid_y(), 12.0, theme.muted, Align::Center, Style::PLAIN, &hint);
+        }
+    }
+
+    /// 열어 둔 메모들의 탭과 뒤로·앞으로 단추
+    fn draw_tabs(&self, ui: &mut Ui<Action>, x0: f32, width: f32) {
+        let theme = ui.theme;
+        ui.f.rect(x0, 0.0, width, TABS_H - 1.0, 0.0, theme.surface2);
+        ui.hline(x0, TABS_H - 1.0, width);
+        let mut x = x0 + 8.0;
+        for (glyph, name, step, action) in [("←", "뒤로", -1, Action::Back), ("→", "앞으로", 1, Action::Forward)] {
+            let rect = Rect::new(x, 5.0, 26.0, TOOL_H);
+            let enabled = self.can_go(step);
+            let hot = enabled && ui.hot(rect);
+            ui.f.rect(rect.x, rect.y, rect.w, rect.h, RADIUS, theme.surface);
+            if hot {
+                ui.f.rect(rect.x, rect.y, rect.w, rect.h, RADIUS, theme.hover);
+            }
+            let fade = |c: webos::gui::Color| if enabled { c } else { c.alpha((c.0 & 0xff) as u8 / 2) };
+            ui.f.frame(rect.x, rect.y, rect.w, rect.h, RADIUS, fade(if hot { theme.line_strong } else { theme.line }), 1.0);
+            ui.f.styled(rect.x + 13.0, rect.mid_y(), 12.0, fade(theme.text), Align::Center, Style::PLAIN, glyph);
+            if enabled {
+                ui.target(rect, Role::Button, false, name, action);
+            } else {
+                ui.f.region(rect.x, rect.y, rect.w, rect.h, Role::Button, false, true, name);
+            }
+            x += 30.0;
+        }
+        let strip = Rect::new(x, 0.0, (x0 + width - 8.0 - x).max(0.0), TABS_H - 1.0);
+        if self.tabs.is_empty() || strip.w < 20.0 {
+            return;
+        }
+        let count = self.tabs.len() as f32;
+        let tab_w = ((strip.w - 2.0 * (count - 1.0)) / count).clamp(64.0, 160.0);
+        // 탭이 넘치면 지금 탭이 보이도록 왼쪽으로 민다.
+        let at = self.current.as_ref().and_then(|cur| self.tabs.iter().position(|tab| tab == cur)).unwrap_or(0) as f32;
+        let offset = (at * (tab_w + 2.0) + tab_w - strip.w).max(0.0);
+        ui.clip(strip);
+        for (i, path) in self.tabs.iter().enumerate() {
+            let rect = Rect::new(strip.x + i as f32 * (tab_w + 2.0) - offset, 5.0, tab_w, TOOL_H);
+            let selected = self.current.as_deref() == Some(path.as_str());
+            if selected {
+                ui.f.rect(rect.x, rect.y, rect.w, rect.h, RADIUS, theme.surface);
+                ui.f.frame(rect.x, rect.y, rect.w, rect.h, RADIUS, theme.line, 1.0);
+            } else if ui.hot(rect) {
+                ui.f.rect(rect.x, rect.y, rect.w, rect.h, RADIUS, theme.hover);
+            }
+            let name = shown(path);
+            ui.label(rect.x + 10.0, rect.mid_y(), 12.5, if selected { theme.text } else { theme.muted }, Style::PLAIN, rect.w - 34.0, name);
+            ui.target(rect, Role::Tab, selected, name, Action::Tab(path.clone()));
+            let close = Rect::new(rect.right() - 22.0, rect.y + 4.0, 18.0, 18.0);
+            ui.close_button(close, false, &format!("{name} 탭 닫기"), Action::CloseTab(path.clone()));
+        }
+        ui.unclip();
+    }
+
+    // ───────────── 입력 ─────────────
+
+    fn hit_at(&self, at: Option<(f32, f32)>) -> Option<usize> {
+        let at = at?;
+        self.hits.iter().rposition(|(rect, _)| rect.contains(at))
+    }
+
+    fn show_menu(&mut self, at: (f32, f32), items: Vec<(MenuItem, Option<Action>)>) {
+        self.menu = Some((at, items));
+    }
+
+    /// 우클릭한 자리에 맞는 메뉴
+    fn context_menu(&mut self, action: Action, at: (f32, f32)) {
+        let item = |label: &str, action: Action| (MenuItem::new(label), Some(action));
+        let danger = |label: &str, action: Action| (MenuItem::danger(label), Some(action));
+        let separator = || (MenuItem::separator(), None);
+        let items = match action {
+            Action::Open(path) => {
+                let mut items = vec![item("열기", Action::Open(path.clone()))];
+                if kind_of(&path) == Kind::Note {
+                    items.push(item("이름 바꾸기", Action::RenameNote(path.clone())));
+                }
+                items.extend([item("다른 폴더로 옮기기…", Action::MoveMenu(path.clone())), separator(), danger("삭제…", Action::AskDelete(path))]);
+                items
+            }
+            Action::Dir(path) => {
+                self.active_dir = path.clone();
+                vec![
+                    item("여기에 새 메모", Action::NewNoteIn(path.clone())),
+                    item("여기에 새 폴더", Action::NewFolderIn(path.clone())),
+                    separator(),
+                    item("이름 바꾸기", Action::RenameDir(path.clone())),
+                    item("다른 폴더로 옮기기…", Action::MoveMenu(path.clone())),
+                    danger("삭제…", Action::AskDelete(path)),
+                ]
+            }
+            Action::TreeBlank => {
+                self.active_dir.clear();
+                vec![item("새 메모", Action::NewNoteIn(String::new())), item("새 폴더", Action::NewFolderIn(String::new()))]
+            }
+            Action::Tab(path) | Action::CloseTab(path) => vec![
+                item("탭 닫기", Action::CloseTab(path.clone())),
+                (MenuItem::new("다른 탭 모두 닫기").disabled_if(self.tabs.len() < 2), Some(Action::CloseOthers(path))),
+            ],
+            _ => return,
+        };
+        self.show_menu(at, items);
+    }
+
+    fn perform(&mut self, action: Action, at: (f32, f32), clicks: i32) {
+        match action {
+            Action::NewNote => self.new_note(&self.active_dir.clone()),
+            Action::NewFolder => self.new_folder(&self.active_dir.clone()),
+            Action::NewNoteIn(dir) => {
+                self.active_dir = dir.clone();
+                self.new_note(&dir);
+            }
+            Action::NewFolderIn(dir) => self.new_folder(&dir),
+            Action::FormatMenu => {
+                let items = FORMATS.iter().map(|&(ext, name)| (MenuItem::new(name), Some(Action::SetFormat(ext)))).collect();
+                self.show_menu(at, items);
+            }
+            Action::SetFormat(ext) => self.format = ext,
+            Action::Open(path) | Action::Tab(path) => self.open(&path, true),
+            Action::Dir(path) => {
+                self.active_dir = path.clone();
+                if !self.collapsed.remove(&path) {
+                    self.collapsed.insert(path.clone());
+                }
+                // 두 번 누르면 이름을 바꾼다.
+                if clicks == 2 {
+                    self.rename_dir_start(&path);
+                }
+            }
+            Action::TreeBlank => self.active_dir.clear(),
+            Action::CloseTab(path) => self.close_tab(&path),
+            Action::CloseOthers(path) => {
+                self.open(&path, true);
+                self.tabs.retain(|tab| *tab == path);
+            }
+            Action::Back => self.go(-1),
+            Action::Forward => self.go(1),
+            Action::AskDelete(path) => self.confirming = Some(path),
+            Action::Delete => {
+                if let Some(path) = self.confirming.clone() {
+                    self.remove(&path);
+                }
+            }
+            Action::CancelDelete => self.confirming = None,
+            Action::RenameNote(path) => {
+                self.open(&path, true);
+                self.focus = Some((TITLE, true));
+            }
+            Action::RenameDir(path) => self.rename_dir_start(&path),
+            Action::MoveMenu(path) => {
+                // 옮길 수 있는 폴더들을 메뉴로 보여 준다.
+                let dirs = std::iter::once("").chain(self.entries.iter().filter(|e| e.kind == Kind::Dir).map(|e| e.path.as_str()));
+                let mut items: Vec<(MenuItem, Option<Action>)> = dirs
+                    .filter(|dir| vault::move_problem(&path, dir, &self.names_in(dir)).is_none())
+                    .map(|dir| (MenuItem::new(if dir.is_empty() { "보관함 맨 위" } else { dir }), Some(Action::Move(path.clone(), dir.to_string()))))
+                    .collect();
+                if items.is_empty() {
+                    items.push((MenuItem::new("옮길 수 있는 폴더가 없습니다").disabled_if(true), None));
+                }
+                self.show_menu(at, items);
+            }
+            Action::Move(path, dest) => self.move_to(&path, &dest),
+        }
     }
 
     /// 입력 하나를 처리한다. 화면을 다시 그려야 하면 true.
@@ -300,37 +1040,92 @@ impl Notepad {
         match event {
             Event::Resize { w, h, dark } => {
                 (self.w, self.h, self.dark) = (w, h, dark);
-                self.scroll = self.scroll.min(self.max_scroll());
+                self.tree_scroll = self.tree_scroll.min(self.max_scroll());
             }
-            Event::PointerDown { x, y, button: 0 } if x < self.side() => {
-                if y < BAR {
-                    let button = self.widths.of(&self.window, &[NEW_LABEL], 13.0, false)[0] + 24.0;
-                    if x >= PAD && x < PAD + button {
-                        self.create();
-                    }
-                } else if let Some(name) = self.files.get(((y - BAR + self.scroll) / ROW) as usize).cloned() {
-                    if self.current.as_deref() != Some(name.as_str()) {
-                        self.open(&name);
-                    }
+            Event::PointerMove { x, y } => {
+                self.mouse = Some((x, y));
+                return self.hit_at(self.mouse) != self.hot;
+            }
+            Event::PointerLeave => {
+                self.mouse = None;
+                return self.hot.is_some();
+            }
+            Event::PointerDown { x, y, button, clicks } => {
+                self.mouse = Some((x, y));
+                let Some(action) = self.hit_at(self.mouse).map(|i| self.hits[i].1.clone()) else { return false };
+                match button {
+                    0 => self.perform(action, (x, y), clicks),
+                    // 탭은 가운데 단추로 누르면 닫힌다.
+                    1 => match action {
+                        Action::Tab(path) => self.close_tab(&path),
+                        _ => return false,
+                    },
+                    _ => self.context_menu(action, (x, y)),
                 }
             }
             Event::Wheel { x, dy, .. } if x < self.side() => {
-                let to = (self.scroll + dy).clamp(0.0, self.max_scroll());
-                if to == self.scroll {
+                let to = (self.tree_scroll + dy).clamp(0.0, self.max_scroll());
+                if to == self.tree_scroll {
                     return false;
                 }
-                self.scroll = to;
+                self.tree_scroll = to;
             }
-            Event::Input { field: EDITOR } => {
-                if let Err(e) = self.typed() {
-                    self.error = Some(format!("글을 읽지 못했습니다: {}", webos::describe(&e)));
+            Event::Input { field } => match field {
+                EDITOR => self.typed(),
+                TITLE => self.title_draft = self.window.text(TITLE).unwrap_or_default(),
+                DIR_NAME => self.dir_draft = self.window.text(DIR_NAME).unwrap_or_default(),
+                SEARCH => {
+                    self.query = self.window.text(SEARCH).unwrap_or_default();
+                    self.tree_scroll = 0.0;
+                }
+                _ => return false,
+            },
+            Event::FieldFocus { field, on } => {
+                self.focused = if on { Some(field) } else { self.focused.filter(|f| *f != field) };
+                // 칸을 벗어나면 적어 둔 이름으로 바꾼다.
+                if !on && field == TITLE {
+                    self.commit_title();
+                } else if !on && field == DIR_NAME {
+                    self.commit_dir_name();
                 }
             }
-            Event::Key { key: Key::Char(c), mods } if mods.command() && c.eq_ignore_ascii_case(&'s') => self.save(),
-            Event::Focus(true) => self.sync(),
+            Event::Key { key: Key::Enter, .. } if self.focused == Some(TITLE) => {
+                self.commit_title();
+                self.focus = Some((EDITOR, false));
+            }
+            Event::Key { key: Key::Enter, .. } if self.focused == Some(DIR_NAME) => self.commit_dir_name(),
+            Event::Key { key: Key::Escape, .. } => {
+                if self.focused == Some(TITLE) {
+                    self.sync_title();
+                    self.focus = Some((EDITOR, false));
+                } else if self.renaming_dir.take().is_none() && self.confirming.take().is_none() {
+                    return false;
+                }
+            }
+            Event::Key { key, mods } if mods.command() => match key {
+                Key::Char(c) if c.eq_ignore_ascii_case(&'s') && !mods.alt => self.save(),
+                // 어디에 커서가 있든 Ctrl/Cmd+Alt+N 으로 새 메모를 만든다. (Ctrl/Cmd+N 은 브라우저가 새 창에 쓴다.)
+                Key::Char(c) if c.eq_ignore_ascii_case(&'n') && mods.alt => self.new_note(&self.active_dir.clone()),
+                Key::Left if mods.alt => self.go(-1),
+                Key::Right if mods.alt => self.go(1),
+                _ => return false,
+            },
+            Event::Menu(chosen) => {
+                let actions = std::mem::take(&mut self.menu_actions);
+                match chosen.and_then(|i| actions.into_iter().nth(i).flatten()) {
+                    Some(action) => self.perform(action, self.mouse.unwrap_or((0.0, 0.0)), 1),
+                    None => return false,
+                }
+            }
+            Event::Focus(true) => {
+                if !self.dirty {
+                    self.load();
+                }
+            }
             // 다른 창으로 넘어가면 기다리지 않고 바로 저장한다 (곧바로 다른 프로그램이 이 파일을 읽을 수 있다).
             Event::Focus(false) => self.save(),
             Event::Close => {
+                self.commit_title();
                 self.save();
                 process::exit(0);
             }
@@ -340,14 +1135,10 @@ impl Notepad {
     }
 }
 
-/// 목록과 제목에 보이는 이름: .md는 떼고, 다른 확장자는 둔다.
-fn display_name(path: &str) -> String {
-    path.strip_suffix(".md").unwrap_or(path).to_string()
-}
-
 fn main() {
     webos::init();
-    let window = match Window::open("메모장", 760, 500) {
+    let (w, h) = (900, 580);
+    let window = match Window::open("메모장", w, h) {
         Ok(window) => window,
         Err(e) => {
             eprintln!("notepad: cannot open a window: {}", webos::describe(&e));
@@ -355,31 +1146,58 @@ fn main() {
         }
     };
     let home = env::var("HOME").unwrap_or_else(|_| "/home/guest".into());
-    let mut app = Notepad {
+    let mut app = App {
         window,
-        widths: Widths { known: HashMap::new() },
-        w: 760.0,
-        h: 500.0,
+        widths: Widths::default(),
+        w: w as f32,
+        h: h as f32,
         dark: false,
-        dir: Path::new(&home).join("notes"),
-        files: Vec::new(),
+        root: Path::new(&home).join("notes"),
+        entries: Vec::new(),
+        texts: HashMap::new(),
         current: None,
         text: String::new(),
         dirty: false,
-        error: None,
-        scroll: 0.0,
-        focus_editor: false,
+        tabs: Vec::new(),
+        trail: Vec::new(),
+        trail_at: 0,
+        stay_empty: false,
+        active_dir: String::new(),
+        collapsed: HashSet::from([ATTACHMENTS.to_string()]),
+        query: String::new(),
+        format: FORMATS[0].0,
+        title_draft: String::new(),
+        renaming_dir: None,
+        dir_draft: String::new(),
+        confirming: None,
+        error: String::new(),
+        tree_scroll: 0.0,
+        mouse: None,
+        focused: None,
+        focus: None,
+        menu: None,
+        menu_actions: Vec::new(),
+        hits: Vec::new(),
+        hot: None,
     };
-    app.refresh();
     // 실행할 때 파일 이름을 주면 그것을 연다: notepad 장보기.md
-    if let Some(name) = env::args().nth(1) {
-        app.open(&name);
+    match env::args().nth(1) {
+        Some(name) => {
+            app.stay_empty = true;
+            app.load();
+            if app.kind(&name).is_some_and(|kind| kind != Kind::Dir) {
+                app.open(&name, true);
+            } else {
+                app.error = format!("그런 파일이 없습니다: {name}");
+            }
+        }
+        None => app.load(),
     }
     let frame = app.draw();
     let _ = app.window.present(&frame);
     loop {
         // 저장할 것이 있으면 입력이 잠시 멈추기를 기다렸다가 저장한다.
-        let event = if app.dirty && app.error.is_none() { app.window.next_event_within(SAVE_DELAY_MS) } else { app.window.next_event() };
+        let event = if app.dirty && app.error.is_empty() { app.window.next_event_within(SAVE_DELAY_MS) } else { app.window.next_event() };
         let mut redraw = match event {
             Some(event) => app.handle(event),
             None if app.dirty => {

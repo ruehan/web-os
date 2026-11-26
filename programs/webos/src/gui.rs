@@ -41,11 +41,76 @@ impl Color {
     }
 }
 
+impl Color {
+    /// 같은 색을 다른 불투명도(0~255)로
+    pub const fn alpha(self, a: u8) -> Color {
+        Color((self.0 & !0xff) | a as u32)
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Align {
     Left = 0,
     Center = 1,
     Right = 2,
+}
+
+/// 글자의 꾸밈
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+pub struct Style {
+    pub bold: bool,
+    /// 고정폭 글꼴
+    pub mono: bool,
+    pub italic: bool,
+    /// 가운데 줄 긋기
+    pub strike: bool,
+    pub underline: bool,
+}
+
+impl Style {
+    pub const PLAIN: Style = Style { bold: false, mono: false, italic: false, strike: false, underline: false };
+    pub const BOLD: Style = Style { bold: true, ..Style::PLAIN };
+    pub const MONO: Style = Style { mono: true, ..Style::PLAIN };
+}
+
+/// 그림 속의 자리가 무엇인지 (`Frame::region`)
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Role {
+    Button = 0,
+    Tab = 1,
+    TreeItem = 2,
+    Option = 3,
+    Checkbox = 4,
+    Link = 5,
+}
+
+/// 메뉴의 한 줄 (`Frame::menu`)
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
+pub struct MenuItem {
+    pub label: String,
+    pub disabled: bool,
+    /// 지우기처럼 되돌릴 수 없는 일
+    pub danger: bool,
+    pub separator: bool,
+}
+
+impl MenuItem {
+    pub fn new(label: &str) -> MenuItem {
+        MenuItem { label: label.to_string(), ..MenuItem::default() }
+    }
+
+    pub fn danger(label: &str) -> MenuItem {
+        MenuItem { danger: true, ..MenuItem::new(label) }
+    }
+
+    pub fn separator() -> MenuItem {
+        MenuItem { separator: true, ..MenuItem::default() }
+    }
+
+    pub fn disabled_if(mut self, disabled: bool) -> MenuItem {
+        self.disabled = disabled;
+        self
+    }
 }
 
 /// 글 입력 칸 하나. `Frame::field`로 놓는다.
@@ -64,10 +129,15 @@ pub struct Field<'a> {
     pub multiline: bool,
     /// 고정폭 글꼴
     pub mono: bool,
+    pub bold: bool,
     /// 이 묶음을 그릴 때 커서를 이 칸으로 옮긴다. 옮기고 싶을 때의 묶음 하나에만 켠다.
     pub focus: bool,
+    /// `focus`와 함께: 글 전체를 고른 채로 커서를 옮긴다.
+    pub select: bool,
     /// 화면 낭독기 등에 알려 줄 이름
     pub label: &'a str,
+    /// 비어 있을 때 흐리게 보이는 글
+    pub placeholder: &'a str,
 }
 
 /// 한 번에 그릴 것들의 묶음
@@ -137,12 +207,51 @@ impl Frame {
     /// 글자. `y`는 글자의 세로 가운데, `x`는 `align`에 따라 왼쪽 끝·가운데·오른쪽 끝이다.
     #[allow(clippy::too_many_arguments)]
     pub fn text(&mut self, x: f32, y: f32, size: f32, color: Color, align: Align, bold: bool, text: &str) {
+        self.styled(x, y, size, color, align, Style { bold, ..Style::PLAIN }, text);
+    }
+
+    /// `text`와 같되 꾸밈(고정폭, 기울임, 줄 긋기)을 정한다.
+    #[allow(clippy::too_many_arguments)]
+    pub fn styled(&mut self, x: f32, y: f32, size: f32, color: Color, align: Align, style: Style, text: &str) {
         self.op(6);
         self.f(&[x, y, size]);
         self.u(color.0);
-        self.buf.push(align as u8 | if bold { 4 } else { 0 });
+        self.buf.push(
+            align as u8
+                | (style.bold as u8) << 2
+                | (style.mono as u8) << 3
+                | (style.italic as u8) << 4
+                | (style.strike as u8) << 5
+                | (style.underline as u8) << 6,
+        );
+        self.s(text);
+    }
+
+    fn s(&mut self, text: &str) {
         self.u(text.len() as u32);
         self.buf.extend_from_slice(text.as_bytes());
+    }
+
+    /// 그림의 이 자리가 무엇인지 알린다 (그려지는 것은 없다). 화면 낭독기가 읽고 누를 수 있게 된다.
+    /// `on`은 골라진 탭·항목, 눌려 있는 단추, 체크된 상자를 뜻한다.
+    #[allow(clippy::too_many_arguments)]
+    pub fn region(&mut self, x: f32, y: f32, w: f32, h: f32, role: Role, on: bool, disabled: bool, label: &str) {
+        self.op(10);
+        self.f(&[x, y, w, h]);
+        self.buf.push(role as u8);
+        self.buf.push(on as u8 | (disabled as u8) << 1);
+        self.s(label);
+    }
+
+    /// 이 자리에 시스템의 메뉴를 띄운다. 고른 것은 `Event::Menu`로 온다. 띄우고 싶을 때의 묶음 하나에만 넣는다.
+    pub fn menu(&mut self, x: f32, y: f32, items: &[MenuItem]) {
+        self.op(11);
+        self.f(&[x, y]);
+        self.u(items.len() as u32);
+        for item in items {
+            self.buf.push(item.disabled as u8 | (item.danger as u8) << 1 | (item.separator as u8) << 2);
+            self.s(&item.label);
+        }
     }
 
     /// 이 뒤로는 사각형 안에만 그려진다. 다 그리면 `unclip`을 부른다.
@@ -163,9 +272,11 @@ impl Frame {
         self.f(&[field.x, field.y, field.w, field.h, field.size]);
         self.u(field.color.0);
         self.u(field.background.0);
-        self.buf.push(field.multiline as u8 | (field.mono as u8) << 1 | (field.focus as u8) << 2);
-        self.u(field.label.len() as u32);
-        self.buf.extend_from_slice(field.label.as_bytes());
+        self.buf.push(
+            field.multiline as u8 | (field.mono as u8) << 1 | (field.focus as u8) << 2 | (field.bold as u8) << 3 | (field.select as u8) << 4,
+        );
+        self.s(field.label);
+        self.s(field.placeholder);
     }
 }
 
@@ -205,8 +316,8 @@ impl Mods {
 pub enum Event {
     /// 창의 안쪽 크기나 테마가 바뀌었다. 창이 열린 직후에도 한 번 온다.
     Resize { w: f32, h: f32, dark: bool },
-    /// `button`: 0 왼쪽, 1 가운데, 2 오른쪽
-    PointerDown { x: f32, y: f32, button: i32 },
+    /// `button`: 0 왼쪽, 1 가운데, 2 오른쪽. `clicks`: 같은 자리를 연달아 누른 횟수 (두 번 누르기는 2).
+    PointerDown { x: f32, y: f32, button: i32, clicks: i32 },
     PointerMove { x: f32, y: f32 },
     PointerUp { x: f32, y: f32 },
     Key { key: Key, mods: Mods },
@@ -218,6 +329,12 @@ pub enum Event {
     Input { field: u32 },
     /// 창이 입력을 받게 됐거나(true) 다른 창으로 넘어갔다(false).
     Focus(bool),
+    /// 입력 칸에 커서가 들어갔거나(true) 나갔다(false).
+    FieldFocus { field: u32, on: bool },
+    /// `Frame::menu`로 띄운 메뉴에서 고른 줄의 순번. 고르지 않고 닫았으면 `None`.
+    Menu(Option<usize>),
+    /// 포인터가 그림 밖으로 나갔다.
+    PointerLeave,
 }
 
 fn decode(raw: [i32; 4]) -> Option<Event> {
@@ -226,7 +343,7 @@ fn decode(raw: [i32; 4]) -> Option<Event> {
     let (x, y) = (a as f32 / 16.0, b as f32 / 16.0);
     Some(match kind {
         1 => Event::Resize { w: a as f32, h: b as f32, dark: c != 0 },
-        2 => Event::PointerDown { x, y, button: c },
+        2 => Event::PointerDown { x, y, button: c & 0xff, clicks: (c >> 8) + 1 },
         3 => Event::PointerMove { x, y },
         4 => Event::PointerUp { x, y },
         5 => Event::Key {
@@ -250,11 +367,15 @@ fn decode(raw: [i32; 4]) -> Option<Event> {
         7 => Event::Wheel { x, y, dy: c as f32 },
         8 => Event::Input { field: a as u32 },
         9 => Event::Focus(a != 0),
+        10 => Event::FieldFocus { field: a as u32, on: b != 0 },
+        11 => Event::Menu(usize::try_from(a).ok()),
+        12 => Event::PointerLeave,
         _ => return None,
     })
 }
 
 /// 이 프로세스의 창. 프로세스마다 하나만 열 수 있다.
+#[derive(Clone, Copy)]
 pub struct Window(());
 
 impl Window {
@@ -326,12 +447,17 @@ impl Window {
     /// 글들이 화면에서 차지할 폭. 글자를 그리는 것은 화면 쪽이라 폭도 화면 쪽에 물어봐야 안다.
     /// 물어볼 때마다 프로세스가 잠깐 멈추므로, 여러 글을 한 번에 묻는 것이 좋다.
     pub fn measure(&self, texts: &[&str], size: f32, bold: bool) -> Vec<f32> {
+        self.measure_styled(texts, size, Style { bold, ..Style::PLAIN })
+    }
+
+    /// `measure`와 같되 꾸밈(고정폭, 기울임)까지 정한다.
+    pub fn measure_styled(&self, texts: &[&str], size: f32, style: Style) -> Vec<f32> {
         if texts.is_empty() {
             return Vec::new();
         }
         let mut req = Vec::new();
         req.extend_from_slice(&size.to_le_bytes());
-        req.push(bold as u8);
+        req.push(style.bold as u8 | (style.mono as u8) << 1 | (style.italic as u8) << 2);
         for text in texts {
             req.extend_from_slice(&(text.len() as u32).to_le_bytes());
             req.extend_from_slice(text.as_bytes());

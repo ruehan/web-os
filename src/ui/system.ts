@@ -1,6 +1,6 @@
 // 화면 쪽에서 커널을 다루는 창구. 커널 Worker를 띄우고, 이벤트를 화면이 구독할 수 있는
 // 상태(프로세스 목록, 로그)와 터미널 세션으로 바꿔 준다.
-import { decodeMeasure, encodeWidths } from '../kernel/gui.ts'
+import { decodeMeasure, encodeWidths, type TextStyle } from '../kernel/gui.ts'
 import { createSignal } from 'solid-js'
 import { createStore, produce } from 'solid-js/store'
 import type { FsEntry, FsRequest, FsResult, KernelCommand, KernelEvent, TraceRecord } from '../kernel/abi.ts'
@@ -135,7 +135,14 @@ export interface SurfaceView {
 }
 
 /** 프로세스의 창에 글자를 그릴 때 쓰는 글꼴 지정. 폭을 잴 때와 그릴 때가 같아야 한다. */
-export const canvasFont = (size: number, bold: boolean, family: string) => `${bold ? 600 : 400} ${size}px ${family}`
+export const canvasFont = (size: number, style: TextStyle, family: string, monoFamily: string) =>
+  `${style.italic ? 'italic ' : ''}${style.bold ? 600 : 400} ${size}px ${style.mono ? monoFamily : family}`
+
+/** 화면의 글꼴 이름들 (본문용, 고정폭). 캔버스에는 CSS 변수를 그대로 쓸 수 없어 풀어서 넘긴다. */
+export function fontFamilies(): [string, string] {
+  const style = getComputedStyle(document.documentElement)
+  return [style.getPropertyValue('--sans').trim() || 'sans-serif', style.getPropertyValue('--mono').trim() || 'monospace']
+}
 
 export function createSystem() {
   const [procs, setProcs] = createStore<Proc[]>([])
@@ -258,9 +265,9 @@ export function createSystem() {
         // 프로세스는 답이 올 때까지 멈춰 있으므로, 잴 수 없더라도 반드시 답한다.
         let widths: number[] = []
         try {
-          const { size, bold, texts } = decodeMeasure(ev.data)
+          const { size, texts, ...style } = decodeMeasure(ev.data)
           ruler ??= document.createElement('canvas').getContext('2d')
-          if (ruler) ruler.font = canvasFont(size, bold, getComputedStyle(document.body).fontFamily)
+          if (ruler) ruler.font = canvasFont(size, style, ...fontFamilies())
           widths = texts.map((text) => ruler?.measureText(text).width ?? [...text].length * size * 0.6)
         } catch {
           // 형식이 틀린 요청: 빈 답을 보내면 프로그램이 어림값을 쓴다.

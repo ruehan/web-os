@@ -13,7 +13,7 @@ export const GuiEvent = {
   /** a 너비, b 높이, c 어두운 테마면 1. 창이 열린 직후와 크기·테마가 바뀔 때 온다. */
   resize: 1,
   // 포인터의 x, y는 1/16 픽셀 단위다 (POINTER_SCALE). 정수 픽셀로 반올림하면 손으로 그은 선이 계단처럼 보인다.
-  /** a x, b y, c 버튼 (0 왼쪽, 1 가운데, 2 오른쪽) */
+  /** a x, b y, c 버튼 (0 왼쪽, 1 가운데, 2 오른쪽) + 256 × (연달아 누른 횟수 - 1). 두 번 누르기는 c가 256 이상이다. */
   pointerDown: 2,
   /** a x, b y, c 눌린 버튼들 */
   pointerMove: 3,
@@ -29,6 +29,12 @@ export const GuiEvent = {
   input: 8,
   /** 창이 입력을 받게 됐거나(a = 1) 다른 창으로 넘어갔다(a = 0). */
   focus: 9,
+  /** 입력 칸에 커서가 들어갔거나(b = 1) 나갔다(b = 0). a 칸의 번호. */
+  fieldFocus: 10,
+  /** menu 명령으로 띄운 메뉴에서 고른 항목. a 항목의 순번(구분선도 센다), 고르지 않고 닫았으면 -1. */
+  menu: 11,
+  /** 포인터가 창의 그림 밖으로 나갔다 (입력 칸 위로 간 것도 포함). 마우스를 올린 표시를 지울 때 쓴다. */
+  pointerLeave: 12,
 } as const
 
 /** key 이벤트의 특수 키 */
@@ -67,10 +73,24 @@ export function keyCode(key: string): number | undefined {
 
 // ───────────── 그리기 명령 ─────────────
 
-const Op = { clear: 1, rect: 2, frame: 3, line: 4, circle: 5, text: 6, clip: 7, unclip: 8, field: 9 } as const
+const Op = { clear: 1, rect: 2, frame: 3, line: 4, circle: 5, text: 6, clip: 7, unclip: 8, field: 9, region: 10, menu: 11 } as const
 
 /** 입력 칸의 성질 (field 명령의 flags) */
-export const FieldFlag = { multiline: 1, mono: 2, focus: 4 } as const
+export const FieldFlag = { multiline: 1, mono: 2, focus: 4, bold: 8, select: 16 } as const
+
+/** 글자의 꾸밈 (text 명령의 flags에서 정렬 두 비트 다음) */
+export const TextFlag = { bold: 4, mono: 8, italic: 16, strike: 32, underline: 64 } as const
+
+/** region 명령의 역할. 화면 낭독기에 이 자리가 무엇인지 알려 준다. */
+export const REGION_ROLES = ['button', 'tab', 'treeitem', 'option', 'checkbox', 'link'] as const
+export const RegionFlag = { on: 1, disabled: 2 } as const
+export const MenuFlag = { disabled: 1, danger: 2, separator: 4 } as const
+
+export interface TextStyle {
+  bold: boolean
+  mono: boolean
+  italic: boolean
+}
 
 export type DrawOp =
   /** 창 전체를 한 색으로 채운다. */
@@ -83,7 +103,10 @@ export type DrawOp =
   | { op: 'line'; points: number[]; color: string; width: number }
   | { op: 'circle'; x: number; y: number; r: number; color: string }
   /** y는 글자의 세로 가운데다. */
-  | { op: 'text'; x: number; y: number; size: number; color: string; align: 'left' | 'center' | 'right'; bold: boolean; text: string }
+  | {
+      op: 'text'; x: number; y: number; size: number; color: string; align: 'left' | 'center' | 'right'; text: string
+      bold: boolean; mono: boolean; italic: boolean; strike: boolean; underline: boolean
+    }
   /** 이 뒤로는 사각형 안에만 그려진다 (unclip까지). 스크롤되는 목록 등에 쓴다. */
   | { op: 'clip'; x: number; y: number; w: number; h: number }
   | { op: 'unclip' }
@@ -105,10 +128,26 @@ export type DrawOp =
       background: string
       multiline: boolean
       mono: boolean
+      bold: boolean
       focus: boolean
+      /** focus와 함께: 커서를 옮기면서 글 전체를 고른다 (이름을 바꿀 때) */
+      select: boolean
       /** 화면 낭독기 등에 알려 줄 이름 */
       label: string
+      /** 비어 있을 때 흐리게 보여 줄 글 */
+      placeholder: string
     }
+  /**
+   * 그림의 이 자리가 무엇인지 알린다 (단추, 탭, 목록의 항목 …). 그려지는 것은 없다.
+   * 화면 쪽은 이 자리에 보이지 않는 요소를 놓아, 화면 낭독기가 읽고 누를 수 있게 한다.
+   * on은 역할에 따라 "골라짐"(탭, 항목), "눌려 있음"(단추), "체크됨"을 뜻한다.
+   */
+  | { op: 'region'; x: number; y: number; w: number; h: number; role: (typeof REGION_ROLES)[number]; on: boolean; disabled: boolean; label: string }
+  /**
+   * 이 자리에 시스템의 메뉴를 띄운다. 고른 결과는 menu 이벤트로 온다.
+   * 묶음을 받을 때마다 띄우므로, 프로그램은 띄우고 싶을 때의 묶음 하나에만 넣어야 한다.
+   */
+  | { op: 'menu'; x: number; y: number; items: { label: string; disabled: boolean; danger: boolean; separator: boolean }[] }
 
 const ALIGN = ['left', 'center', 'right'] as const
 /** 명령 하나가 가질 수 있는 점의 수. 망가진 묶음이 메모리를 다 쓰지 않게 막는다. */
@@ -142,6 +181,12 @@ export function decodeDrawList(data: Uint8Array): DrawOp[] {
     at += 4
     return view.getFloat32(at - 4, true)
   }
+  const str = () => {
+    const length = u32()
+    need(length)
+    at += length
+    return new TextDecoder().decode(data.subarray(at - length, at))
+  }
   while (at < data.length) {
     const op = u8()
     switch (op) {
@@ -172,11 +217,15 @@ export function decodeDrawList(data: Uint8Array): DrawOp[] {
         const [x, y, size] = [f32(), f32(), f32()]
         const color = cssColor(u32())
         const flags = u8()
-        const length = u32()
-        need(length)
-        const text = new TextDecoder().decode(data.subarray(at, at + length))
-        at += length
-        ops.push({ op: 'text', x, y, size, color, align: ALIGN[flags & 3] ?? 'left', bold: (flags & 4) !== 0, text })
+        const text = str()
+        ops.push({
+          op: 'text', x, y, size, color, align: ALIGN[flags & 3] ?? 'left', text,
+          bold: (flags & TextFlag.bold) !== 0,
+          mono: (flags & TextFlag.mono) !== 0,
+          italic: (flags & TextFlag.italic) !== 0,
+          strike: (flags & TextFlag.strike) !== 0,
+          underline: (flags & TextFlag.underline) !== 0,
+        })
         break
       }
       case Op.clip:
@@ -190,16 +239,43 @@ export function decodeDrawList(data: Uint8Array): DrawOp[] {
         const [x, y, w, h, size] = [f32(), f32(), f32(), f32(), f32()]
         const [color, background] = [cssColor(u32()), cssColor(u32())]
         const flags = u8()
-        const length = u32()
-        need(length)
-        const label = new TextDecoder().decode(data.subarray(at, at + length))
-        at += length
+        const [label, placeholder] = [str(), str()]
         ops.push({
-          op: 'field', id, x, y, w, h, size, color, background, label,
+          op: 'field', id, x, y, w, h, size, color, background, label, placeholder,
           multiline: (flags & FieldFlag.multiline) !== 0,
           mono: (flags & FieldFlag.mono) !== 0,
+          bold: (flags & FieldFlag.bold) !== 0,
           focus: (flags & FieldFlag.focus) !== 0,
+          select: (flags & FieldFlag.select) !== 0,
         })
+        break
+      }
+      case Op.region: {
+        const [x, y, w, h] = [f32(), f32(), f32(), f32()]
+        const [role, flags] = [u8(), u8()]
+        ops.push({
+          op: 'region', x, y, w, h, label: str(),
+          role: REGION_ROLES[role] ?? 'button',
+          on: (flags & RegionFlag.on) !== 0,
+          disabled: (flags & RegionFlag.disabled) !== 0,
+        })
+        break
+      }
+      case Op.menu: {
+        const [x, y] = [f32(), f32()]
+        const count = u32()
+        if (count > 256) throw new RangeError('draw list has a menu with too many items')
+        const items = []
+        for (let i = 0; i < count; i++) {
+          const flags = u8()
+          items.push({
+            label: str(),
+            disabled: (flags & MenuFlag.disabled) !== 0,
+            danger: (flags & MenuFlag.danger) !== 0,
+            separator: (flags & MenuFlag.separator) !== 0,
+          })
+        }
+        ops.push({ op: 'menu', x, y, items })
         break
       }
       default:
@@ -212,12 +288,11 @@ export function decodeDrawList(data: Uint8Array): DrawOp[] {
 // ───────────── 글자 폭 재기 ─────────────
 //
 // 글자를 그리는 것은 화면 쪽이라, 글이 차지할 폭도 화면 쪽만 안다. 프로그램이 배치를 계산할 수 있게
-// 글들의 폭을 물어보는 호출(guimeasure)이 있다. 요청: f32 글자 크기, u8 굵게, 그리고 (u32 길이, 글)의 나열.
+// 글들의 폭을 물어보는 호출(guimeasure)이 있다. 요청: f32 글자 크기, u8 꾸밈(1 굵게, 2 고정폭, 4 기울임), 그리고 (u32 길이, 글)의 나열.
 // 응답: 글마다 f32 폭.
 
-export interface MeasureRequest {
+export interface MeasureRequest extends TextStyle {
   size: number
-  bold: boolean
   texts: string[]
 }
 
@@ -233,7 +308,8 @@ export function decodeMeasure(data: Uint8Array): MeasureRequest {
     texts.push(new TextDecoder().decode(data.subarray(at, at + length)))
     at += length
   }
-  return { size: view.getFloat32(0, true), bold: view.getUint8(4) !== 0, texts }
+  const flags = view.getUint8(4)
+  return { size: view.getFloat32(0, true), bold: (flags & 1) !== 0, mono: (flags & 2) !== 0, italic: (flags & 4) !== 0, texts }
 }
 
 export const encodeWidths = (widths: number[]) => new Uint8Array(Float32Array.from(widths).buffer)

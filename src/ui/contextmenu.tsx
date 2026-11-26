@@ -15,6 +15,8 @@ interface OpenMenu {
   x: number
   y: number
   items: MenuItem[]
+  /** 메뉴가 닫힐 때 (고르든 말든) 한 번 불린다. */
+  onClose?: () => void
 }
 
 const [menu, setMenu] = createSignal<OpenMenu | null>(null)
@@ -30,10 +32,21 @@ export function showMenu(e: MouseEvent, items: (MenuItem | false | undefined)[])
   if (!tidy.some((item) => item !== 'separator')) return
   e.preventDefault()
   e.stopPropagation()
+  closeMenu()
   setMenu({ x: e.clientX, y: e.clientY, items: tidy })
 }
 
-export const closeMenu = () => setMenu(null)
+/** 화면의 정해진 자리에 메뉴를 띄운다 (프로세스가 띄워 달라고 한 메뉴). */
+export function showMenuAt(x: number, y: number, items: MenuItem[], onClose?: () => void): void {
+  closeMenu()
+  setMenu({ x, y, items, onClose })
+}
+
+export function closeMenu() {
+  const open = menu()
+  setMenu(null)
+  open?.onClose?.()
+}
 
 /** 글을 입력하는 칸인가. 이런 곳에서는 브라우저의 기본 메뉴(붙여넣기, 맞춤법 등)가 더 쓸모 있다. */
 export const isTextField = (target: EventTarget | null) =>

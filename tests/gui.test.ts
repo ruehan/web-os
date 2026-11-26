@@ -223,7 +223,29 @@ describe('draw lists', () => {
   it('decodes text with its alignment and weight', () => {
     const text = new TextEncoder().encode('한글 abc')
     const data = bytes([6], Float32Array.of(10, 20, 13), Uint32Array.of(0xff0000ff), [2 | 4], Uint32Array.of(text.length), text)
-    expect(decodeDrawList(data)).toEqual([{ op: 'text', x: 10, y: 20, size: 13, color: '#ff0000', align: 'right', bold: true, text: '한글 abc' }])
+    const plain = { mono: false, italic: false, strike: false, underline: false }
+    expect(decodeDrawList(data)).toEqual([{ op: 'text', x: 10, y: 20, size: 13, color: '#ff0000', align: 'right', bold: true, ...plain, text: '한글 abc' }])
+    // 꾸밈: 고정폭 8, 기울임 16, 가운데 줄 32, 밑줄 64
+    const styled = bytes([6], Float32Array.of(0, 0, 12), Uint32Array.of(0xff), [8 | 16 | 32 | 64], Uint32Array.of(1), [65])
+    expect(decodeDrawList(styled)[0]).toMatchObject({ bold: false, mono: true, italic: true, strike: true, underline: true, color: '#000000' })
+  })
+
+  it('decodes regions and menus, which draw nothing themselves', () => {
+    const str = (text: string) => bytes(Uint32Array.of(new TextEncoder().encode(text).length), new TextEncoder().encode(text))
+    const region = bytes([10], Float32Array.of(1, 2, 30, 40), [1, 1], str('회의록'))
+    expect(decodeDrawList(region)).toEqual([{ op: 'region', x: 1, y: 2, w: 30, h: 40, role: 'tab', on: true, disabled: false, label: '회의록' }])
+    const menu = bytes([11], Float32Array.of(5, 6), Uint32Array.of(3), [0], str('열기'), [4], str(''), [1 | 2], str('삭제…'))
+    expect(decodeDrawList(menu)).toEqual([
+      {
+        op: 'menu', x: 5, y: 6,
+        items: [
+          { label: '열기', disabled: false, danger: false, separator: false },
+          { label: '', disabled: false, danger: false, separator: true },
+          { label: '삭제…', disabled: true, danger: true, separator: false },
+        ],
+      },
+    ])
+    expect(() => decodeDrawList(bytes([11], Float32Array.of(0, 0), Uint32Array.of(100000)))).toThrow('too many items')
   })
 
   it('rejects truncated or unknown commands instead of drawing garbage', () => {

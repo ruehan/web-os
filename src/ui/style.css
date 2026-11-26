@@ -356,6 +356,21 @@ button {
   font-family: inherit;
 }
 
+/* 그림 속 단추·항목의 자리를 알려 주는 보이지 않는 요소들. 누르는 것은 아래의 그림이 받는다. */
+.surface-regions,
+.surface-region {
+  position: absolute;
+  pointer-events: none;
+}
+
+.surface-regions {
+  inset: 0;
+}
+
+.surface-field::placeholder {
+  color: var(--muted);
+}
+
 .surface {
   display: block;
   width: 100%;

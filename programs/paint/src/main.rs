@@ -200,7 +200,7 @@ impl Paint {
             Event::Resize { w, h, dark } => {
                 (self.w, self.h, self.dark) = (w, h, dark);
             }
-            Event::PointerDown { x, y, button: 0 } => {
+            Event::PointerDown { x, y, button: 0, .. } => {
                 let (tools, bar) = self.layout();
                 if y < bar {
                     let hit = tools.iter().find(|t| x >= t.x && x < t.x + t.w && y >= t.y && y < t.y + ROW);
