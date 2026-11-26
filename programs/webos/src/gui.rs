@@ -243,6 +243,15 @@ impl Frame {
         self.s(label);
     }
 
+    /// 입력 칸의 커서를 옮긴다 (`start`와 `end`가 다르면 그 사이를 고른다). 자리는 글의 바이트 위치다.
+    /// 화면 쪽은 커서가 보이도록 칸을 스크롤하고 초점을 준다. 옮기고 싶을 때의 묶음 하나에만 넣는다.
+    pub fn select(&mut self, field: u32, start: usize, end: usize) {
+        self.op(12);
+        self.u(field);
+        self.u(start as u32);
+        self.u(end as u32);
+    }
+
     /// 이 자리에 시스템의 메뉴를 띄운다. 고른 것은 `Event::Menu`로 온다. 띄우고 싶을 때의 묶음 하나에만 넣는다.
     pub fn menu(&mut self, x: f32, y: f32, items: &[MenuItem]) {
         self.op(11);

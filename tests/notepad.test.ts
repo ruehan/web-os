@@ -129,7 +129,7 @@ describe('notepad', () => {
     expect(pad.shown()).toBe('- 우유\n- 빵')
     // 글의 내용은 그리기 명령에 들어 있지 않다. 칸의 자리와 모양만 있다.
     expect(pad.field(EDITOR)).toEqual({
-      op: 'field', id: EDITOR, x: 264, y: 93, w: 622, h: 439, size: 13, color: '#191a20', background: '#ffffff',
+      op: 'field', id: EDITOR, x: 264, y: 95, w: 622, h: 437, size: 13, color: '#191a20', background: '#ffffff',
       multiline: true, mono: true, bold: false, focus: true, select: false, label: '메모 내용', placeholder: '',
     })
     expect(pad.field(TITLE)).toMatchObject({ multiline: false, bold: true, size: 15, label: '제목', focus: false })
@@ -393,6 +393,159 @@ describe('notepad', () => {
     pad.send(GuiEvent.menu, -1)
     await new Promise((r) => setTimeout(r, 60))
     expect(exists('폴더/제목 없음 2.md')).toBe(false)
+  })
+
+  it('draws markdown beside the editor or instead of it', async () => {
+    write('글.md', '# 큰 제목\n\n**굵게** 그리고 `코드`\n\n- 하나\n- 둘\n\n| 이름 | 값 |\n|---|---|\n| 가 | 1 |')
+    write('그냥.txt', '# 제목 아님')
+    const pad = await openNotepad('글.md')
+    // 왼쪽의 목차에도 제목이 나오므로, 본문 쪽(x > 250)의 것만 본다.
+    const text = (t: string) => pad.latest().find((op) => op.op === 'text' && op.text === t && op.x > 250) as Extract<DrawOp, { op: 'text' }> | undefined
+    // 처음에는 편집만: 글의 내용은 그려지지 않는다.
+    expect(pad.region('편집')).toMatchObject({ on: true })
+    expect(text('큰 제목')).toBeUndefined()
+
+    pad.press('나란히')
+    await pad.until(() => text('큰 제목'), 'the preview')
+    // 본문(폭 650)을 반으로 나눠 왼쪽에 입력 칸, 오른쪽에 미리보기.
+    expect(pad.field(EDITOR)).toMatchObject({ x: 264, w: 325 - 28 })
+    expect(text('큰 제목')).toMatchObject({ x: 250 + 325 + 20, size: 22, bold: true })
+    expect(text('굵게')).toMatchObject({ bold: true, size: 13 })
+    expect(text('코드')).toMatchObject({ mono: true })
+    expect(pad.texts()).toEqual(expect.arrayContaining(['하나', '둘', '이름', '값', '가', '1']))
+
+    pad.press('읽기')
+    await pad.until(() => !pad.field(EDITOR), 'the editor to go')
+    expect(text('큰 제목')).toMatchObject({ x: 250 + 20 })
+    // 고친 글은 미리보기에 바로 반영된다.
+    pad.press('나란히')
+    await pad.until(() => pad.field(EDITOR), 'the editor')
+    pad.type('## 바뀐 제목')
+    await pad.until(() => text('바뀐 제목'), 'the new text')
+    expect(text('바뀐 제목')).toMatchObject({ size: 18 })
+
+    // 마크다운이 아닌 메모에는 보기 방식이 없다.
+    pad.press('그냥')
+    await pad.see('notes/그냥.txt')
+    expect(pad.region('나란히')).toBeUndefined()
+    expect(pad.field(EDITOR)).toMatchObject({ w: 622 })
+  })
+
+  it('wraps long text to the width and scrolls the preview', async () => {
+    const words = Array.from({ length: 80 }, (_, i) => `낱말${i}`).join(' ')
+    write('긴.md', `${words}\n\n${Array.from({ length: 60 }, (_, i) => `줄 ${i}`).join('\n\n')}`)
+    const pad = await openNotepad('긴.md')
+    pad.press('읽기')
+    await pad.until(() => !pad.field(EDITOR), 'the preview')
+    const body = () => pad.latest().filter((op): op is Extract<DrawOp, { op: 'text' }> => op.op === 'text' && op.x >= 270 && op.size === 13 && op.text.includes('낱'))
+    const ys = () => [...new Set(body().map((op) => op.y))]
+    // 폭 610에 다 들어가지 않으므로 여러 줄로 나뉘고, 줄 사이는 22다.
+    expect(ys().length).toBeGreaterThan(3)
+    expect(ys()[1]! - ys()[0]!).toBe(22)
+    // 어느 줄도 오른쪽 여백을 넘지 않는다 (테스트의 화면은 한글 13, 그 밖의 글자 6.5로 잰다).
+    const width = (t: string) => [...t].reduce((n, ch) => n + (ch.codePointAt(0)! >= 0x1100 ? 13 : 6.5), 0)
+    for (const op of body()) expect(op.x + width(op.text.trimEnd())).toBeLessThanOrEqual(900 - 20)
+    // 보이지 않는 아래쪽은 그리지 않는다. 휠로 밀면 나온다.
+    expect(pad.texts()).not.toContain('줄 59')
+    pad.wheel(600, 300, 99999)
+    await pad.see('줄 59')
+    expect(pad.texts()).not.toContain('줄 0')
+  })
+
+  it('follows links in the preview, creating the note when it does not exist yet', async () => {
+    write('일/계획.md', '[[회의록]]과 [[새 생각]] 그리고 [[회의록|이름 바꿔 보기]]')
+    write('회의록.md', '안건')
+    const pad = await openNotepad('일/계획.md')
+    pad.press('읽기')
+    await pad.until(() => pad.regions('link').length, 'the links')
+    expect(pad.regions('link')).toEqual(['회의록', '새 생각', '이름 바꿔 보기'])
+    // 없는 메모의 링크는 흐리게 보인다.
+    const ink = (t: string) => (pad.latest().find((op) => op.op === 'text' && op.text === t) as Extract<DrawOp, { op: 'text' }>).color
+    expect(ink('회의록')).toBe('#4553d6')
+    expect(ink('새 생각')).toBe('#6b6e7b')
+
+    pad.press('이름 바꿔 보기')
+    await pad.see('notes/회의록.md')
+    pad.press('뒤로')
+    await pad.until(() => pad.region('새 생각'), 'back to the plan')
+    // 없는 메모는 지금 메모와 같은 폴더에 만들어진다.
+    pad.press('새 생각')
+    await pad.until(() => exists('일/새 생각.md'), 'the new note')
+    await pad.see('notes/일/새 생각.md')
+  })
+
+  it('lists the notes that link here, and opens them', async () => {
+    write('회의록.md', '안건')
+    write('계획.md', '할 일\n자세한 것은 [[회의록]] 참고')
+    write('일기.md', '오늘은 [[회의록|회의]]를 했다')
+    write('무관.md', '[[다른 것]]')
+    const pad = await openNotepad('회의록.md')
+    pad.press('이 메모를 가리키는 메모 2개')
+    await pad.until(() => pad.region('계획', 'link'), 'the list')
+    expect(pad.regions('link')).toEqual(['계획', '일기'])
+    // 링크가 든 줄을 함께 보여 준다.
+    expect(pad.texts()).toEqual(expect.arrayContaining(['자세한 것은 [[회의록]] 참고', '오늘은 [[회의록|회의]]를 했다']))
+    pad.press('일기')
+    await pad.see('notes/일기.md')
+    expect(pad.region('이 메모를 가리키는 메모 2개')).toBeUndefined()
+  })
+
+  it('checks off tasks from the preview by rewriting the note', async () => {
+    write('할 일.md', '- [ ] 우유\n  - [x] 빵\n- 그냥')
+    write('모음.md', '![[할 일]]')
+    const pad = await openNotepad('할 일.md')
+    pad.press('나란히')
+    await pad.until(() => pad.regions('checkbox').length === 2, 'the checkboxes')
+    expect(pad.latest().filter((op) => op.op === 'region' && op.role === 'checkbox').map((r) => (r as { on: boolean }).on)).toEqual([false, true])
+    // 끝낸 일은 줄을 긋는다.
+    expect(pad.latest()).toContainEqual(expect.objectContaining({ op: 'text', text: '빵', strike: true }))
+    pad.press('완료')
+    await host.until(() => file('할 일.md') === '- [x] 우유\n  - [x] 빵\n- 그냥', 'the file to change')
+    expect(pad.shown()).toBe('- [x] 우유\n  - [x] 빵\n- 그냥')
+
+    // 다른 메모에 넣어져 보이는 글에서는 누를 수 없다.
+    pad.press('모음')
+    await pad.until(() => pad.region('할 일', 'link'), 'the embedded note')
+    expect(pad.texts()).toEqual(expect.arrayContaining(['우유', '빵', '그냥']))
+    expect(pad.latest().filter((op) => op.op === 'region' && op.role === 'checkbox')).toMatchObject([{ disabled: true }, { disabled: true }])
+  })
+
+  it('shows the outline and tags under the tree', async () => {
+    write('글.md', '# 하나\n\n내용 #업무\n\n## 둘\n\n### 셋 #개인')
+    write('다른.md', '#업무 만')
+    write('없음.md', '태그 없음')
+    const pad = await openNotepad('글.md')
+    // 목차는 펼쳐져 있다. 누르면 그 줄로 커서를 옮긴다 (자리는 바이트 위치).
+    expect(pad.region('목차')).toMatchObject({ on: true })
+    pad.press('둘')
+    await pad.until(() => pad.latest().some((op) => op.op === 'select'), 'the cursor to move')
+    const at = utf8('# 하나\n\n내용 #업무\n\n').length
+    expect(pad.latest()).toContainEqual({ op: 'select', id: EDITOR, start: at, end: at })
+    // 읽기에서는 그 제목이 위로 오도록 민다.
+    write('글.md', `# 하나\n\n${'줄\n\n'.repeat(60)}## 둘\n\n${'끝\n\n'.repeat(40)}`)
+    pad.send(GuiEvent.focus, 1)
+    pad.press('읽기')
+    await pad.until(() => !pad.field(EDITOR), 'the preview')
+    pad.press('둘')
+    await pad.until(() => (pad.latest().find((op) => op.op === 'text' && op.text === '둘' && op.size === 18) as { y: number } | undefined)?.y! < 160, 'the heading to come up')
+
+    // 태그는 접혀 있다. 펼치면 많이 쓰인 것부터 나오고, 누르면 그 태그가 든 메모를 찾는다.
+    write('글.md', '# 하나\n\n내용 #업무\n\n## 둘\n\n### 셋 #개인')
+    pad.send(GuiEvent.focus, 1)
+    pad.press('편집')
+    await pad.until(() => pad.field(EDITOR) && pad.region('태그 2개'), 'the tags')
+    expect(pad.region('#업무')).toBeUndefined()
+    pad.press('태그 2개')
+    await pad.until(() => pad.region('#업무'), 'the tag list')
+    expect(pad.regions('button').filter((label) => label.startsWith('#'))).toEqual(['#업무', '#개인'])
+    pad.press('#업무')
+    await pad.until(() => pad.regions('option').length, 'the notes with the tag')
+    expect(pad.regions('option')).toEqual(['글', '다른'])
+    expect(pad.shown(SEARCH)).toBe('#업무')
+    expect(pad.region('#업무')).toMatchObject({ on: true })
+    // 다시 누르면 찾기가 지워진다.
+    pad.press('#업무')
+    await pad.until(() => pad.regions('treeitem').length === 3, 'the tree')
   })
 
   it('scrolls a long tree with the wheel, drawing only the visible rows', async () => {

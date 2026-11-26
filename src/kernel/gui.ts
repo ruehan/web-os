@@ -73,7 +73,7 @@ export function keyCode(key: string): number | undefined {
 
 // ───────────── 그리기 명령 ─────────────
 
-const Op = { clear: 1, rect: 2, frame: 3, line: 4, circle: 5, text: 6, clip: 7, unclip: 8, field: 9, region: 10, menu: 11 } as const
+const Op = { clear: 1, rect: 2, frame: 3, line: 4, circle: 5, text: 6, clip: 7, unclip: 8, field: 9, region: 10, menu: 11, select: 12 } as const
 
 /** 입력 칸의 성질 (field 명령의 flags) */
 export const FieldFlag = { multiline: 1, mono: 2, focus: 4, bold: 8, select: 16 } as const
@@ -147,6 +147,11 @@ export type DrawOp =
    * 이 자리에 시스템의 메뉴를 띄운다. 고른 결과는 menu 이벤트로 온다.
    * 묶음을 받을 때마다 띄우므로, 프로그램은 띄우고 싶을 때의 묶음 하나에만 넣어야 한다.
    */
+  /**
+   * 입력 칸의 커서를 옮긴다 (start와 end가 다르면 그 사이를 고른다). 자리는 글의 UTF-8 바이트 위치다.
+   * 커서가 보이도록 칸을 스크롤하고 그 칸에 초점을 준다. menu처럼 묶음 하나에만 넣는다.
+   */
+  | { op: 'select'; id: number; start: number; end: number }
   | { op: 'menu'; x: number; y: number; items: { label: string; disabled: boolean; danger: boolean; separator: boolean }[] }
 
 const ALIGN = ['left', 'center', 'right'] as const
@@ -278,6 +283,9 @@ export function decodeDrawList(data: Uint8Array): DrawOp[] {
         ops.push({ op: 'menu', x, y, items })
         break
       }
+      case Op.select:
+        ops.push({ op: 'select', id: u32(), start: u32(), end: u32() })
+        break
       default:
         throw new RangeError(`draw list has an unknown command ${op}`)
     }

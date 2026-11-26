@@ -15,7 +15,7 @@ async function shell(page: Page, line: string, expected: string | RegExp) {
   else await expectScreen(page, term(page)).toMatch(expected)
 }
 
-type Role = 'button' | 'tab' | 'treeitem' | 'option'
+type Role = 'button' | 'tab' | 'treeitem' | 'option' | 'link' | 'checkbox'
 const spot = (page: Page, role: Role, name: string) => pad(page).getByRole(role, { name, exact: true })
 
 /** 그림 속의 단추나 항목을 누른다. 그 자리의 요소는 누르는 것을 받지 않으므로(아래의 그림이 받는다) 좌표로 누른다. */
@@ -77,7 +77,7 @@ test('the fields sit where the program put them and follow the window size', asy
   await launch(page, '메모장')
   await newNote(page, '자리')
   const [frame, field] = [(await canvas(page).boundingBox())!, (await editor(page).boundingBox())!]
-  expect({ x: field.x - frame.x, y: field.y - frame.y, w: field.width, h: field.height }).toEqual({ x: 264, y: 93, w: 622, h: 439 })
+  expect({ x: field.x - frame.x, y: field.y - frame.y, w: field.width, h: field.height }).toEqual({ x: 264, y: 95, w: 622, h: 437 })
   await pad(page).getByRole('button', { name: '최대화' }).click()
   await expect.poll(async () => (await editor(page).boundingBox())!.width).toBe(1226 - 250 - 28)
   // 크기가 바뀌어도 쓰던 글과 커서는 그대로다.
@@ -204,6 +204,34 @@ test('a screen reader can read and press what the program drew', async ({ page }
   await expect(editor(page)).toHaveValue('B\n')
   await expect(spot(page, 'tab', '나')).toHaveAttribute('aria-selected', 'true')
   await expect(spot(page, 'button', '나 탭 닫기')).toBeVisible()
+})
+
+test('reads markdown beside the editor: links, checkboxes and the outline act on the real note', async ({ page }) => {
+  await shell(page, 'mkdir notes; echo 안건 > notes/회의록.md', /\$$/)
+  await launch(page, '메모장')
+  await newNote(page, '계획')
+  await editor(page).fill('# 처음\n\n[[회의록]] 참고\n\n- [ ] 우유\n\n## 나중\n\n끝')
+  await press(page, 'button', '나란히')
+  // 입력 칸은 왼쪽 절반으로 줄고, 오른쪽에 프로그램이 그린 글이 나온다.
+  await expect.poll(async () => (await editor(page).boundingBox())!.width).toBe(325 - 28)
+  await expect(spot(page, 'link', '회의록')).toBeVisible()
+
+  // 체크를 누르면 원문이 바뀐다.
+  await press(page, 'checkbox', '완료')
+  await expect(editor(page)).toHaveValue('# 처음\n\n[[회의록]] 참고\n\n- [x] 우유\n\n## 나중\n\n끝')
+  await expect(spot(page, 'checkbox', '완료')).toHaveAttribute('aria-checked', 'true')
+  // 목차의 제목을 누르면 입력 칸의 커서가 그 줄로 간다.
+  await press(page, 'button', '나중')
+  await expect(editor(page)).toBeFocused()
+  expect(await editor(page).evaluate((el: HTMLTextAreaElement) => el.value.slice(el.selectionStart, el.selectionStart + 5))).toBe('## 나중')
+
+  // 링크를 누르면 그 메모가 열리고, 거기에는 돌아오는 길(백링크)이 있다.
+  await press(page, 'link', '회의록')
+  await expect(editor(page)).toHaveValue('안건\n')
+  await press(page, 'button', '이 메모를 가리키는 메모 1개')
+  await press(page, 'link', '계획')
+  await expect(spot(page, 'tab', '계획')).toHaveAttribute('aria-selected', 'true')
+  await shell(page, 'cat notes/계획.md', '- [x] 우유')
 })
 
 test('the notes app sees what the notepad wrote', async ({ page }) => {

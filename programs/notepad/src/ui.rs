@@ -143,6 +143,11 @@ impl<'a, A: Clone> Ui<'a, A> {
         self.widths.of(&self.window, &[text], size, style)[0]
     }
 
+    /// 여러 글의 폭을 한 번에 잰다 (화면 쪽에 묻는 횟수를 줄인다).
+    pub fn widths_of(&mut self, texts: &[&str], size: f32, style: Style) -> Vec<f32> {
+        self.widths.of(&self.window, texts, size, style)
+    }
+
     /// 폭에 맞지 않는 글은 뒤를 자르고 "…"를 붙인다.
     pub fn fit(&mut self, text: &str, size: f32, style: Style, room: f32) -> String {
         if self.width(text, size, style) <= room {

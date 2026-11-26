@@ -4,12 +4,16 @@
 //! 글을 치는 곳만은 화면 쪽의 실제 입력 칸을 빌려 쓰고(한글 조합, 선택, 복사·붙여넣기를 위해서),
 //! 메뉴는 시스템의 것을 띄워 달라고 한다. 파일을 읽고 쓰는 것은 다른 프로그램과 똑같은 파일 시스템 콜이다.
 
+mod markdown;
+mod preview;
 mod ui;
 mod vault;
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::{env, fs, io, process};
+use preview::Target;
 use ui::{Rect, Tool, Ui, Widths, DARK, LIGHT, RADIUS, TOOL_H};
 use vault::{base_of, dir_of, ext_of, is_inside, join, kind_of, shown, stem_of, Kind, ATTACHMENTS};
 use webos::gui::{Align, Event, Field, Frame, Key, MenuItem, Role, Style, Window};
@@ -25,10 +29,28 @@ const SAVE_DELAY_MS: u32 = 400;
 const TREE_ROW: f32 = 28.0;
 const HIT_ROW: f32 = 50.0;
 const TABS_H: f32 = 37.0;
-const HEAD_H: f32 = 44.0;
+const HEAD_H: f32 = 46.0;
 const PROMPT_H: f32 = 38.0;
 const STATUS_H: f32 = 36.0;
 const SIDE_TOP: f32 = 104.0;
+
+/// 보기 방식 (마크다운 메모)
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Mode {
+    Edit,
+    Split,
+    Read,
+}
+
+const MODES: [(Mode, &str); 3] = [(Mode::Edit, "편집"), (Mode::Split, "나란히"), (Mode::Read, "읽기")];
+
+/// 마지막으로 그린 미리보기: 자리, 문서의 높이, 제목들의 위치. 휠과 목차가 이것을 본다.
+#[derive(Default)]
+struct PreviewInfo {
+    view: Option<Rect>,
+    height: f32,
+    headings: Vec<(usize, f32)>,
+}
 
 const FORMATS: [(&str, &str); 2] = [("md", "마크다운 (.md)"), ("txt", "텍스트 (.txt)")];
 
@@ -65,6 +87,17 @@ enum Action {
     Move(String, String),
     NewNoteIn(String),
     NewFolderIn(String),
+    SetMode(Mode),
+    /// 미리보기의 [[링크]]
+    Link(String),
+    Tag(String),
+    /// 체크 목록의 체크 (원문의 줄)
+    Toggle(usize),
+    /// 목차의 제목 (원문의 줄)
+    Jump(usize),
+    ToggleBacklinks,
+    ToggleOutline,
+    ToggleTags,
 }
 
 struct Row {
@@ -120,6 +153,16 @@ struct App {
     hits: Vec<(Rect, Action)>,
     /// 포인터 아래에 있는 자리 (hits의 순번). 바뀔 때만 다시 그린다.
     hot: Option<usize>,
+    mode: Mode,
+    preview_scroll: f32,
+    preview: RefCell<PreviewInfo>,
+    /// 다음에 그릴 때 옮길 본문의 커서 자리 (바이트 위치)
+    caret: Option<usize>,
+    backlinks_open: bool,
+    outline_open: bool,
+    tags_open: bool,
+    /// 마지막으로 그린 트리 영역의 높이 (스크롤의 끝을 정할 때 쓴다)
+    tree_height: RefCell<f32>,
 }
 
 fn describe(what: &str, e: &io::Error) -> String {
@@ -281,6 +324,7 @@ impl App {
         self.dirty = false;
         self.current = path.map(str::to_string);
         self.text.clear();
+        self.preview_scroll = 0.0;
         let Some(path) = path else { return };
         if kind_of(path) == Kind::Note {
             match fs::read_to_string(self.absolute(path)) {
@@ -394,8 +438,9 @@ impl App {
 
     // ───────────── 만들기, 이름 바꾸기, 옮기기, 지우기 ─────────────
 
-    fn new_note(&mut self, dir: &str) {
-        let name = vault::unique_name(&self.names_in(dir), "제목 없음", self.format);
+    /// 빈 메모를 만들어 연다. 만들었으면 true.
+    fn create_note(&mut self, dir: &str, stem: &str) -> bool {
+        let name = vault::unique_name(&self.names_in(dir), stem, self.format);
         let path = join(dir, &name);
         match fs::create_dir_all(self.absolute(dir)).and_then(|_| fs::write(self.absolute(&path), "")) {
             Ok(()) => {
@@ -403,11 +448,116 @@ impl App {
                 let _ = self.window.set_text(SEARCH, "");
                 self.load();
                 self.open(&path, true);
-                // 새 메모는 제목부터 정하도록 제목 칸에 커서를 둔다.
-                self.focus = Some((TITLE, true));
+                true
             }
-            Err(e) => self.error = describe("만들지 못했습니다", &e),
+            Err(e) => {
+                self.error = describe("만들지 못했습니다", &e);
+                false
+            }
         }
+    }
+
+    fn new_note(&mut self, dir: &str) {
+        if self.create_note(dir, "제목 없음") {
+            // 새 메모는 제목부터 정하도록 제목 칸에 커서를 둔다.
+            self.focus = Some((TITLE, true));
+        }
+    }
+
+    // ───────────── 링크, 태그, 목차 ─────────────
+
+    /// [[대상]]을 누르면 그 메모를 열고, 아직 없으면 그 이름으로 만든다.
+    fn open_link(&mut self, target: &str) {
+        if let Some(found) = vault::resolve_link(target, &self.files()).map(str::to_string) {
+            return self.open(&found, true);
+        }
+        let stem = base_of(target).to_string();
+        if let Some(problem) = vault::name_problem(&stem) {
+            self.error = problem.to_string();
+            return;
+        }
+        let dir = self.current.as_deref().map(dir_of).unwrap_or_default().to_string();
+        self.create_note(&dir, &stem);
+    }
+
+    /// 이 메모를 가리키는 다른 메모들과, 링크가 든 줄
+    fn backlinks(&self) -> Vec<(&str, &str)> {
+        let Some(here) = self.current.as_deref() else { return Vec::new() };
+        let known = self.files();
+        self.notes()
+            .filter(|path| *path != here)
+            .filter_map(|path| {
+                let body = self.texts.get(path)?;
+                let line = body.lines().find(|line| vault::parse_links(line).iter().any(|link| vault::resolve_link(&link.target, &known) == Some(here)))?;
+                Some((path, line.trim()))
+            })
+            .collect()
+    }
+
+    fn is_markdown(&self) -> bool {
+        self.current.as_deref().is_some_and(|path| ext_of(path) == "md")
+    }
+
+    /// 지금 메모의 보기 방식. 마크다운이 아니면 늘 편집이다.
+    fn view_mode(&self) -> Mode {
+        if self.is_markdown() {
+            self.mode
+        } else {
+            Mode::Edit
+        }
+    }
+
+    fn outline(&self) -> Vec<markdown::Heading> {
+        if self.is_markdown() {
+            markdown::outline_of(&self.text)
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// 보관함의 모든 태그와, 그 태그가 든 메모의 수 (많은 것부터)
+    fn all_tags(&self) -> Vec<(String, usize)> {
+        let mut count: Vec<(String, usize)> = Vec::new();
+        for path in self.notes() {
+            for tag in markdown::tags_of(self.texts.get(path).map_or("", String::as_str)) {
+                match count.iter_mut().find(|(name, _)| *name == tag) {
+                    Some((_, n)) => *n += 1,
+                    None => count.push((tag, 1)),
+                }
+            }
+        }
+        count.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| vault::natural_cmp(&a.0, &b.0)));
+        count
+    }
+
+    /// 목차에서 고른 제목으로 간다: 편집 화면은 커서를 그 줄에 두고, 읽기 화면은 그 제목이 보이게 한다.
+    fn jump(&mut self, line: usize) {
+        if self.view_mode() != Mode::Read {
+            self.caret = Some(self.text.split('\n').take(line).map(|l| l.len() + 1).sum());
+        }
+        let preview = self.preview.borrow();
+        if let (Some(view), Some(&(_, y))) = (preview.view, preview.headings.iter().find(|(at, _)| *at == line)) {
+            self.preview_scroll = (y - 8.0).clamp(0.0, (preview.height - view.h).max(0.0));
+        }
+    }
+
+    fn set_query(&mut self, query: &str) {
+        self.query = query.to_string();
+        self.tree_scroll = 0.0;
+        let _ = self.window.set_text(SEARCH, query);
+    }
+
+    fn toggle_task(&mut self, line: usize) {
+        let text = markdown::toggle_task(&self.text, line);
+        if text == self.text {
+            return;
+        }
+        let _ = self.window.set_text(EDITOR, &text);
+        if let Some(path) = &self.current {
+            self.texts.insert(path.clone(), text.clone());
+        }
+        self.text = text;
+        self.dirty = true;
     }
 
     fn new_folder(&mut self, dir: &str) {
@@ -604,7 +754,7 @@ impl App {
     }
 
     fn max_scroll(&self) -> f32 {
-        (self.list_height() + 6.0 - (self.h - SIDE_TOP)).max(0.0)
+        (self.list_height() + 6.0 - *self.tree_height.borrow()).max(0.0)
     }
 
     fn draw(&mut self) -> Frame {
@@ -614,6 +764,9 @@ impl App {
         ui.f.clear(theme.surface);
         self.draw_main(&mut ui, focus);
         self.draw_side(&mut ui, focus);
+        if let Some(at) = self.caret.take() {
+            ui.f.select(EDITOR, at, at);
+        }
         if let Some(((x, y), items)) = self.menu.take() {
             let (labels, actions): (Vec<MenuItem>, Vec<Option<Action>>) = items.into_iter().unzip();
             ui.f.menu(x, y, &labels);
@@ -676,7 +829,9 @@ impl App {
         ui.field_box(find, self.focused == Some(SEARCH));
         self.input(ui, find, SEARCH, 13.0, false, "메모 찾기", "메모 찾기", focus);
 
-        let area = Rect::new(0.0, SIDE_TOP, side - 1.0, (self.h - SIDE_TOP).max(0.0));
+        let bottom = self.draw_sections(ui, side - 1.0);
+        let area = Rect::new(0.0, SIDE_TOP, side - 1.0, (bottom - SIDE_TOP).max(0.0));
+        *self.tree_height.borrow_mut() = area.h;
         let scroll = self.tree_scroll.min(self.max_scroll());
         ui.clip(area);
         ui.hit(area, Action::TreeBlank);
@@ -693,6 +848,82 @@ impl App {
             ui.f.rect(area.right() - 5.0, top, 3.0, thumb, 1.5, theme.line_strong);
         }
         ui.unclip();
+    }
+
+    /// 보관함 아래의 접을 수 있는 구역들(목차, 태그)을 아래에서부터 쌓아 그린다. 그 맨 위의 y를 돌려준다.
+    fn draw_sections(&self, ui: &mut Ui<Action>, width: f32) -> f32 {
+        const HEAD: f32 = 30.0;
+        const ROW: f32 = 24.0;
+        let theme = ui.theme;
+        let limit = (self.h * 0.3).max(HEAD);
+        let mut bottom = self.h;
+        let header = |ui: &mut Ui<Action>, y: f32, open: bool, label: &str, action: Action| {
+            ui.hline(0.0, y, width);
+            let rect = Rect::new(0.0, y + 1.0, width, HEAD - 1.0);
+            let (cx, cy) = (16.0, rect.mid_y());
+            let arrow: [(f32, f32); 3] = if open { [(cx - 3.5, cy - 2.0), (cx, cy + 2.0), (cx + 3.5, cy - 2.0)] } else { [(cx - 2.0, cy - 3.5), (cx + 2.0, cy), (cx - 2.0, cy + 3.5)] };
+            ui.f.line(&arrow, theme.muted, 1.3);
+            ui.label(27.0, cy, 12.5, theme.muted, Style::PLAIN, width - 36.0, label);
+            ui.target(rect, Role::Button, open, label, action);
+        };
+
+        // 태그: 누르면 그 태그가 든 메모를 찾는다.
+        let tags = self.all_tags();
+        if !tags.is_empty() {
+            let mut places: Vec<(Rect, String, usize)> = Vec::new();
+            let mut body = 0.0;
+            if self.tags_open {
+                let (mut x, mut y) = (10.0, 0.0);
+                for (tag, count) in &tags {
+                    let w = ui.width(&format!("#{tag} {count}"), 12.0, Style::PLAIN) + 14.0;
+                    if x + w > width - 10.0 && x > 10.0 {
+                        (x, y) = (10.0, y + 24.0);
+                    }
+                    places.push((Rect::new(x, y, w, 20.0), tag.clone(), *count));
+                    x += w + 4.0;
+                }
+                body = (y + 28.0).min(limit - HEAD);
+            }
+            let top = bottom - HEAD - body;
+            header(ui, top, self.tags_open, &format!("태그 {}개", tags.len()), Action::ToggleTags);
+            ui.clip(Rect::new(0.0, top + HEAD, width, body));
+            for (rect, tag, count) in places {
+                let rect = Rect::new(rect.x, top + HEAD + rect.y, rect.w, rect.h);
+                let pressed = self.query == format!("#{tag}");
+                ui.f.rect(rect.x, rect.y, rect.w, rect.h, 10.0, theme.accent_soft);
+                if pressed {
+                    ui.f.frame(rect.x, rect.y, rect.w, rect.h, 10.0, theme.accent, 1.5);
+                }
+                let name = format!("#{tag}");
+                let name_w = ui.width(&format!("{name} "), 12.0, Style::PLAIN);
+                ui.text(rect.x + 7.0, rect.mid_y(), 12.0, theme.accent, Style::PLAIN, &name);
+                ui.text(rect.x + 7.0 + name_w, rect.mid_y(), 12.0, theme.accent.alpha(166), Style::PLAIN, &count.to_string());
+                ui.target(rect, Role::Button, pressed, &name, Action::Tag(tag));
+            }
+            ui.unclip();
+            bottom = top;
+        }
+
+        // 목차: 지금 메모의 제목들
+        let outline = self.outline();
+        if !outline.is_empty() {
+            let body = if self.outline_open { (outline.len() as f32 * ROW + 6.0).min(limit - HEAD) } else { 0.0 };
+            let top = bottom - HEAD - body;
+            header(ui, top, self.outline_open, "목차", Action::ToggleOutline);
+            ui.clip(Rect::new(0.0, top + HEAD, width, body));
+            for (i, heading) in outline.iter().enumerate().take_while(|_| self.outline_open) {
+                let rect = Rect::new(6.0, top + HEAD + i as f32 * ROW, width - 12.0, ROW);
+                if ui.hot(rect) {
+                    ui.f.rect(rect.x, rect.y, rect.w, rect.h, RADIUS, theme.hover);
+                }
+                let x = rect.x + 10.0 + (heading.level - 1) as f32 * 10.0;
+                ui.label(x, rect.mid_y(), 12.5, theme.text, Style::PLAIN, rect.right() - 8.0 - x, &heading.title);
+                ui.target(rect, Role::Button, false, &heading.title, Action::Jump(heading.line));
+            }
+            ui.unclip();
+            bottom = top;
+        }
+        bottom
     }
 
     fn draw_tree(&self, ui: &mut Ui<Action>, area: Rect, scroll: f32, focus: Option<(u32, bool)>) {
@@ -816,8 +1047,30 @@ impl App {
         // 제목 줄: 제목(파일 이름)과 단추들
         ui.hline(x0, y + HEAD_H - 1.0, width);
         let remove = ui.tool_width("삭제");
-        ui.tool(x0 + width - 8.0 - remove, y + 8.5, "삭제", Tool::Plain, false, Some(Action::AskDelete(path.to_string())));
-        let title = Rect::new(x0 + 8.0, y + 6.0, (width - 22.0 - remove).max(40.0), 31.0);
+        ui.tool(x0 + width - 8.0 - remove, y + 9.5, "삭제", Tool::Plain, false, Some(Action::AskDelete(path.to_string())));
+        let mut right = x0 + width - 14.0 - remove;
+        if self.is_markdown() {
+            // 보기 방식: 편집 / 나란히 / 읽기
+            let widths: Vec<f32> = MODES.iter().map(|(_, name)| ui.width(name, 13.0, Style::BOLD).ceil() + 28.0).collect();
+            let total: f32 = widths.iter().sum::<f32>() + 4.0;
+            let group = Rect::new(right - total, y + 7.0, total, 31.0);
+            ui.f.rect(group.x, group.y, group.w, group.h, 10.0, theme.surface2);
+            ui.f.frame(group.x, group.y, group.w, group.h, 10.0, theme.line, 1.0);
+            let mut x = group.x + 2.0;
+            for ((mode, name), w) in MODES.iter().zip(widths) {
+                let rect = Rect::new(x, group.y + 2.0, w, 27.0);
+                let pressed = self.mode == *mode;
+                if pressed {
+                    ui.f.rect(rect.x, rect.y, rect.w, rect.h, 8.0, theme.surface);
+                    ui.f.frame(rect.x, rect.y, rect.w, rect.h, 8.0, theme.line, 1.0);
+                }
+                ui.f.styled(rect.x + w / 2.0, rect.mid_y(), 13.0, theme.text, Align::Center, Style { bold: pressed, ..Style::PLAIN }, name);
+                ui.target(rect, Role::Button, pressed, name, Action::SetMode(*mode));
+                x += w;
+            }
+            right = group.x - 6.0;
+        }
+        let title = Rect::new(x0 + 8.0, y + 7.0, (right - x0 - 8.0).max(40.0), 31.0);
         if is_note {
             // 평소에는 글처럼 보이다가 커서가 들어가면 테두리가 생긴다.
             if self.focused == Some(TITLE) {
@@ -843,15 +1096,64 @@ impl App {
             ui.label(x0 + 8.0, status.mid_y(), 12.0, theme.danger, Style::PLAIN, room, &self.error);
         }
 
+        // 이 메모를 가리키는 메모들 (상태 줄 바로 위)
+        let mut body_bottom = status.y;
+        let backlinks = if is_note { self.backlinks() } else { Vec::new() };
+        if !backlinks.is_empty() {
+            const HEAD: f32 = 30.0;
+            const ROW: f32 = 24.0;
+            let rows = if self.backlinks_open { (backlinks.len() as f32 * ROW + 8.0).min(((self.h - y) * 0.3).max(ROW + 8.0)) } else { 0.0 };
+            let top = body_bottom - HEAD - rows;
+            ui.hline(x0, top, width);
+            let head = Rect::new(x0, top + 1.0, width, HEAD - 1.0);
+            let (cx, cy) = (x0 + 17.0, head.mid_y());
+            let arrow: [(f32, f32); 3] = if self.backlinks_open { [(cx - 3.5, cy - 2.0), (cx, cy + 2.0), (cx + 3.5, cy - 2.0)] } else { [(cx - 2.0, cy - 3.5), (cx + 2.0, cy), (cx - 2.0, cy + 3.5)] };
+            ui.f.line(&arrow, theme.muted, 1.3);
+            let label = format!("이 메모를 가리키는 메모 {}개", backlinks.len());
+            ui.text(x0 + 28.0, cy, 12.5, theme.muted, Style::PLAIN, &label);
+            ui.target(head, Role::Button, self.backlinks_open, &label, Action::ToggleBacklinks);
+            ui.clip(Rect::new(x0, top + HEAD, width, rows));
+            for (i, (from, line)) in backlinks.iter().enumerate().take_while(|_| self.backlinks_open) {
+                let mid = top + HEAD + i as f32 * ROW + ROW / 2.0;
+                let name = stem_of(from);
+                let name_w = ui.width(name, 12.5, Style::PLAIN);
+                ui.text(x0 + 12.0, mid, 12.5, theme.accent, Style { underline: true, ..Style::PLAIN }, name);
+                ui.target(Rect::new(x0 + 12.0, mid - 10.0, name_w, 20.0), Role::Link, false, name, Action::Open(from.to_string()));
+                ui.label(x0 + 22.0 + name_w, mid, 12.0, theme.muted, Style::PLAIN, width - 34.0 - name_w, line);
+            }
+            ui.unclip();
+            body_bottom = top;
+        }
+
         // 본문
-        let body = Rect::new(x0, y, width, (status.y - y).max(0.0));
-        if is_note {
+        let body = Rect::new(x0, y, width, (body_bottom - y).max(0.0));
+        if !is_note {
+            let hint = if kind_of(path) == Kind::Image {
+                format!("메모에 넣으려면 ![[{}]] 라고 적습니다.", base_of(path))
+            } else {
+                "메모장에서 열 수 없는 파일입니다.".to_string()
+            };
+            ui.f.styled(body.x + body.w / 2.0, body.mid_y(), 12.0, theme.muted, Align::Center, Style::PLAIN, &hint);
+            *self.preview.borrow_mut() = PreviewInfo::default();
+            return;
+        }
+        let mode = self.view_mode();
+        // 나란히 보기: 왼쪽에서 쓰고 오른쪽에서 결과를 본다.
+        let (editor, reading) = match mode {
+            Mode::Edit => (Some(body), None),
+            Mode::Read => (None, Some(body)),
+            Mode::Split => {
+                let half = (body.w / 2.0).floor();
+                (Some(Rect::new(body.x, body.y, half, body.h)), Some(Rect::new(body.x + half, body.y, body.w - half, body.h)))
+            }
+        };
+        if let Some(rect) = editor {
             ui.f.field(&Field {
                 id: EDITOR,
-                x: body.x + 14.0,
-                y: body.y + 12.0,
-                w: (body.w - 28.0).max(20.0),
-                h: (body.h - 24.0).max(20.0),
+                x: rect.x + 14.0,
+                y: rect.y + 12.0,
+                w: (rect.w - 28.0).max(20.0),
+                h: (rect.h - 24.0).max(20.0),
                 size: 13.0,
                 color: theme.text,
                 background: theme.surface,
@@ -863,14 +1165,32 @@ impl App {
                 label: "메모 내용",
                 placeholder: "",
             });
-        } else {
-            let hint = if kind_of(path) == Kind::Image {
-                format!("메모에 넣으려면 ![[{}]] 라고 적습니다.", base_of(path))
-            } else {
-                "메모장에서 열 수 없는 파일입니다.".to_string()
-            };
-            ui.f.styled(body.x + body.w / 2.0, body.mid_y(), 12.0, theme.muted, Align::Center, Style::PLAIN, &hint);
         }
+        let mut info = PreviewInfo::default();
+        if let Some(view) = reading {
+            if mode == Mode::Split {
+                ui.vline(view.x, view.y, view.h);
+            }
+            let files = self.files();
+            let act = |target: Target| match target {
+                Target::Link(to) => Action::Link(to),
+                Target::Tag(name) => Action::Tag(name),
+                Target::Toggle(line) => Action::Toggle(line),
+            };
+            // 먼저 높이만 재서 스크롤의 끝을 정하고, 그다음에 그린다.
+            let measured = preview::render(ui, &files, &self.texts, &self.text, view, 0.0, false, true, &act);
+            let scroll = self.preview_scroll.min((measured.height - view.h).max(0.0));
+            ui.clip(view);
+            preview::render(ui, &files, &self.texts, &self.text, view, scroll, true, true, &act);
+            if measured.height > view.h && view.h > 0.0 {
+                let thumb = (view.h * view.h / measured.height).max(24.0);
+                let top = view.y + (view.h - thumb) * scroll / (measured.height - view.h);
+                ui.f.rect(view.right() - 5.0, top, 3.0, thumb, 1.5, theme.line_strong);
+            }
+            ui.unclip();
+            info = PreviewInfo { view: Some(view), height: measured.height, headings: measured.headings };
+        }
+        *self.preview.borrow_mut() = info;
     }
 
     /// 열어 둔 메모들의 탭과 뒤로·앞으로 단추
@@ -1032,6 +1352,23 @@ impl App {
                 self.show_menu(at, items);
             }
             Action::Move(path, dest) => self.move_to(&path, &dest),
+            Action::SetMode(mode) => {
+                self.mode = mode;
+                if mode != Mode::Read {
+                    self.focus = Some((EDITOR, false));
+                }
+            }
+            Action::Link(target) => self.open_link(&target),
+            // 태그를 누르면 그 태그가 든 메모를 찾는다. 다시 누르면 찾기를 지운다.
+            Action::Tag(name) => {
+                let wanted = format!("#{name}");
+                self.set_query(if self.query == wanted { "" } else { &wanted });
+            }
+            Action::Toggle(line) => self.toggle_task(line),
+            Action::Jump(line) => self.jump(line),
+            Action::ToggleBacklinks => self.backlinks_open = !self.backlinks_open,
+            Action::ToggleOutline => self.outline_open = !self.outline_open,
+            Action::ToggleTags => self.tags_open = !self.tags_open,
         }
     }
 
@@ -1069,6 +1406,16 @@ impl App {
                     return false;
                 }
                 self.tree_scroll = to;
+            }
+            Event::Wheel { x, y, dy } => {
+                let preview = self.preview.borrow();
+                let Some(view) = preview.view.filter(|view| view.contains((x, y))) else { return false };
+                let to = (self.preview_scroll + dy).clamp(0.0, (preview.height - view.h).max(0.0));
+                if to == self.preview_scroll {
+                    return false;
+                }
+                drop(preview);
+                self.preview_scroll = to;
             }
             Event::Input { field } => match field {
                 EDITOR => self.typed(),
@@ -1179,6 +1526,14 @@ fn main() {
         menu_actions: Vec::new(),
         hits: Vec::new(),
         hot: None,
+        mode: Mode::Edit,
+        preview_scroll: 0.0,
+        preview: RefCell::default(),
+        caret: None,
+        backlinks_open: false,
+        outline_open: true,
+        tags_open: false,
+        tree_height: RefCell::new(0.0),
     };
     // 실행할 때 파일 이름을 주면 그것을 연다: notepad 장보기.md
     match env::args().nth(1) {

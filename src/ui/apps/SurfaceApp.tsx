@@ -96,6 +96,7 @@ function paint(ctx: CanvasRenderingContext2D, ops: DrawOp[], width: number, heig
       case 'field': // 입력 칸은 캔버스 위에 실제 요소로 놓는다
       case 'region': // 보이지 않는 요소로 놓는다
       case 'menu': // 시스템의 메뉴로 띄운다
+      case 'select': // 입력 칸의 커서를 옮긴다
         break
     }
   }
@@ -229,6 +230,23 @@ export function SurfaceApp(props: AppProps) {
     })
   }
 
+  /** 프로그램이 정한 자리로 입력 칸의 커서를 옮긴다. 자리는 UTF-8 바이트 위치로 온다. */
+  function moveCaret(op: Extract<DrawOp, { op: 'select' }>) {
+    const el = fields.get(op.id)
+    if (!el) return
+    const bytes = new TextEncoder().encode(el.value)
+    const index = (at: number) => new TextDecoder().decode(bytes.subarray(0, Math.min(at, bytes.length))).length
+    const [start, end] = [index(op.start), index(op.end)]
+    lastField = op.id
+    if (props.focused()) el.focus({ preventScroll: true })
+    el.setSelectionRange(start, end)
+    if (el instanceof HTMLTextAreaElement) {
+      // 긴 줄이 여러 줄로 접히면 줄 번호만으로는 높이를 알 수 없어, 전체 높이의 비율로 어림한다.
+      const line = el.value.slice(0, start).split('\n').length - 1
+      el.scrollTop = Math.max(0, (line / el.value.split('\n').length) * el.scrollHeight - 30)
+    }
+  }
+
   /** 프로그램이 띄워 달라고 한 메뉴를 시스템의 메뉴로 띄우고, 고른 것을 알린다. */
   function openMenu(op: MenuOp) {
     const box = canvas.getBoundingClientRect()
@@ -300,6 +318,7 @@ export function SurfaceApp(props: AppProps) {
         redraw()
         placeFields()
         placeRegions()
+        for (const op of ops) if (op.op === 'select') moveCaret(op)
         const menu = ops.find((op): op is MenuOp => op.op === 'menu')
         if (menu) openMenu(menu)
       },
