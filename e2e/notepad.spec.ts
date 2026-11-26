@@ -1,11 +1,11 @@
-// 메모장: 창을 직접 그리는 WASM 프로세스. 트리, 탭, 단추는 프로세스가 그리고, 글을 치는 곳은 화면의 실제 입력 칸,
+// 메모: 창을 직접 그리는 WASM 프로세스. 트리, 탭, 단추는 프로세스가 그리고, 글을 치는 곳은 화면의 실제 입력 칸,
 // 메뉴는 시스템의 메뉴다. 그림 속의 단추와 항목은 프로세스가 알려 준 자리(보이지 않는 요소)의 이름으로 찾는다.
 import { expect, test, type CDPSession, type Page } from '@playwright/test'
 import { appWindow, boot, expectScreen, launch, raise, typeIn } from './helpers.ts'
 
 const term = (page: Page) => appWindow(page, 'terminal')
-const pad = (page: Page) => page.locator('.window[data-app="surface"]', { has: page.getByRole('application', { name: '메모장' }) })
-const canvas = (page: Page) => pad(page).getByRole('application', { name: '메모장' })
+const pad = (page: Page) => page.locator('.window[data-app="notes"]', { has: page.getByRole('application', { name: '메모', exact: true }) })
+const canvas = (page: Page) => pad(page).getByRole('application', { name: '메모', exact: true })
 const editor = (page: Page) => pad(page).getByRole('textbox', { name: '메모 내용' })
 
 async function shell(page: Page, line: string, expected: string | RegExp) {
@@ -58,7 +58,7 @@ test.beforeEach(async ({ page }) => {
 })
 
 test('creates a note, names it, types into a real text field, and saves to a file', async ({ page }) => {
-  await launch(page, '메모장')
+  await launch(page, '메모')
   await expect(canvas(page)).toBeVisible()
   await expect(editor(page)).toHaveCount(0)
   await newNote(page, '첫 메모')
@@ -74,7 +74,7 @@ test('creates a note, names it, types into a real text field, and saves to a fil
 })
 
 test('the fields sit where the program put them and follow the window size', async ({ page }) => {
-  await launch(page, '메모장')
+  await launch(page, '메모')
   await newNote(page, '자리')
   const [frame, field] = [(await canvas(page).boundingBox())!, (await editor(page).boundingBox())!]
   expect({ x: field.x - frame.x, y: field.y - frame.y, w: field.width, h: field.height }).toEqual({ x: 264, y: 95, w: 622, h: 437 })
@@ -87,7 +87,7 @@ test('the fields sit where the program put them and follow the window size', asy
 
 test('shows the vault as a tree and picks up outside changes when focused again', async ({ page }) => {
   await shell(page, 'mkdir -p notes/일; echo 우유 사기 > notes/장보기.md; echo 안건 > notes/일/회의.md', /\$$/)
-  await launch(page, '메모장')
+  await launch(page, '메모')
   await expect(pad(page).getByRole('treeitem')).toHaveCount(3)
   // 처음에는 첫 메모(경로순)가 열려 있다.
   await expect(spot(page, 'treeitem', '회의')).toHaveAttribute('aria-selected', 'true')
@@ -104,14 +104,14 @@ test('shows the vault as a tree and picks up outside changes when focused again'
   await expect(editor(page)).toBeFocused()
 
   await shell(page, 'echo 터미널에서 고침 > notes/일/회의.md', /\$$/)
-  await page.getByRole('button', { name: '창: 메모장' }).click()
+  await page.getByRole('button', { name: '창: 메모' }).click()
   await expect(editor(page)).toHaveValue('터미널에서 고침\n')
   // 창이 앞으로 오면 쓰던 칸으로 커서가 돌아온다.
   await expect(editor(page)).toBeFocused()
 })
 
 test('Ctrl+S in the field saves at once instead of opening the browser dialog', async ({ page }) => {
-  await launch(page, '메모장')
+  await launch(page, '메모')
   await newNote(page, '저장')
   await page.keyboard.type('바로 저장')
   const prevented = await editor(page).evaluate((el) => !el.dispatchEvent(new KeyboardEvent('keydown', { key: 's', ctrlKey: true, bubbles: true, cancelable: true })))
@@ -125,7 +125,7 @@ test('Ctrl+S in the field saves at once instead of opening the browser dialog', 
 
 test('saves on close, and the window calls show in the trace', async ({ page }) => {
   await launch(page, '시스템 콜')
-  await launch(page, '메모장')
+  await launch(page, '메모')
   await newNote(page, '닫기')
   await page.keyboard.type('닫기 직전')
   await pad(page).getByRole('button', { name: '닫기', exact: true }).click()
@@ -139,7 +139,7 @@ test('saves on close, and the window calls show in the trace', async ({ page }) 
 
 test('scrolls its tree with the wheel', async ({ page }) => {
   await shell(page, 'mkdir notes; cd notes; touch 01.md 02.md 03.md 04.md 05.md 06.md 07.md 08.md 09.md 10.md 11.md 12.md 13.md 14.md 15.md 16.md 17.md 18.md 19.md 20.md 21.md 22.md 23.md 24.md', /\$$/)
-  await launch(page, '메모장')
+  await launch(page, '메모')
   await expect(spot(page, 'treeitem', '01')).toBeVisible()
   await expect(spot(page, 'treeitem', '24')).toHaveCount(0)
   const box = (await canvas(page).boundingBox())!
@@ -153,7 +153,7 @@ test('scrolls its tree with the wheel', async ({ page }) => {
 
 test('its menus are the system menus', async ({ page }) => {
   await shell(page, 'mkdir -p notes/보관; echo 내용 > notes/가.md', /\$$/)
-  await launch(page, '메모장')
+  await launch(page, '메모')
   await press(page, 'treeitem', '가', { button: 'right' })
   const menu = page.getByRole('menu')
   await expect(menu.getByRole('menuitem')).toHaveText(['열기', '옆에 열기', '이름 바꾸기', '다른 폴더로 옮기기…', '삭제…'])
@@ -166,7 +166,7 @@ test('its menus are the system menus', async ({ page }) => {
   await expect(menu.getByRole('menuitem')).toHaveText(['보관'])
   await menu.getByRole('menuitem', { name: '보관' }).click()
   await shell(page, 'cat notes/보관/가.md', '내용')
-  await page.getByRole('button', { name: '창: 메모장' }).click()
+  await page.getByRole('button', { name: '창: 메모' }).click()
 
   // 지우기는 한 번 더 묻는다.
   await press(page, 'treeitem', '가', { button: 'right' })
@@ -178,7 +178,7 @@ test('its menus are the system menus', async ({ page }) => {
 
 test('renames a folder in place with a double click, and finds notes by text', async ({ page }) => {
   await shell(page, 'mkdir -p notes/일; echo 안건은 예산 > notes/일/회의.md; echo 우유 > notes/장보기.md', /\$$/)
-  await launch(page, '메모장')
+  await launch(page, '메모')
   await press(page, 'treeitem', '일', { clickCount: 2 })
   const name = pad(page).getByRole('textbox', { name: '폴더 이름' })
   await expect(name).toBeFocused()
@@ -196,7 +196,7 @@ test('renames a folder in place with a double click, and finds notes by text', a
 
 test('a screen reader can read and press what the program drew', async ({ page }) => {
   await shell(page, 'mkdir notes; echo A > notes/가.md; echo B > notes/나.md', /\$$/)
-  await launch(page, '메모장')
+  await launch(page, '메모')
   await expect(spot(page, 'treeitem', '가')).toHaveAttribute('aria-selected', 'true')
   await expect(spot(page, 'button', '뒤로')).toHaveAttribute('aria-disabled', 'true')
   // 화면 낭독기의 "누르기"는 그 자리의 요소에 click으로 온다. 프로그램에는 그 자리를 누른 것으로 전해진다.
@@ -208,7 +208,7 @@ test('a screen reader can read and press what the program drew', async ({ page }
 
 test('reads markdown beside the editor: links, checkboxes and the outline act on the real note', async ({ page }) => {
   await shell(page, 'mkdir notes; echo 안건 > notes/회의록.md', /\$$/)
-  await launch(page, '메모장')
+  await launch(page, '메모')
   await newNote(page, '계획')
   await editor(page).fill('# 처음\n\n[[회의록]] 참고\n\n- [ ] 우유\n\n## 나중\n\n끝')
   await press(page, 'button', '나란히')
@@ -236,7 +236,7 @@ test('reads markdown beside the editor: links, checkboxes and the outline act on
 
 test('quick open floats above the text field and takes the keyboard', async ({ page }) => {
   await shell(page, 'mkdir -p notes/일; echo A > notes/장보기.md; echo B > notes/일/보고서.md; echo C > notes/회의록.md', /\$$/)
-  await launch(page, '메모장')
+  await launch(page, '메모')
   await press(page, 'treeitem', '회의록')
   await expect(editor(page)).toBeFocused()
   // 글을 치던 칸에서 Ctrl+O: 브라우저의 "파일 열기" 대신 빠른 열기가 뜬다.
@@ -262,7 +262,7 @@ test('quick open floats above the text field and takes the keyboard', async ({ p
 
 test('shows the graph of links, and moves notes by dragging them onto folders', async ({ page }) => {
   await shell(page, 'mkdir -p notes/보관; echo "[[회의록]]" > notes/계획.md; echo 안건 > notes/회의록.md', /\$$/)
-  await launch(page, '메모장')
+  await launch(page, '메모')
   await press(page, 'button', '그래프')
   await expect(spot(page, 'button', '계획, 링크 1개')).toBeVisible()
   await expect(editor(page)).toHaveCount(0)
@@ -278,14 +278,14 @@ test('shows the graph of links, and moves notes by dragging them onto folders', 
   await page.mouse.move(to.x + 40, to.y + 14, { steps: 5 })
   await page.mouse.up()
   await shell(page, 'cat notes/보관/회의록.md', '안건')
-  await page.getByRole('button', { name: '창: 메모장' }).click()
+  await page.getByRole('button', { name: '창: 메모' }).click()
   await expect(pad(page).getByRole('treeitem')).toHaveText(['', '', ''])
   await expect(spot(page, 'tab', '회의록')).toHaveAttribute('aria-selected', 'true')
 })
 
 test('helps with writing: continues lists, indents, wraps, and completes links', async ({ page }) => {
   await shell(page, 'mkdir notes; echo 안건 > notes/회의록.md', /\$$/)
-  await launch(page, '메모장')
+  await launch(page, '메모')
   await newNote(page, '글')
   const value = (text: string) => expect(editor(page)).toHaveValue(text)
 
@@ -358,7 +358,7 @@ test('helps with writing: continues lists, indents, wraps, and completes links',
 
   // 텍스트(.txt) 메모에서는 Tab이 평소대로 다음 칸으로 넘어간다.
   await shell(page, 'echo "- a" > notes/그냥.txt', /\$$/)
-  await page.getByRole('button', { name: '창: 메모장' }).click()
+  await page.getByRole('button', { name: '창: 메모' }).click()
   await press(page, 'treeitem', '그냥')
   await expect(editor(page)).toBeFocused()
   await page.keyboard.press('Tab')
@@ -382,7 +382,7 @@ const redIn = (page: Page, x: number, y: number, w: number, h: number) =>
 const RED_SQUARE = { name: '빨강.svg', mimeType: 'image/svg+xml', buffer: Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="120" height="80"><rect width="120" height="80" fill="#ff0000"/></svg>') }
 
 test('inserts a chosen image file, draws it in the preview, and shows it on its own', async ({ page }) => {
-  await launch(page, '메모장')
+  await launch(page, '메모')
   await newNote(page, '그림 있는 글')
   await page.keyboard.type('위\n')
   // 그림 넣기: 프로그램이 청하면 브라우저의 파일 고르기 창이 뜨고, 고른 파일이 프로그램에 건네진다.
@@ -391,7 +391,7 @@ test('inserts a chosen image file, draws it in the preview, and shows it on its 
   await (await chooser).setFiles(RED_SQUARE)
   await expect(editor(page)).toHaveValue('위\n![[빨강.svg]]')
   await shell(page, 'ls notes/attachments', '빨강.svg')
-  await page.getByRole('button', { name: '창: 메모장' }).click()
+  await page.getByRole('button', { name: '창: 메모' }).click()
 
   // 읽기에서는 그 자리에 그림이 그려진다 (120×80의 빨간 사각형).
   await press(page, 'button', '읽기')
@@ -406,7 +406,7 @@ test('inserts a chosen image file, draws it in the preview, and shows it on its 
 })
 
 test('takes images dropped on the window or pasted into the text', async ({ page }) => {
-  await launch(page, '메모장')
+  await launch(page, '메모')
   await newNote(page, '받는 글')
   // 붙여 넣은 그림 (화면 캡처 등은 이름이 image.png로 온다)
   await editor(page).evaluate((el, svg) => {
@@ -433,7 +433,7 @@ test('takes images dropped on the window or pasted into the text', async ({ page
 })
 
 test('colors the markdown source while it is typed', async ({ page }) => {
-  await launch(page, '메모장')
+  await launch(page, '메모')
   await newNote(page, '색')
   await page.keyboard.type('# 제목')
   await page.keyboard.press('Enter')
@@ -458,7 +458,7 @@ test('colors the markdown source while it is typed', async ({ page }) => {
 
   // 텍스트(.txt) 메모는 색 없이 평소의 입력 칸이다.
   await shell(page, 'echo "# 그냥" > notes/평문.txt', /\$$/)
-  await page.getByRole('button', { name: '창: 메모장' }).click()
+  await page.getByRole('button', { name: '창: 메모' }).click()
   await press(page, 'treeitem', '평문')
   await expect(layer).toHaveCount(0)
   await expect(editor(page)).toHaveCSS('color', 'rgb(25, 26, 32)')
@@ -483,7 +483,7 @@ async function pressWhileComposing(cdp: CDPSession, key: string, vk: number, com
 }
 
 test('keys pressed while the last Korean letter is still being composed do what they should', async ({ page }) => {
-  await launch(page, '메모장')
+  await launch(page, '메모')
   await press(page, 'button', '새 메모')
   await expect(title(page)).toBeFocused()
   const cdp = await page.context().newCDPSession(page)
@@ -497,7 +497,7 @@ test('keys pressed while the last Korean letter is still being composed do what 
   await expect(spot(page, 'tab', '한')).toHaveAttribute('aria-selected', 'true')
   await expect(editor(page)).toBeFocused()
   await shell(page, 'ls notes', '한.md')
-  await page.getByRole('button', { name: '창: 메모장' }).click()
+  await page.getByRole('button', { name: '창: 메모' }).click()
   await expect(editor(page)).toBeFocused()
 
   // / 명령: "/제"에서 "제"가 조합 중인 채로 아래 키와 Enter.
@@ -541,14 +541,4 @@ test('keys pressed while the last Korean letter is still being composed do what 
   await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, text: '\r' })
   await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 })
   await expect(editor(page)).toHaveValue('- 우유\n- ')
-})
-
-test('the notes app sees what the notepad wrote', async ({ page }) => {
-  await launch(page, '메모장')
-  await newNote(page, '함께')
-  await page.keyboard.type('# 두 앱이 같은 파일을 본다')
-  await launch(page, '메모')
-  const notes = appWindow(page, 'notes')
-  await expect(notes.getByRole('tree', { name: '보관함' }).locator('.tree-name')).toHaveText(['함께'])
-  await expect(notes.getByRole('textbox', { name: '메모 내용' })).toHaveValue('# 두 앱이 같은 파일을 본다')
 })

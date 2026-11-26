@@ -3,7 +3,7 @@ import { expect, test, type Locator, type Page } from '@playwright/test'
 import { appWindow, boot, expectScreen, launch, raise, typeIn } from './helpers.ts'
 
 const term = (page: Page) => appWindow(page, 'terminal')
-const paint = (page: Page) => appWindow(page, 'surface')
+const paint = (page: Page) => appWindow(page, 'paint')
 const canvas = (page: Page) => paint(page).getByRole('application', { name: '그림판' })
 
 /** 캔버스 안의 한 점의 색 (CSS 픽셀 좌표) */

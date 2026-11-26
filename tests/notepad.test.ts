@@ -1,4 +1,4 @@
-// 메모장(programs/notepad): 창을 직접 그리는 프로세스. 실제 바이너리를 커널 위에서 돌려,
+// 메모(programs/notepad): 창을 직접 그리는 프로세스. 실제 바이너리를 커널 위에서 돌려,
 // 화면 쪽이 받는 그리기 명령과 파일에 남는 결과를 확인한다.
 // 단추와 항목은 그리기 명령에 든 "자리 알림"(region)의 이름으로 찾아 그 가운데를 누른다.
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -112,7 +112,7 @@ describe('notepad', () => {
     write('.숨김.md', '')
     write('attachments/그림.png', '')
     const pad = await openNotepad()
-    expect(all('gui-open', pad.pid)[0]).toMatchObject({ title: '메모장', w: 900, h: 580 })
+    expect(all('gui-open', pad.pid)[0]).toMatchObject({ title: '메모', w: 900, h: 580 })
     // 그림 폴더는 접혀 있다. 한글이 영문보다 먼저, 숫자는 수로 견준다.
     expect(pad.regions('treeitem')).toEqual(['프로젝트', '깊은', '메모 2', '메모 10', '계획', 'attachments', '장보기', '회의록'])
     // .md가 아닌 메모는 확장자가 옆에 붙는다.
@@ -1065,6 +1065,54 @@ describe('notepad', () => {
     // 마크다운이 아닌 메모에는 색이 없다.
     pad.press('그냥')
     await pad.until(() => colored('# 제목 아님')?.length === 0, 'no colors')
+  })
+
+  it('shows one thing at a time on a narrow screen: the vault or the note', async () => {
+    for (let i = 1; i <= 40; i++) write(`메모 ${String(i).padStart(2, '0')}.md`, `# ${i}번\n\n${'줄\n\n'.repeat(40)}`)
+    const pad = await openNotepad()
+    pad.send(GuiEvent.resize, 390, 700, 0)
+    // 처음에는 보관함이 화면을 다 쓴다. 본문의 것(탭, 입력 칸)은 없다.
+    await pad.until(() => pad.region('메모 01', 'treeitem')?.w === 390 - 13, 'the vault to fill the width')
+    expect(pad.regions('tab')).toEqual([])
+    expect(pad.field(EDITOR)).toBeUndefined()
+
+    // 손가락으로 밀면 목록이 움직이고, 그 줄이 열리지는 않는다.
+    const row = pad.region('메모 05', 'treeitem')!
+    const [x, y] = [row.x + 40, row.y + 14]
+    pad.pointer(GuiEvent.pointerDown, x, y)
+    pad.pointer(GuiEvent.pointerMove, x, y - 30, 1)
+    pad.pointer(GuiEvent.pointerMove, x, y - 60, 1)
+    pad.pointer(GuiEvent.pointerUp, x, y - 60)
+    await pad.until(() => pad.region('메모 05', 'treeitem')?.y === row.y - 60, 'the list to follow the finger')
+    expect(pad.field(EDITOR)).toBeUndefined()
+
+    // 그대로 떼면 누른 것이다: 메모가 화면을 다 쓰고, 보관함으로 가는 단추가 생긴다.
+    pad.press('메모 07')
+    await pad.until(() => pad.field(EDITOR)?.w === 390 - 28, 'the note to fill the width')
+    expect(pad.regions('treeitem')).toEqual([])
+    expect(pad.region('메모 07', 'tab')).toMatchObject({ on: true })
+    // 나란히 보기는 위아래로 나눈다. 아래의 미리보기도 손가락으로 민다.
+    pad.press('나란히')
+    await pad.until(() => pad.latest().some((op) => op.op === 'text' && op.text === '7번' && op.size === 22), 'the preview below')
+    const title = () => pad.latest().find((op) => op.op === 'text' && op.text === '7번' && op.size === 22) as { x: number; y: number } | undefined
+    expect(pad.field(EDITOR)).toMatchObject({ x: 14, w: 390 - 28 })
+    expect(title()!.x).toBe(20)
+    expect(title()!.y).toBeGreaterThan(pad.field(EDITOR)!.y + pad.field(EDITOR)!.h)
+    const at = title()!.y
+    pad.pointer(GuiEvent.pointerDown, 200, at + 40)
+    pad.pointer(GuiEvent.pointerMove, 200, at - 20, 1)
+    pad.pointer(GuiEvent.pointerUp, 200, at - 20)
+    await pad.until(() => title() === undefined || title()!.y === at - 60, 'the preview to follow the finger')
+
+    pad.press('목록')
+    await pad.until(() => pad.regions('treeitem').length, 'the vault')
+    expect(pad.field(EDITOR)).toBeUndefined()
+    pad.press('메모로 돌아가기')
+    await pad.until(() => pad.field(EDITOR), 'the note again')
+    // 넓어지면 다시 나란히 놓인다.
+    pad.send(GuiEvent.resize, 900, 580, 0)
+    await pad.until(() => pad.regions('treeitem').length && pad.field(EDITOR), 'both side by side')
+    expect(pad.region('목록')).toBeUndefined()
   })
 
   it('scrolls a long tree with the wheel, drawing only the visible rows', async () => {

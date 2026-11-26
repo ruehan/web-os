@@ -1,6 +1,6 @@
 // 바탕 화면: 왼쪽의 실행 레일과 창들이 놓이는 영역.
 import { For, Show, createSignal, onCleanup, onMount } from 'solid-js'
-import { LAUNCHABLE, appById, type AppDef } from '../apps/registry.tsx'
+import { APPS, LAUNCHABLE, appById, type AppDef } from '../apps/registry.tsx'
 import type { System } from '../system.ts'
 import { ContextMenuHost, showMenu } from '../contextmenu.tsx'
 import { AppsIcon } from '../icons.tsx'
@@ -37,7 +37,12 @@ export function Desktop(props: { system: System }) {
 
   function launch(app: AppDef, args: Record<string, string> = {}) {
     // 프로그램인 앱은 프로세스를 띄우기만 한다. 창은 그 프로세스가 열 때 생긴다.
-    if (app.exec) return props.system.run(app.exec, [app.exec.slice(app.exec.lastIndexOf('/') + 1)])
+    if (app.exec) {
+      // 창을 하나만 띄우는 프로그램이 이미 떠 있으면 그 창을 앞으로 가져온다.
+      const running = app.single && wm.state.windows.find((w) => w.app === app.id)
+      if (running) return wm.focus(running.id)
+      return props.system.run(app.exec, [app.exec.slice(app.exec.lastIndexOf('/') + 1)])
+    }
     // 실행할 명령이 딸린 요청은 이미 열려 있는 터미널(맨 위의 것)에 넘긴다.
     if (app.id === 'terminal' && args.run !== undefined) {
       const terminals = wm.state.windows.filter((w) => w.app === 'terminal')
@@ -57,7 +62,10 @@ export function Desktop(props: { system: System }) {
 
   // 프로세스가 창을 열면 그 크기의 창을 만들어 붙인다. 안쪽 크기를 맞추려고 제목 표시줄과 테두리만큼 더한다.
   props.system.gui.onOpen(({ pid, title, w, h }) => {
-    wm.open('surface', title || '프로그램', { w: w + 2, h: h + TITLE_HEIGHT + 2 }, { pid: String(pid), title })
+    // 실행 메뉴에 있는 프로그램이면 그 앱의 창으로 띄운다 (아이콘이 맞고, 하나만 띄우는 앱은 다시 찾을 수 있게).
+    const command = props.system.procs.find((p) => p.pid === pid)?.name.split(' ')[0]
+    const app = APPS.find((a) => a.exec !== undefined && a.exec.slice(a.exec.lastIndexOf('/') + 1) === command)
+    wm.open(app?.id ?? 'surface', title || '프로그램', { w: w + 2, h: h + TITLE_HEIGHT + 2 }, { pid: String(pid), title })
   })
 
   onMount(() => {

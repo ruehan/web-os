@@ -7,7 +7,6 @@ import {
   GuideIcon,
   LogIcon,
   NoteIcon,
-  NotepadIcon,
   PaintIcon,
   ProcessesIcon,
   ProgramIcon,
@@ -19,7 +18,6 @@ import type { System } from '../system.ts'
 import { EditorApp } from './EditorApp.tsx'
 import { FilesApp } from './FilesApp.tsx'
 import { LogApp } from './LogApp.tsx'
-import { NotesApp } from './NotesApp.tsx'
 import { ProcessesApp } from './ProcessesApp.tsx'
 import { SettingsApp } from './SettingsApp.tsx'
 import { SurfaceApp } from './SurfaceApp.tsx'
@@ -65,14 +63,14 @@ export const APPS: AppDef[] = [
   { id: 'terminal', name: '터미널', icon: TerminalIcon, component: TerminalApp, size: { w: 760, h: 480 } },
   { id: 'files', name: '파일', icon: FolderIcon, component: FilesApp, size: { w: 600, h: 420 } },
   { id: 'editor', name: '편집기', icon: EditorIcon, component: EditorApp, size: { w: 640, h: 460 } },
-  { id: 'notes', name: '메모', icon: NoteIcon, component: NotesApp, size: { w: 900, h: 560 }, single: true },
+  // 메모와 그림판은 화면까지 직접 그리는 프로세스다. 여기서는 그 프로그램을 실행하기만 한다.
+  { id: 'notes', name: '메모', icon: NoteIcon, component: SurfaceApp, size: { w: 900, h: 580 }, exec: '/bin/notepad', single: true },
   { id: 'processes', name: '프로세스', icon: ProcessesIcon, component: ProcessesApp, size: { w: 460, h: 380 }, single: true },
   { id: 'trace', name: '시스템 콜', icon: TraceIcon, component: TraceApp, size: { w: 700, h: 420 }, single: true },
   { id: 'log', name: '시스템 로그', icon: LogIcon, component: LogApp, size: { w: 560, h: 320 }, single: true },
   { id: 'settings', name: '설정', icon: SettingsIcon, component: SettingsApp, size: { w: 480, h: 600 }, single: true },
   { id: 'welcome', name: '시작하기', icon: GuideIcon, component: WelcomeApp, size: { w: 380, h: 580 }, single: true },
   { id: 'paint', name: '그림판', icon: PaintIcon, component: SurfaceApp, size: { w: 720, h: 480 }, exec: '/bin/paint' },
-  { id: 'notepad', name: '메모장', icon: NotepadIcon, component: SurfaceApp, size: { w: 900, h: 580 }, exec: '/bin/notepad' },
   // 프로세스가 연 창은 모두 이 앱으로 뜬다. 직접 실행하는 것이 아니므로 메뉴에는 없다.
   { id: 'surface', name: '프로그램', icon: ProgramIcon, component: SurfaceApp, size: { w: 640, h: 480 }, hidden: true },
 ]

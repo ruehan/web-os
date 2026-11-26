@@ -159,49 +159,6 @@ test('files: act on an item, or create in the empty area', async ({ page }) => {
   await expect(rename).toHaveValue('새 파일.md')
 })
 
-test('notes: act on a note or folder, or create in the empty area', async ({ page }) => {
-  await page.context().grantPermissions(['clipboard-read', 'clipboard-write'])
-  await launch(page, '메모')
-  const notes = appWindow(page, 'notes')
-  const tree = notes.getByRole('tree', { name: '보관함' })
-  const row = (name: string) => tree.locator('.tree-row', { has: page.locator('.tree-name', { hasText: new RegExp(`^${name}$`) }) })
-  const names = () => tree.locator('.tree-name').allTextContents()
-
-  const area = await box(tree)
-  await page.mouse.click(area.x + area.w / 2, area.y + area.h - 20, { button: 'right' })
-  await expect(items(page)).toHaveText(['새 메모', '새 폴더'])
-  await pick(page, '새 폴더')
-  await expect(notes.getByRole('textbox', { name: '폴더 이름' })).toBeFocused()
-  await page.keyboard.type('프로젝트')
-  await page.keyboard.press('Enter')
-  await expect.poll(names).toEqual(['프로젝트'])
-
-  await row('프로젝트').click({ button: 'right' })
-  await expect(items(page)).toHaveText(['여기에 새 메모', '여기에 새 폴더', '이름 바꾸기', '다른 폴더로 옮기기…', '삭제…'])
-  await pick(page, '여기에 새 메모')
-  await expect(notes.getByRole('textbox', { name: '제목' })).toBeFocused()
-  await page.keyboard.type('계획')
-  await page.keyboard.press('Enter')
-  await expect(notes.locator('.statusbar')).toContainText('notes/프로젝트/계획.md · 저장됨')
-
-  await row('계획').click({ button: 'right' })
-  await expect(items(page)).toHaveText(['열기', '옆에 열기', '이름 바꾸기', '링크 복사', '다른 폴더로 옮기기…', '삭제…'])
-  await pick(page, '링크 복사')
-  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe('[[계획]]')
-
-  await row('계획').click({ button: 'right' })
-  await pick(page, '이름 바꾸기')
-  await expect(notes.getByRole('textbox', { name: '제목' })).toBeFocused()
-  await page.keyboard.type('로드맵')
-  await page.keyboard.press('Enter')
-  await expect.poll(names).toEqual(['프로젝트', '로드맵'])
-
-  await row('로드맵').click({ button: 'right' })
-  await pick(page, '삭제…')
-  await notes.getByRole('alertdialog', { name: '지우기 확인' }).getByRole('button', { name: '지우기' }).click()
-  await expect.poll(names).toEqual(['프로젝트'])
-})
-
 test('terminal: copy the selection and paste', async ({ page }) => {
   await page.context().grantPermissions(['clipboard-read', 'clipboard-write'])
   await typeIn(page, term(page), 'echo copy-me')
@@ -237,11 +194,17 @@ test('processes: end one from its row', async ({ page }) => {
 })
 
 test('text fields keep the browser\'s own menu', async ({ page }) => {
+  // 메모는 프로세스가 그리는 창이지만, 글을 치는 곳은 화면의 실제 입력 칸이다.
   await launch(page, '메모')
   const notes = appWindow(page, 'notes')
-  await notes.getByRole('button', { name: '새 메모' }).click()
+  const create = notes.getByRole('button', { name: '새 메모', exact: true })
+  await expect(create).toBeVisible()
+  await expect.poll(() => create.evaluate((el) => document.elementFromPoint(el.getBoundingClientRect().x + 10, el.getBoundingClientRect().y + 10)?.matches('canvas.surface') ?? false)).toBe(true)
+  const at = await box(create)
+  await page.mouse.click(at.x + at.w / 2, at.y + at.h / 2)
+  await expect(notes.getByRole('textbox', { name: '제목' })).toBeFocused()
   // 우리 메뉴가 뜨지 않고, 브라우저의 기본 동작도 막지 않는다.
-  for (const field of [notes.getByRole('textbox', { name: '제목' }), notes.getByRole('textbox', { name: '메모 내용' }), notes.getByRole('searchbox', { name: '메모 찾기' })]) {
+  for (const field of [notes.getByRole('textbox', { name: '제목' }), notes.getByRole('textbox', { name: '메모 내용' }), notes.getByRole('textbox', { name: '메모 찾기' })]) {
     const prevented = await field.evaluate((el) => !el.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 10, clientY: 10 })))
     expect(prevented).toBe(false)
   }

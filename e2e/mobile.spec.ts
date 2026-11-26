@@ -98,3 +98,33 @@ test('the layout follows the screen when it becomes wide again', async ({ page }
   await type(page, 'echo wide-again')
   await expectScreen(page).toContain('\nwide-again\n')
 })
+
+test('notes show the vault or the note, one at a time', async ({ page }) => {
+  await launch(page, '메모')
+  const notes = appWindow(page, 'notes')
+  const spot = (role: 'button' | 'treeitem' | 'tab', name: string) => notes.getByRole(role, { name, exact: true })
+  const tap = async (role: 'button' | 'treeitem' | 'tab', name: string) => {
+    await expect(spot(role, name)).toBeVisible()
+    const at = await box(spot(role, name))
+    await page.touchscreen.tap(at.x + at.w / 2, at.y + at.h / 2)
+  }
+  // 보관함이 화면의 폭을 다 쓴다.
+  await expect(spot('button', '새 메모')).toBeVisible()
+  await expect.poll(async () => (await box(notes.getByRole('textbox', { name: '메모 찾기' }))).w).toBeGreaterThan(250)
+  await tap('button', '새 메모')
+  // 새 메모가 열리면 메모가 화면을 다 쓴다.
+  const title = notes.getByRole('textbox', { name: '제목' })
+  await expect(title).toBeFocused()
+  await page.keyboard.type('휴대폰에서')
+  await page.keyboard.press('Enter')
+  const editor = notes.getByRole('textbox', { name: '메모 내용' })
+  await expect(editor).toBeFocused()
+  expect((await box(editor)).w).toBe(PHONE.width - 28)
+  await page.keyboard.type('짧은 글')
+  await expect(spot('treeitem', '휴대폰에서')).toHaveCount(0)
+  await tap('button', '목록')
+  await expect(spot('treeitem', '휴대폰에서')).toBeVisible()
+  await expect(editor).toHaveCount(0)
+  await tap('treeitem', '휴대폰에서')
+  await expect(editor).toHaveValue('짧은 글')
+})

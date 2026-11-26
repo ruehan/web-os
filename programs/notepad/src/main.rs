@@ -1,4 +1,4 @@
-//! 메모장. 메모 보관함(~/notes)의 글을 폴더로 정리하고, 탭으로 여러 개를 열어 고친다.
+//! 메모. 메모 보관함(~/notes)의 글을 폴더로 정리하고, 탭으로 여러 개를 열어 고친다.
 //!
 //! 창에 보이는 것(보관함 트리, 탭, 단추, 상태 줄)은 모두 이 프로그램이 그리기 명령으로 보낸 것이다.
 //! 글을 치는 곳만은 화면 쪽의 실제 입력 칸을 빌려 쓰고(한글 조합, 선택, 복사·붙여넣기를 위해서),
@@ -56,6 +56,22 @@ struct PreviewInfo {
     view: Option<Rect>,
     height: f32,
     headings: Vec<(usize, f32)>,
+}
+
+/// 스크롤되는 곳들
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Scrolled {
+    Tree,
+    Preview,
+    Beside,
+}
+
+/// 좁은 화면에서 누르고 있는 손가락. 그대로 떼면 누른 것이고, 위아래로 밀면 그 아래의 목록이나 글을 민다.
+struct Touch {
+    action: Option<Action>,
+    start: (f32, f32),
+    last_y: f32,
+    scrolled: bool,
 }
 
 /// 커서 아래의 목록에서 고를 수 있는 한 줄
@@ -163,6 +179,9 @@ enum Action {
     ClosePopup,
     /// 그림 파일을 골라 메모에 넣는다
     PickImage,
+    /// 좁은 화면에서 보관함과 메모 사이를 오간다
+    ShowList,
+    ShowNote,
     /// 눌러도 아무 일도 없는 자리 (아래에 깔린 것이 눌리지 않게 막는다)
     Nothing,
 }
@@ -241,6 +260,10 @@ struct App {
     images: RefCell<HashMap<String, Option<(f32, f32)>>>,
     /// 다음에 그릴 때 그림 파일을 고르는 창을 띄운다.
     picking: bool,
+    /// 좁은 화면에서: 메모 대신 보관함을 보여 주고 있다.
+    list_shown: bool,
+    /// 좁은 화면에서 누르고 있는 손가락: 떼면 할 일, 누른 자리, 마지막 높이, 밀어서 스크롤했는지
+    touch: Option<Touch>,
     /// 본문 칸의 글에 마지막으로 색을 입혔을 때의 글(의 지문)과 테마. 달라지면 다시 입힌다.
     styled: Option<(u64, bool)>,
     backlinks_open: bool,
@@ -484,6 +507,7 @@ impl App {
         self.error.clear();
         self.graph_open = false;
         self.quick = None;
+        self.list_shown = false;
         self.show(path, record);
         self.active_dir = dir_of(path).to_string();
         self.confirming = None;
@@ -1181,11 +1205,19 @@ impl App {
 
     // ───────────── 화면 ─────────────
 
+    /// 좁은 화면(휴대폰)인가. 좁으면 보관함과 메모를 나란히 두지 않고 한 번에 하나만 보여 준다.
+    fn narrow(&self) -> bool {
+        self.w < 560.0
+    }
+
+    /// 보관함(왼쪽)의 폭. 좁은 화면에서는 전부이거나 0이다.
     fn side(&self) -> f32 {
-        if self.w < 620.0 {
-            (self.w * 0.4).clamp(120.0, 250.0)
-        } else {
+        if !self.narrow() {
             250.0
+        } else if self.list_shown {
+            self.w
+        } else {
+            0.0
         }
     }
 
@@ -1228,8 +1260,15 @@ impl App {
             self.caret_at = None;
         }
         ui.f.clear(theme.surface);
-        self.draw_main(&mut ui, focus);
-        self.draw_side(&mut ui, focus);
+        if self.side() < self.w {
+            self.draw_main(&mut ui, focus);
+        } else {
+            *self.preview.borrow_mut() = PreviewInfo::default();
+            *self.beside_info.borrow_mut() = PreviewInfo::default();
+        }
+        if self.side() > 0.0 {
+            self.draw_side(&mut ui, focus);
+        }
         ui.set_mouse(self.mouse);
         if self.quick.is_some() {
             self.draw_quick(&mut ui, focus);
@@ -1312,7 +1351,11 @@ impl App {
             ui.f.line(&[(cx - 3.5, cy - 1.5), (cx, cy + 2.0), (cx + 3.5, cy - 1.5)], theme.muted, 1.3);
             ui.target(format, Role::Button, false, &format!("새 메모의 형식: {name}"), Action::FormatMenu);
         }
-        ui.tool(8.0, 38.0, "새 폴더", Tool::Plain, false, Some(Action::NewFolder));
+        let folder = ui.tool(8.0, 38.0, "새 폴더", Tool::Plain, false, Some(Action::NewFolder));
+        if self.narrow() && (self.current.is_some() || self.graph_open) {
+            // 좁은 화면: 고르지 않고 보던 메모로 돌아간다.
+            ui.tool(14.0 + folder, 38.0, "메모로 돌아가기", Tool::Plain, false, Some(Action::ShowNote));
+        }
 
         // 찾기
         let graph = ui.tool_width("그래프");
@@ -1555,7 +1598,8 @@ impl App {
         let remove = ui.tool_width("삭제");
         ui.tool(x0 + width - 8.0 - remove, y + 9.5, "삭제", Tool::Plain, false, Some(Action::AskDelete(path.to_string())));
         let mut right = x0 + width - 14.0 - remove;
-        if is_note {
+        if is_note && !self.narrow() {
+            // (좁은 화면에서는 자리가 없다. /그림 으로 넣을 수 있다.)
             let insert = ui.tool_width("그림 넣기");
             ui.tool(right - insert, y + 9.5, "그림 넣기", Tool::Plain, false, Some(Action::PickImage));
             right -= insert + 6.0;
@@ -1672,11 +1716,17 @@ impl App {
         let beside = self.beside.as_deref().filter(|path| self.texts.contains_key(*path));
         let shown_parts = [mode != Mode::Read, mode != Mode::Edit, beside.is_some()];
         let count = shown_parts.iter().filter(|on| **on).count() as f32;
-        let part = (body.w / count).floor();
-        let mut next = body.x;
+        // 좁은 화면에서는 옆으로가 아니라 위아래로 나눈다.
+        let stacked = self.narrow();
+        let part = (if stacked { body.h } else { body.w } / count).floor();
+        let mut next = if stacked { body.y } else { body.x };
         let mut take = |on: bool, last: bool| {
             on.then(|| {
-                let rect = Rect::new(next, body.y, if last { body.right() - next } else { part }, body.h);
+                let rect = if stacked {
+                    Rect::new(body.x, next, body.w, if last { body.bottom() - next } else { part })
+                } else {
+                    Rect::new(next, body.y, if last { body.right() - next } else { part }, body.h)
+                };
                 next += part;
                 rect
             })
@@ -1711,7 +1761,9 @@ impl App {
         }
         let mut info = PreviewInfo::default();
         if let Some(view) = reading {
-            if editor.is_some() {
+            if editor.is_some() && stacked {
+                ui.hline(view.x, view.y, view.w);
+            } else if editor.is_some() {
                 ui.vline(view.x, view.y, view.h);
             }
             info = self.draw_preview(ui, view, &self.text, self.preview_scroll, true);
@@ -1911,6 +1963,10 @@ impl App {
         ui.f.rect(x0, 0.0, width, TABS_H - 1.0, 0.0, theme.surface2);
         ui.hline(x0, TABS_H - 1.0, width);
         let mut x = x0 + 8.0;
+        if self.narrow() {
+            // 좁은 화면: 보관함은 따로 넘어가서 본다.
+            x += ui.tool(x, 5.0, "목록", Tool::Plain, false, Some(Action::ShowList)) + 4.0;
+        }
         for (glyph, name, step, action) in [("←", "뒤로", -1, Action::Back), ("→", "앞으로", 1, Action::Forward)] {
             let rect = Rect::new(x, 5.0, 26.0, TOOL_H);
             let enabled = self.can_go(step);
@@ -1958,6 +2014,37 @@ impl App {
             ui.close_button(close, false, &format!("{name} 탭 닫기"), Action::CloseTab(path.clone()));
         }
         ui.unclip();
+    }
+
+    // ───────────── 스크롤 ─────────────
+
+    /// 이 자리에서 밀 수 있는 것과 그 끝: 보관함의 목록, 본문의 미리보기, 옆에 펼친 메모
+    fn scroll_at(&self, at: (f32, f32)) -> Option<(Scrolled, f32)> {
+        let over = |info: &RefCell<PreviewInfo>| {
+            let info = info.borrow();
+            info.view.filter(|view| view.contains(at)).map(|view| (info.height - view.h).max(0.0))
+        };
+        if at.0 < self.side() {
+            (at.1 >= SIDE_TOP).then(|| (Scrolled::Tree, self.max_scroll()))
+        } else if let Some(max) = over(&self.preview) {
+            Some((Scrolled::Preview, max))
+        } else {
+            over(&self.beside_info).map(|max| (Scrolled::Beside, max))
+        }
+    }
+
+    /// `at`에 있는 것을 `dy`만큼 민다. 움직였으면 true.
+    fn scroll_by(&mut self, at: (f32, f32), dy: f32) -> bool {
+        let Some((which, max)) = self.scroll_at(at) else { return false };
+        let scroll = match which {
+            Scrolled::Tree => &mut self.tree_scroll,
+            Scrolled::Preview => &mut self.preview_scroll,
+            Scrolled::Beside => &mut self.beside_scroll,
+        };
+        let to = (scroll.min(max) + dy).clamp(0.0, max);
+        let moved = to != *scroll;
+        *scroll = to;
+        moved
     }
 
     // ───────────── 입력 ─────────────
@@ -2091,7 +2178,13 @@ impl App {
             Action::ToggleBacklinks => self.backlinks_open = !self.backlinks_open,
             Action::ToggleOutline => self.outline_open = !self.outline_open,
             Action::ToggleTags => self.tags_open = !self.tags_open,
-            Action::ToggleGraph => self.graph_open = !self.graph_open,
+            Action::ToggleGraph => {
+                self.graph_open = !self.graph_open;
+                // 좁은 화면에서는 그래프가 메모의 자리에 뜬다.
+                self.list_shown = !self.graph_open;
+            }
+            Action::ShowList => self.list_shown = true,
+            Action::ShowNote => self.list_shown = false,
             Action::GraphNode { id, label, exists } => {
                 if exists {
                     self.open(&id, true);
@@ -2125,6 +2218,25 @@ impl App {
             Event::Resize { w, h, dark } => {
                 (self.w, self.h, self.dark) = (w, h, dark);
                 self.tree_scroll = self.tree_scroll.min(self.max_scroll());
+            }
+            Event::PointerMove { x, y } if self.touch.is_some() => {
+                self.mouse = Some((x, y));
+                let Some(touch) = &mut self.touch else { return false };
+                if !touch.scrolled && (y - touch.start.1).abs() < 8.0 {
+                    return false;
+                }
+                // 손가락을 따라 그 아래의 것이 움직인다.
+                touch.scrolled = true;
+                let (from, by) = (touch.start, touch.last_y - y);
+                touch.last_y = y;
+                return self.scroll_by(from, by);
+            }
+            Event::PointerUp { .. } if self.touch.is_some() => {
+                let touch = self.touch.take().expect("checked");
+                match touch.action.filter(|_| !touch.scrolled) {
+                    Some(action) => self.perform(action, touch.start, 1),
+                    None => return false,
+                }
             }
             Event::PointerMove { x, y } => {
                 self.mouse = Some((x, y));
@@ -2165,7 +2277,14 @@ impl App {
             }
             Event::PointerDown { x, y, button, clicks } => {
                 self.mouse = Some((x, y));
-                let Some(action) = self.hit_at(self.mouse).map(|i| self.hits[i].1.clone()) else { return false };
+                let action = self.hit_at(self.mouse).map(|i| self.hits[i].1.clone());
+                // 좁은 화면(손가락): 누른 채 밀면 스크롤이므로, 뗄 때까지 기다렸다가 누른 것으로 친다.
+                // (누를 것이 없는 자리에서 시작해도 밀 수는 있다.)
+                if button == 0 && self.narrow() && self.quick.is_none() && self.scroll_at((x, y)).is_some() {
+                    self.touch = Some(Touch { action, start: (x, y), last_y: y, scrolled: false });
+                    return false;
+                }
+                let Some(action) = action else { return false };
                 match button {
                     0 => {
                         // 트리의 항목은 끌어서 다른 폴더로 옮길 수 있다.
@@ -2184,32 +2303,11 @@ impl App {
                     _ => self.context_menu(action, (x, y)),
                 }
             }
-            Event::Wheel { x, dy, .. } if x < self.side() => {
-                let to = (self.tree_scroll + dy).clamp(0.0, self.max_scroll());
-                if to == self.tree_scroll {
-                    return false;
-                }
-                self.tree_scroll = to;
-            }
             Event::Wheel { x, y, dy } => {
                 if self.quick.is_some() {
                     return false;
                 }
-                // 포인터가 올라가 있는 미리보기(본문의 것 또는 옆에 펼친 것)를 민다.
-                let over = |info: &RefCell<PreviewInfo>| {
-                    let info = info.borrow();
-                    info.view.filter(|view| view.contains((x, y))).map(|view| (info.height - view.h).max(0.0))
-                };
-                let (scroll, max) = match (over(&self.preview), over(&self.beside_info)) {
-                    (Some(max), _) => (&mut self.preview_scroll, max),
-                    (None, Some(max)) => (&mut self.beside_scroll, max),
-                    (None, None) => return false,
-                };
-                let to = (scroll.min(max) + dy).clamp(0.0, max);
-                if to == *scroll {
-                    return false;
-                }
-                *scroll = to;
+                return self.scroll_by((x, y), dy);
             }
             Event::Input { field } => match field {
                 EDITOR => {
@@ -2305,7 +2403,7 @@ impl App {
 fn main() {
     webos::init();
     let (w, h) = (900, 580);
-    let window = match Window::open("메모장", w, h) {
+    let window = match Window::open("메모", w, h) {
         Ok(window) => window,
         Err(e) => {
             eprintln!("notepad: cannot open a window: {}", webos::describe(&e));
@@ -2358,6 +2456,8 @@ fn main() {
         caret_at: None,
         images: RefCell::new(HashMap::new()),
         picking: false,
+        list_shown: true,
+        touch: None,
         styled: None,
         backlinks_open: false,
         outline_open: true,
