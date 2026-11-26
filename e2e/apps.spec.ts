@@ -256,13 +256,24 @@ test.describe('settings', () => {
   })
 })
 
-test('the portfolio page says it is not filled in yet', async ({ page }) => {
+test('the portfolio page introduces its author and lets the visitor try this system', async ({ page }) => {
   await launch(page, '포트폴리오')
   const portfolio = appWindow(page, 'portfolio')
-  await expect(portfolio.getByRole('heading', { level: 1 })).toHaveText('포트폴리오')
-  await expect(portfolio).toContainText('아직 내용을 채우지 않았습니다.')
-  // 구역은 모두 자리가 잡혀 있고, 비어 있는 동안에는 준비 중으로 보인다.
+  await expect(portfolio.getByRole('heading', { level: 1 })).toHaveText('한규')
+  // 구역마다 내용이 있다 (비어 있으면 "준비 중"으로 보인다).
   for (const name of ['소개', '기술', '프로젝트', '경력', '연락처']) {
-    await expect(portfolio.getByRole('region', { name })).toContainText('준비 중입니다.')
+    await expect(portfolio.getByRole('region', { name })).not.toContainText('준비 중입니다.')
   }
+  // 바깥으로 가는 링크는 새 탭에서 열리고, 이 페이지에 접근할 수 없다.
+  const link = portfolio.getByRole('link', { name: 'github.com/ruehan', exact: true })
+  await expect(link).toHaveAttribute('target', '_blank')
+  await expect(link).toHaveAttribute('rel', 'noopener noreferrer')
+
+  // 이 OS를 소개하는 자리에서 바로 해 볼 수 있다.
+  const tries = portfolio.getByRole('group', { name: 'Web OS 직접 해 보기' })
+  await tries.getByRole('button', { name: '프로세스 보기' }).click()
+  await expectScreen(page, appWindow(page, 'terminal')).toContain('PID  PPID STAT TTY COMMAND')
+  await raise(page, '포트폴리오')
+  await tries.getByRole('button', { name: '시스템 콜 지켜보기' }).click()
+  await expect(appWindow(page, 'trace')).toHaveClass(/focused/)
 })

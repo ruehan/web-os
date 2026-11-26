@@ -2,6 +2,7 @@
 // 아직 적지 않은 구역은 "준비 중"으로 보인다.
 import { For, Show, type JSX } from 'solid-js'
 import { isEmpty, portfolio } from '../portfolio.ts'
+import type { AppProps } from './registry.tsx'
 
 /** 바깥으로 나가도 안전한 주소만 링크로 만든다. */
 const safe = (href: string) => /^(https?:|mailto:)/i.test(href)
@@ -17,7 +18,7 @@ function Section(props: { title: string; empty: boolean; children: JSX.Element }
   )
 }
 
-export function PortfolioApp() {
+export function PortfolioApp(props: AppProps) {
   const p = portfolio
   return (
     <div class="app-pane portfolio">
@@ -51,8 +52,8 @@ export function PortfolioApp() {
                     {project.name}
                   </a>
                 </Show>
-                <Show when={project.period}>
-                  <small>{project.period}</small>
+                <Show when={project.at || project.period}>
+                  <small>{[project.at, project.period].filter(Boolean).join(' · ')}</small>
                 </Show>
               </h3>
               <p>{project.summary}</p>
@@ -60,6 +61,18 @@ export function PortfolioApp() {
                 <ul>
                   <For each={project.points}>{(point) => <li>{point}</li>}</For>
                 </ul>
+              </Show>
+              {/* 말로 설명하는 대신, 이 자리에서 바로 해 볼 수 있게 한다. */}
+              <Show when={project.tries?.length}>
+                <div class="portfolio-tries" role="group" aria-label={`${project.name} 직접 해 보기`}>
+                  <For each={project.tries}>
+                    {(item) => (
+                      <button class="tool" onClick={() => props.launch(item.app, item.run === undefined ? undefined : { run: item.run })}>
+                        {item.label}
+                      </button>
+                    )}
+                  </For>
+                </div>
               </Show>
             </article>
           )}
