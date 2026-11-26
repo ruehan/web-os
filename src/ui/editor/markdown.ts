@@ -20,13 +20,24 @@ export interface ListItem {
   checked?: boolean
   /** 원문에서 이 항목이 있는 줄 (0부터). 체크를 눌렀을 때 그 줄을 고치는 데 쓴다. */
   line: number
+  /** 이 항목 아래에 들여 쓴 목록 */
+  sub?: ListBlock
+}
+
+export interface ListBlock {
+  type: 'list'
+  ordered: boolean
+  items: ListItem[]
 }
 
 export type Block =
-  | { type: 'heading'; level: number; children: Inline[] }
+  /** line: 원문에서 이 제목이 있는 줄 (0부터). 목차에서 그 위치로 가는 데 쓴다. */
+  | { type: 'heading'; level: number; children: Inline[]; line: number }
   | { type: 'paragraph'; children: Inline[] }
   | { type: 'code'; text: string; lang: string }
-  | { type: 'list'; ordered: boolean; items: ListItem[] }
+  | ListBlock
+  /** 한 줄에 ![[메모]]만 있는 경우: 그 자리에 그 메모의 내용을 넣는다. */
+  | { type: 'embed'; target: string; label: string }
   | { type: 'quote'; children: Inline[] }
   | { type: 'table'; head: Inline[][]; rows: Inline[][][] }
   | { type: 'rule' }
@@ -79,7 +90,10 @@ export function parseInline(text: string): Inline[] {
   return out
 }
 
-const LIST_ITEM = /^\s*(?:([-*+])|\d+\.)\s+(.*)$/
+const LIST_ITEM = /^(\s*)(?:([-*+])|\d+\.)\s+(.*)$/
+/** 이만큼 더 들여 쓰면 아래 단계의 목록으로 본다. */
+const SUB_INDENT = 2
+const IMAGE_NAME = /\.(png|jpe?g|gif|webp|avif|bmp|svg)$/i
 const TASK = /^\[([ xX])\]\s+(.*)$/
 const TABLE_ROW = /^\s*\|.*\|\s*$/
 const TABLE_RULE = /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/
@@ -94,13 +108,54 @@ function cells(line: string): Inline[][] {
     .map((cell) => parseInline(cell.replace(/\\\|/g, '|').trim()))
 }
 
+/** 탭은 공백 두 칸으로 쳐서 들여쓰기의 깊이를 잰다. */
+const indentOf = (space: string) => space.replace(/\t/g, '  ').length
+
 export function parseMarkdown(text: string): Block[] {
   const blocks: Block[] = []
   const lines = text.replace(/\r\n?/g, '\n').split('\n')
   let paragraph: string[] = []
   const flush = () => {
-    if (paragraph.length) blocks.push({ type: 'paragraph', children: parseInline(paragraph.join(' ')) })
+    if (paragraph.length === 0) return
+    const children = parseInline(paragraph.join(' '))
     paragraph = []
+    // 한 줄에 메모 넣기(![[메모]])만 있으면 문단이 아니라 넣기 블록이다. 그림은 줄 안에 그대로 둔다.
+    const only = children.length === 1 ? children[0]! : undefined
+    if (only?.type === 'wikilink' && only.embed && !IMAGE_NAME.test(only.target)) {
+      blocks.push({ type: 'embed', target: only.target, label: only.label })
+    } else {
+      blocks.push({ type: 'paragraph', children })
+    }
+  }
+
+  /**
+   * i번째 줄에서 시작하는 목록을 읽는다. 같은 깊이의 항목이 이어지는 동안 모으고,
+   * 더 깊이 들여 쓴 항목들은 바로 앞 항목의 아래 목록으로 넣는다. 읽은 다음 줄의 번호를 함께 돌려준다.
+   */
+  const readList = (start: number): [ListBlock, number] => {
+    const first = LIST_ITEM.exec(lines[start]!)!
+    const base = indentOf(first[1]!)
+    const ordered = first[2] === undefined
+    const items: ListItem[] = []
+    let i = start
+    while (i < lines.length) {
+      const next = LIST_ITEM.exec(lines[i]!)
+      if (!next) break
+      const depth = indentOf(next[1]!)
+      if (depth >= base + SUB_INDENT && items.length) {
+        const [sub, after] = readList(i)
+        items.at(-1)!.sub = sub
+        i = after
+        continue
+      }
+      // 덜 들여 쓴 줄은 바깥 목록의 것이고, 표시의 종류가 바뀌면 다른 목록이다.
+      if (depth < base || (next[2] === undefined) !== ordered) break
+      const task = TASK.exec(next[3]!)
+      if (task) items.push({ children: parseInline(task[2]!), checked: task[1] !== ' ', line: i })
+      else items.push({ children: parseInline(next[3]!), line: i })
+      i++
+    }
+    return [{ type: 'list', ordered, items }, i]
   }
 
   for (let i = 0; i < lines.length; i++) {
@@ -116,7 +171,7 @@ export function parseMarkdown(text: string): Block[] {
     const heading = /^(#{1,6})\s+(.*?)\s*#*$/.exec(line)
     if (heading) {
       flush()
-      blocks.push({ type: 'heading', level: heading[1]!.length, children: parseInline(heading[2]!) })
+      blocks.push({ type: 'heading', level: heading[1]!.length, children: parseInline(heading[2]!), line: i })
       continue
     }
     if (/^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/.test(line)) {
@@ -142,20 +197,11 @@ export function parseMarkdown(text: string): Block[] {
       blocks.push({ type: 'quote', children: parseInline(body.join(' ')) })
       continue
     }
-    const item = LIST_ITEM.exec(line)
-    if (item) {
+    if (LIST_ITEM.test(line)) {
       flush()
-      const ordered = item[1] === undefined
-      const items: ListItem[] = []
-      for (; i < lines.length; i++) {
-        const next = LIST_ITEM.exec(lines[i]!)
-        if (!next || (next[1] === undefined) !== ordered) break
-        const task = TASK.exec(next[2]!)
-        if (task) items.push({ children: parseInline(task[2]!), checked: task[1] !== ' ', line: i })
-        else items.push({ children: parseInline(next[2]!), line: i })
-      }
-      i--
-      blocks.push({ type: 'list', ordered, items })
+      const [list, after] = readList(i)
+      blocks.push(list)
+      i = after - 1
       continue
     }
     if (line.trim() === '') flush()

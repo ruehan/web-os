@@ -1820,6 +1820,43 @@ button.md-tag {
   margin-left: -1.3em;
 }
 
+/* 목록 안의 목록은 위아래 여백 없이 붙인다. */
+.preview li > ul,
+.preview li > ol {
+  margin: 0;
+}
+
+/* 체크된 항목만 흐리게 긋는다. 그 아래에 들여 쓴 항목들은 각자의 체크를 따른다. */
+.md-task.done {
+  color: inherit;
+  text-decoration: none;
+}
+
+.md-task.done > .md-item {
+  color: var(--muted);
+  text-decoration: line-through;
+}
+
+/* 다른 메모의 내용을 넣은 자리 */
+.md-embed {
+  margin: 0 0 0.9em;
+  padding: 8px 12px;
+  border-left: 3px solid var(--accent);
+  border-radius: 0 var(--radius-s) var(--radius-s) 0;
+  background: var(--surface-2);
+}
+
+.md-embed > :last-child {
+  margin-bottom: 0;
+}
+
+.md-embed-title {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
 .md-task input {
   margin: 0 6px 0 0;
   vertical-align: -1px;

@@ -3,7 +3,7 @@ import { For, Match, Show, Switch, createMemo, createResource, onCleanup } from 
 import { Dynamic } from 'solid-js/web'
 import { parseCsv } from './csv.ts'
 import { highlight, type Lang } from './highlight.ts'
-import { parseMarkdown, type Block, type Inline } from './markdown.ts'
+import { parseMarkdown, type Block, type Inline, type ListBlock } from './markdown.ts'
 
 /** 미리보기를 제공하는 형식 */
 export const previewable = (lang: Lang | undefined): lang is 'markdown' | 'json' | 'csv' =>
@@ -20,6 +20,8 @@ export interface PreviewContext {
   openLink(target: string): void
   /** 보관함 안의 그림을 읽는다. 없거나 그림이 아니면 undefined. */
   readImage(target: string): Promise<{ data: Uint8Array; type: string } | undefined>
+  /** ![[메모]]로 넣을 다른 메모의 내용. 그런 메모가 없으면 undefined. */
+  readNote?(target: string): string | undefined
   /** 보관함의 파일 목록이 바뀔 때마다 달라지는 값. 읽으면 변경을 구독하게 되어, 나중에 생긴 그림도 다시 찾아 그린다. */
   revision(): unknown
   /** 체크 목록의 체크를 눌렀다 (원문의 줄 번호) */
@@ -152,15 +154,52 @@ function Inlines(props: { items: Inline[]; context?: PreviewContext }) {
   )
 }
 
-function MarkdownView(props: { text: string; context?: PreviewContext }) {
+/** 코드 블록의 언어 이름(```rust 등)을 색상 분석기가 아는 형식으로 바꾼다. */
+const CODE_LANGS: Record<string, Lang> = {
+  sh: 'sh', bash: 'sh', shell: 'sh', zsh: 'sh',
+  json: 'json',
+  js: 'js', javascript: 'js', ts: 'js', typescript: 'js', jsx: 'js', tsx: 'js',
+  rs: 'rust', rust: 'rust',
+}
+
+/** 넣기가 서로를 가리킬 때 끝없이 그리지 않도록 깊이를 제한한다. */
+const EMBED_DEPTH = 3
+
+function MarkdownView(props: { text: string; context?: PreviewContext; depth?: number; interactive?: boolean }) {
   const blocks = createMemo(() => parseMarkdown(props.text))
   const inline = (items: Inline[]) => <Inlines items={items} context={props.context} />
+  // 다른 메모에 넣어져 보이는 글에서는 체크를 누를 수 없다 (누르면 바뀌는 것이 그 메모가 아니라 지금 메모이기 때문에).
+  const canToggle = () => props.interactive !== false && !!props.context?.toggleTask
+
+  const list = (block: ListBlock) => {
+    const items = (
+      <For each={block.items}>
+        {(item) => (
+          <li classList={{ 'md-task': item.checked !== undefined, done: item.checked === true }}>
+            <Show when={item.checked !== undefined}>
+              <input
+                type="checkbox"
+                checked={item.checked}
+                disabled={!canToggle()}
+                aria-label="완료"
+                onChange={() => props.context?.toggleTask?.(item.line)}
+              />
+            </Show>
+            <span class="md-item">{inline(item.children)}</span>
+            <Show when={item.sub}>{(sub) => list(sub())}</Show>
+          </li>
+        )}
+      </For>
+    )
+    return block.ordered ? <ol>{items}</ol> : <ul>{items}</ul>
+  }
+
   const render = (block: Block) => {
     switch (block.type) {
       case 'heading':
         // 창 안의 문서이므로 제목 단계를 한 칸 낮춰 페이지의 제목 구조와 겹치지 않게 한다.
         return (
-          <Dynamic component={`h${Math.min(6, block.level + 1)}`} class={`md-h${block.level}`}>
+          <Dynamic component={`h${Math.min(6, block.level + 1)}`} class={`md-h${block.level}`} data-line={block.line}>
             {inline(block.children)}
           </Dynamic>
         )
@@ -169,7 +208,34 @@ function MarkdownView(props: { text: string; context?: PreviewContext }) {
       case 'quote':
         return <blockquote>{inline(block.children)}</blockquote>
       case 'code':
-        return <pre class="md-code">{block.text}</pre>
+        return (
+          <pre class="md-code">
+            <For each={highlight(block.text, CODE_LANGS[block.lang.toLowerCase()])}>
+              {(token) => (token.kind ? <span class={`syn-${token.kind}`}>{token.text}</span> : token.text)}
+            </For>
+          </pre>
+        )
+      case 'embed': {
+        const depth = props.depth ?? 0
+        const body = () => props.context?.readNote?.(block.target)
+        return (
+          <Show
+            when={body() !== undefined && depth < EMBED_DEPTH}
+            fallback={
+              <p>
+                <Inlines items={[{ type: 'wikilink', target: block.target, label: block.label, embed: false }]} context={props.context} />
+              </p>
+            }
+          >
+            <aside class="md-embed" aria-label={`넣은 메모: ${block.label}`}>
+              <button class="md-wikilink md-embed-title" onClick={() => props.context?.openLink(block.target)}>
+                {block.label}
+              </button>
+              <MarkdownView text={body()!} context={props.context} depth={depth + 1} interactive={false} />
+            </aside>
+          </Show>
+        )
+      }
       case 'rule':
         return <hr />
       case 'table':
@@ -191,27 +257,8 @@ function MarkdownView(props: { text: string; context?: PreviewContext }) {
             </tbody>
           </table>
         )
-      case 'list': {
-        const items = (
-          <For each={block.items}>
-            {(item) => (
-              <li classList={{ 'md-task': item.checked !== undefined, done: item.checked === true }}>
-                <Show when={item.checked !== undefined}>
-                  <input
-                    type="checkbox"
-                    checked={item.checked}
-                    disabled={!props.context?.toggleTask}
-                    aria-label="완료"
-                    onChange={() => props.context?.toggleTask?.(item.line)}
-                  />
-                </Show>
-                {inline(item.children)}
-              </li>
-            )}
-          </For>
-        )
-        return block.ordered ? <ol>{items}</ol> : <ul>{items}</ul>
-      }
+      case 'list':
+        return list(block)
     }
   }
   return (

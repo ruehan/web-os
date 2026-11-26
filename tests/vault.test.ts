@@ -1,8 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import {
+  buildGraph,
   extensionForType,
   imageTypeOf,
   isLegacyName,
+  layoutGraph,
+  moveProblem,
+  outlineOf,
+  tagsOf,
   kindOf,
   nameProblem,
   parseLinks,
@@ -88,5 +93,85 @@ describe('vault', () => {
     expect(titleFromText('a/b [c] #d | e')).toBe('a b c d e')
     expect(titleFromText('')).toBe('')
     expect(titleFromText('x'.repeat(100)).length).toBe(60)
+  })
+})
+
+describe('what a note contains', () => {
+  it('lists its tags once each, ignoring code', () => {
+    expect(tagsOf('#할일 과 #프로젝트/웹, 다시 #할일\n`#코드`\n```\n#블록\n```\nC# 은 아님')).toEqual(['할일', '프로젝트/웹'])
+    expect(tagsOf('# 제목은 태그가 아니다')).toEqual([])
+  })
+
+  it('lists its headings with their lines', () => {
+    expect(outlineOf('# 하나\n글\n## 둘 ##\n```\n# 코드 안\n```\n### 셋')).toEqual([
+      { level: 1, title: '하나', line: 0 },
+      { level: 2, title: '둘', line: 2 },
+      { level: 3, title: '셋', line: 6 },
+    ])
+  })
+})
+
+describe('moving', () => {
+  it('explains why something cannot be moved', () => {
+    expect(moveProblem('a.md', '프로젝트', ['b.md'])).toBeUndefined()
+    expect(moveProblem('프로젝트/a.md', '', [])).toBeUndefined()
+    // 이미 그 폴더에 있으면 옮길 것이 없다.
+    expect(moveProblem('프로젝트/a.md', '프로젝트', ['a.md'])).toBe('')
+    expect(moveProblem('a.md', '프로젝트', ['A.md'])).toContain('같은 이름')
+    expect(moveProblem('프로젝트', '프로젝트/하위', [])).toContain('자기 자신')
+    expect(moveProblem('프로젝트', '프로젝트', [])).toContain('자기 자신')
+    expect(moveProblem('프로젝트2', '프로젝트', [])).toBeUndefined()
+  })
+})
+
+describe('graph', () => {
+  const notes = [
+    { path: '회의록.md', text: '[[예산]] [[일정]] [[예산]] ![[그림.png]] `[[코드]]`' },
+    { path: '예산.md', text: '[[회의록]] [[회의록|다시]] [[없는 메모]]' },
+    { path: '폴더/일정.md', text: '[[일정]] 자기 자신' },
+    { path: '외톨이.md', text: '링크 없음' },
+  ]
+  const files = [...notes.map((n) => n.path), 'attachments/그림.png']
+
+  it('has a node per note and per missing target, and one link per pair and direction', () => {
+    const graph = buildGraph(notes, files)
+    expect(graph.nodes.map((n) => [n.id, n.label, n.exists, n.degree])).toEqual([
+      ['회의록.md', '회의록', true, 3],
+      ['예산.md', '예산', true, 3],
+      ['폴더/일정.md', '일정', true, 1],
+      ['외톨이.md', '외톨이', true, 0],
+      ['?없는 메모', '없는 메모', false, 1],
+    ])
+    expect(graph.links).toEqual([
+      { source: '회의록.md', target: '예산.md' },
+      { source: '회의록.md', target: '폴더/일정.md' },
+      { source: '예산.md', target: '회의록.md' },
+      { source: '예산.md', target: '?없는 메모' },
+    ])
+  })
+
+  it('lays nodes out inside the area, apart from each other, and the same way every time', () => {
+    const graph = buildGraph(notes, files)
+    const a = layoutGraph(graph, 600, 400)
+    const b = layoutGraph(graph, 600, 400)
+    expect(a.nodes.map((n) => [n.x, n.y])).toEqual(b.nodes.map((n) => [n.x, n.y]))
+    for (const node of a.nodes) {
+      expect(node.x).toBeGreaterThanOrEqual(30)
+      expect(node.x).toBeLessThanOrEqual(570)
+      expect(node.y).toBeGreaterThanOrEqual(20)
+      expect(node.y).toBeLessThanOrEqual(380)
+    }
+    const distances = a.nodes.flatMap((p, i) => a.nodes.slice(i + 1).map((q) => Math.hypot(p.x - q.x, p.y - q.y)))
+    expect(Math.min(...distances)).toBeGreaterThan(40)
+    // 이어진 점끼리가 이어지지 않은 점보다 가깝다.
+    const at = (id: string) => a.nodes.find((n) => n.id === id)!
+    const dist = (p: string, q: string) => Math.hypot(at(p).x - at(q).x, at(p).y - at(q).y)
+    expect(dist('회의록.md', '예산.md')).toBeLessThan(dist('외톨이.md', '예산.md'))
+  })
+
+  it('handles an empty vault and a single note', () => {
+    expect(layoutGraph(buildGraph([], []), 600, 400).nodes).toEqual([])
+    const one = layoutGraph(buildGraph([{ path: 'a.md', text: '' }], ['a.md']), 600, 400).nodes[0]!
+    expect(Number.isFinite(one.x) && Number.isFinite(one.y)).toBe(true)
   })
 })

@@ -102,7 +102,7 @@ describe('markdown', () => {
       ['# 제목 #', '', '첫 문단', '이어지는 줄', '', '- 하나', '- 둘', '', '1. 일', '2. 이', '', '> 인용', '> 계속', '', '---', '```rust', 'fn x() {}', '', '```'].join('\n'),
     )
     expect(blocks.map((b) => b.type)).toEqual(['heading', 'paragraph', 'list', 'list', 'quote', 'rule', 'code'])
-    expect(blocks[0]).toEqual({ type: 'heading', level: 1, children: [{ type: 'text', text: '제목' }] })
+    expect(blocks[0]).toEqual({ type: 'heading', level: 1, line: 0, children: [{ type: 'text', text: '제목' }] })
     expect(blocks[1]).toEqual({ type: 'paragraph', children: [{ type: 'text', text: '첫 문단 이어지는 줄' }] })
     expect(blocks[2]).toMatchObject({ ordered: false, items: [{ children: [{ text: '하나' }], line: 5 }, { children: [{ text: '둘' }], line: 6 }] })
     expect(blocks[3]).toMatchObject({ ordered: true, items: [{ children: [{ text: '일' }] }, { children: [{ text: '이' }] }] })
@@ -191,6 +191,49 @@ describe('markdown', () => {
     })
     // 구분 줄이 없으면 표가 아니다.
     expect(parseMarkdown('| 그냥 | 글 |').map((b) => b.type)).toEqual(['paragraph'])
+  })
+
+  it('nests lists by indentation', () => {
+    const [list, after] = parseMarkdown('- 과일\n  - 사과\n    - 부사\n  - 배\n- 채소\n  1. 당근\n  2. 무\n\n다음 문단')
+    expect(after?.type).toBe('paragraph')
+    expect(list).toMatchObject({
+      type: 'list',
+      ordered: false,
+      items: [
+        {
+          children: [{ text: '과일' }],
+          line: 0,
+          sub: {
+            ordered: false,
+            items: [
+              { children: [{ text: '사과' }], line: 1, sub: { items: [{ children: [{ text: '부사' }], line: 2 }] } },
+              { children: [{ text: '배' }], line: 3 },
+            ],
+          },
+        },
+        { children: [{ text: '채소' }], line: 4, sub: { ordered: true, items: [{ line: 5 }, { line: 6 }] } },
+      ],
+    })
+    // 아래 목록이 없는 항목에는 sub가 없다.
+    expect((list as { items: { sub?: unknown }[] }).items[0]!.sub).toBeDefined()
+    expect(parseMarkdown('- 하나\n- 둘')[0]).not.toHaveProperty('items.0.sub')
+  })
+
+  it('keeps nested task lists checkable by line', () => {
+    const [list] = parseMarkdown('- [ ] 큰 일\n  - [x] 작은 일\n  - [ ] 다른 일')
+    expect(list).toMatchObject({ items: [{ checked: false, line: 0, sub: { items: [{ checked: true, line: 1 }, { checked: false, line: 2 }] } }] })
+    expect(toggleTask('- [ ] 큰 일\n  - [x] 작은 일', 1)).toBe('- [ ] 큰 일\n  - [ ] 작은 일')
+  })
+
+  it('a line holding only ![[note]] embeds that note; images stay inline', () => {
+    const blocks = parseMarkdown('앞 문단\n\n![[회의록]]\n\n![[그림.png]]\n\n글 사이의 ![[회의록]] 은 링크다')
+    expect(blocks.map((b) => b.type)).toEqual(['paragraph', 'embed', 'paragraph', 'paragraph'])
+    expect(blocks[1]).toEqual({ type: 'embed', target: '회의록', label: '회의록' })
+    expect(blocks[2]).toMatchObject({ children: [{ type: 'wikilink', embed: true, target: '그림.png' }] })
+  })
+
+  it('records which line each heading is on', () => {
+    expect(parseMarkdown('# 가\n\n글\n\n## 나').filter((b) => b.type === 'heading')).toMatchObject([{ line: 0 }, { line: 4 }])
   })
 
   it('an unclosed code fence runs to the end', () => {
