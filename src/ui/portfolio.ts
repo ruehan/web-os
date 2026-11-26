@@ -56,13 +56,12 @@ export const portfolio: Portfolio = {
   projects: [
     {
       name: 'Web OS',
-      summary: '브라우저 탭 안에서 실제 컴파일된 프로그램이 프로세스로 돌아가는 운영체제. 지금 보고 계신 것입니다.',
+      summary: '이 페이지가 떠 있는 운영체제입니다.',
       period: '2026.11 ~',
       points: [
-        '커널(TypeScript)이 전용 Worker에서 돌고, 프로세스마다 Worker를 하나씩 씁니다. 시스템 콜은 SharedArrayBuffer와 Atomics로 실제로 멈춰 기다립니다.',
-        'WASI를 구현해서, Rust로 짠 셸과 명령어 20여 개가 수정 없이 돕니다. 파이프, 리다이렉션, 작업 제어(Ctrl+Z, fg, bg), /proc이 됩니다.',
-        '파일·메모·그림판은 화면까지 직접 그리는 프로세스입니다. 프로그램은 픽셀이 아니라 그리기 명령을 보내고, 화면은 그것을 칠합니다.',
-        '터미널 에뮬레이터, 정규식 엔진, 마크다운 해석과 배치를 라이브러리 없이 만들었습니다.',
+        '시스템 콜에서 실제로 멈춰 기다리는 프로세스 (SharedArrayBuffer, Atomics)',
+        '파이프, 작업 제어, /proc, 그리고 프로세스가 직접 그리는 창',
+        '터미널 에뮬레이터, 정규식 엔진, 마크다운 배치까지 라이브러리 없이 구현',
       ],
       tries: [
         { label: '프로세스 보기', app: 'terminal', run: 'ps' },
