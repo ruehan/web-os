@@ -139,6 +139,11 @@ impl<'a, A: Clone> Ui<'a, A> {
         Ui { f: Frame::new(), theme, hits: Vec::new(), widths, window, mouse, clip: None }
     }
 
+    /// 포인터의 자리를 바꾼다. `None`이면 이 뒤로 그리는 것은 포인터가 올라간 표시를 하지 않는다.
+    pub fn set_mouse(&mut self, mouse: Option<(f32, f32)>) {
+        self.mouse = mouse;
+    }
+
     pub fn width(&mut self, text: &str, size: f32, style: Style) -> f32 {
         self.widths.of(&self.window, &[text], size, style)[0]
     }

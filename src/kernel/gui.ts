@@ -73,7 +73,7 @@ export function keyCode(key: string): number | undefined {
 
 // ───────────── 그리기 명령 ─────────────
 
-const Op = { clear: 1, rect: 2, frame: 3, line: 4, circle: 5, text: 6, clip: 7, unclip: 8, field: 9, region: 10, menu: 11, select: 12 } as const
+const Op = { clear: 1, rect: 2, frame: 3, line: 4, circle: 5, text: 6, clip: 7, unclip: 8, field: 9, region: 10, menu: 11, select: 12, overlay: 13 } as const
 
 /** 입력 칸의 성질 (field 명령의 flags) */
 export const FieldFlag = { multiline: 1, mono: 2, focus: 4, bold: 8, select: 16 } as const
@@ -152,6 +152,11 @@ export type DrawOp =
    * 커서가 보이도록 칸을 스크롤하고 그 칸에 초점을 준다. menu처럼 묶음 하나에만 넣는다.
    */
   | { op: 'select'; id: number; start: number; end: number }
+  /**
+   * 이 뒤의 명령들은 입력 칸보다 위에 그려진다 (입력 칸 위를 덮는 창, 끌고 있는 것의 표시 등).
+   * 이 뒤에 놓는 입력 칸은 그 위층보다도 위에 온다.
+   */
+  | { op: 'overlay' }
   | { op: 'menu'; x: number; y: number; items: { label: string; disabled: boolean; danger: boolean; separator: boolean }[] }
 
 const ALIGN = ['left', 'center', 'right'] as const
@@ -283,6 +288,9 @@ export function decodeDrawList(data: Uint8Array): DrawOp[] {
         ops.push({ op: 'menu', x, y, items })
         break
       }
+      case Op.overlay:
+        ops.push({ op: 'overlay' })
+        break
       case Op.select:
         ops.push({ op: 'select', id: u32(), start: u32(), end: u32() })
         break

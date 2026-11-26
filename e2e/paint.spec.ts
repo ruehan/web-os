@@ -127,7 +127,7 @@ test('can be started from the terminal, and several can run at once', async ({ p
   await launch(page, '그림판')
   await expect(paint(page)).toHaveCount(2)
   // 한 창에 그린 것은 다른 창(다른 프로세스)에 나타나지 않는다.
-  const [first, second] = [paint(page).nth(0).locator('canvas'), paint(page).nth(1).locator('canvas')]
+  const [first, second] = [paint(page).nth(0).getByRole('application'), paint(page).nth(1).getByRole('application')]
   await expect.poll(() => colorAt(second, 300, 200)).toBe('255,255,255')
   await drag(page, second, [[100, 150], [300, 150]])
   await expect.poll(() => colorAt(second, 200, 150)).toBe('28,29,32')

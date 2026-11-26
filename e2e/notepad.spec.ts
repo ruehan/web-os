@@ -156,7 +156,7 @@ test('its menus are the system menus', async ({ page }) => {
   await launch(page, '메모장')
   await press(page, 'treeitem', '가', { button: 'right' })
   const menu = page.getByRole('menu')
-  await expect(menu.getByRole('menuitem')).toHaveText(['열기', '이름 바꾸기', '다른 폴더로 옮기기…', '삭제…'])
+  await expect(menu.getByRole('menuitem')).toHaveText(['열기', '옆에 열기', '이름 바꾸기', '다른 폴더로 옮기기…', '삭제…'])
   // 고르지 않고 닫으면 아무 일도 없다.
   await page.keyboard.press('Escape')
   await expect(menu).toHaveCount(0)
@@ -232,6 +232,55 @@ test('reads markdown beside the editor: links, checkboxes and the outline act on
   await press(page, 'link', '계획')
   await expect(spot(page, 'tab', '계획')).toHaveAttribute('aria-selected', 'true')
   await shell(page, 'cat notes/계획.md', '- [x] 우유')
+})
+
+test('quick open floats above the text field and takes the keyboard', async ({ page }) => {
+  await shell(page, 'mkdir -p notes/일; echo A > notes/장보기.md; echo B > notes/일/보고서.md; echo C > notes/회의록.md', /\$$/)
+  await launch(page, '메모장')
+  await press(page, 'treeitem', '회의록')
+  await expect(editor(page)).toBeFocused()
+  // 글을 치던 칸에서 Ctrl+O: 브라우저의 "파일 열기" 대신 빠른 열기가 뜬다.
+  await page.keyboard.press('Control+o')
+  const quick = pad(page).getByRole('textbox', { name: '열 메모의 이름' })
+  await expect(quick).toBeFocused()
+  // 창은 입력 칸 위에 그려진다: 본문 칸의 자리를 눌러도 그 칸이 아니라 위층이 받는다.
+  const box = (await editor(page).boundingBox())!
+  expect(await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)!.className, { x: box.x + 200, y: box.y + 300 })).toBe('surface surface-top')
+  await page.keyboard.type('보')
+  await expect(pad(page).getByRole('option')).toHaveCount(2)
+  await page.keyboard.press('ArrowDown')
+  await expect(spot(page, 'option', '장보기')).toHaveAttribute('aria-selected', 'true')
+  await page.keyboard.press('ArrowUp')
+  await page.keyboard.press('Enter')
+  await expect(quick).toHaveCount(0)
+  await expect(editor(page)).toHaveValue('B\n')
+  // 닫힌 뒤에는 다시 본문 칸을 바로 누를 수 있다.
+  await editor(page).click()
+  await page.keyboard.type('이어서')
+  await expect(editor(page)).toHaveValue(/이어서/)
+})
+
+test('shows the graph of links, and moves notes by dragging them onto folders', async ({ page }) => {
+  await shell(page, 'mkdir -p notes/보관; echo "[[회의록]]" > notes/계획.md; echo 안건 > notes/회의록.md', /\$$/)
+  await launch(page, '메모장')
+  await press(page, 'button', '그래프')
+  await expect(spot(page, 'button', '계획, 링크 1개')).toBeVisible()
+  await expect(editor(page)).toHaveCount(0)
+  await press(page, 'button', '회의록, 링크 1개')
+  await expect(editor(page)).toHaveValue('안건\n')
+
+  // 트리의 메모를 폴더 위로 끌어다 놓는다.
+  const from = (await spot(page, 'treeitem', '회의록').boundingBox())!
+  const to = (await spot(page, 'treeitem', '보관').boundingBox())!
+  await page.mouse.move(from.x + 40, from.y + 14)
+  await page.mouse.down()
+  await page.mouse.move(from.x + 50, from.y + 4, { steps: 3 })
+  await page.mouse.move(to.x + 40, to.y + 14, { steps: 5 })
+  await page.mouse.up()
+  await shell(page, 'cat notes/보관/회의록.md', '안건')
+  await page.getByRole('button', { name: '창: 메모장' }).click()
+  await expect(pad(page).getByRole('treeitem')).toHaveText(['', '', ''])
+  await expect(spot(page, 'tab', '회의록')).toHaveAttribute('aria-selected', 'true')
 })
 
 test('the notes app sees what the notepad wrote', async ({ page }) => {

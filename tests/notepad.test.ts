@@ -39,6 +39,7 @@ const EDITOR = 1
 const TITLE = 2
 const SEARCH = 3
 const DIR_NAME = 4
+const QUICK = 5
 
 async function openNotepad(...args: string[]) {
   const pid = host.kernel.launch('/bin/notepad', ['notepad', ...args])
@@ -56,8 +57,10 @@ async function openNotepad(...args: string[]) {
     host.kernel.guiEvent(pid, encodePointer(GuiEvent.pointerDown, x, y, button + 256 * (clicks - 1)))
     host.kernel.guiEvent(pid, encodePointer(GuiEvent.pointerUp, x, y))
   }
-  /** 가장 최근에 띄워 달라고 한 메뉴 */
-  const menu = () => frames().flatMap((ops) => ops.filter((o): o is Op<'menu'> => o.op === 'menu')).at(-1)
+  /** 이미 고른 메뉴가 든 그림들의 수. 그 뒤의 그림에서만 새 메뉴를 찾는다. */
+  let answered = 0
+  /** 가장 최근에 띄워 달라고 한, 아직 고르지 않은 메뉴 */
+  const menu = () => frames().slice(answered).flatMap((ops) => ops.filter((o): o is Op<'menu'> => o.op === 'menu')).at(-1)
   return {
     pid,
     latest,
@@ -79,8 +82,11 @@ async function openNotepad(...args: string[]) {
     choose(label: string) {
       const at = menu()!.items.findIndex((item) => item.label === label)
       if (at < 0) throw new Error(`no "${label}" in the menu`)
+      answered = frames().length
       send(GuiEvent.menu, at)
     },
+    /** 포인터 이벤트 하나를 그대로 보낸다 (끌기처럼 누르고 떼는 사이가 있는 동작에 쓴다). */
+    pointer: (kind: number, x: number, y: number, c = 0) => host.kernel.guiEvent(pid, encodePointer(kind, x, y, c)),
     wheel: (x: number, y: number, dy: number) => host.kernel.guiEvent(pid, encodePointer(GuiEvent.wheel, x, y, dy)),
     send,
     /** 사용자가 입력 칸의 글을 고친 것처럼 한다. */
@@ -340,7 +346,7 @@ describe('notepad', () => {
     await pad.until(() => pad.regions('tab').length === 2, 'two tabs')
     pad.rightPress('가')
     await pad.until(() => pad.menu(), 'the tab menu')
-    expect(pad.menu()).toEqual(['탭 닫기', '다른 탭 모두 닫기'])
+    expect(pad.menu()).toEqual(['탭 닫기', '다른 탭 모두 닫기', '---', '옆에 열기'])
     pad.choose('다른 탭 모두 닫기')
     await pad.until(() => pad.regions('tab').join() === '가', 'only that tab')
   })
@@ -371,7 +377,7 @@ describe('notepad', () => {
     const pad = await openNotepad('가.md')
     pad.rightPress('나')
     await pad.until(() => pad.menu(), 'the menu')
-    expect(pad.menu()).toEqual(['열기', '이름 바꾸기', '다른 폴더로 옮기기…', '---', '삭제…'])
+    expect(pad.menu()).toEqual(['열기', '옆에 열기', '이름 바꾸기', '다른 폴더로 옮기기…', '---', '삭제…'])
     pad.choose('다른 폴더로 옮기기…')
     // 지금 있는 폴더는 빠진다.
     await pad.until(() => pad.menu()?.[0] === '보관함 맨 위', 'the folders')
@@ -546,6 +552,149 @@ describe('notepad', () => {
     // 다시 누르면 찾기가 지워진다.
     pad.press('#업무')
     await pad.until(() => pad.regions('treeitem').length === 3, 'the tree')
+  })
+
+  it('opens notes by a few letters of their name, above everything else', async () => {
+    write('장보기.md', '')
+    write('일/보고서.md', '')
+    write('회의록.md', '')
+    const pad = await openNotepad('회의록.md')
+    pad.send(GuiEvent.key, keyCode('o'), Mod.ctrl)
+    await pad.until(() => pad.field(QUICK), 'the quick open panel')
+    // 입력 칸들보다 위에 그려진다: 위층으로 넘어가는 명령 뒤에 온다.
+    const ops = pad.latest()
+    const overlay = ops.findIndex((op) => op.op === 'overlay')
+    expect(overlay).toBeGreaterThan(ops.findIndex((op) => op.op === 'field' && op.id === EDITOR))
+    expect(ops.findIndex((op) => op.op === 'field' && op.id === QUICK)).toBeGreaterThan(overlay)
+    expect(pad.field(QUICK)).toMatchObject({ focus: true, placeholder: '메모 이름' })
+    // 친 글자가 없으면 최근에 연 메모부터.
+    expect(pad.regions('option')).toEqual(['회의록', '보고서', '장보기'])
+
+    pad.type('보', QUICK)
+    await pad.until(() => pad.regions('option').length === 2, 'the matches')
+    // 이름의 앞쪽에서 맞을수록 먼저다. 어느 폴더의 것인지 옆에 나온다.
+    expect(pad.regions('option')).toEqual(['보고서', '장보기'])
+    expect(pad.texts()).toContain('일')
+    expect(pad.region('보고서', 'option')).toMatchObject({ on: true })
+    pad.send(GuiEvent.key, keyCode('ArrowDown'))
+    await pad.until(() => pad.region('장보기', 'option')?.on, 'the second row')
+    pad.send(GuiEvent.key, keyCode('Enter'))
+    await pad.see('notes/장보기.md')
+    expect(pad.field(QUICK)).toBeUndefined()
+
+    // 단추로도 열리고, Esc나 바깥을 누르면 닫힌다.
+    pad.press('빠른 열기')
+    await pad.until(() => pad.field(QUICK), 'the panel again')
+    expect(pad.regions('option')[0]).toBe('장보기')
+    pad.type('없는이름', QUICK)
+    await pad.see('그런 이름의 메모가 없습니다.')
+    pad.send(GuiEvent.key, keyCode('Escape'))
+    await pad.until(() => !pad.field(QUICK), 'the panel to close')
+    pad.press('빠른 열기')
+    await pad.until(() => pad.field(QUICK), 'the panel again')
+    pad.pointer(GuiEvent.pointerDown, 30, 500)
+    await pad.until(() => !pad.field(QUICK), 'the panel to close')
+  })
+
+  it('draws the notes and their links as a graph', async () => {
+    write('계획.md', '[[회의록]] [[회의록]] [[아직 없음]] ![[그림.png]]')
+    write('회의록.md', '[[계획]]')
+    write('외톨이.md', '')
+    write('그림.png', '')
+    const pad = await openNotepad('계획.md')
+    pad.press('그래프')
+    await pad.until(() => pad.region('계획, 링크 3개'), 'the graph')
+    expect(pad.region('그래프')).toMatchObject({ on: true })
+    expect(pad.regions('button').filter((label) => label.includes('링크 '))).toEqual(['계획, 링크 3개', '외톨이, 링크 0개', '회의록, 링크 2개', '아직 없음 (아직 없는 메모), 링크 1개'])
+    expect(pad.texts().some((t) => t.startsWith('메모 3개 · 링크 3개'))).toBe(true)
+    // 그래프가 떠 있는 동안에는 본문이 없다.
+    expect(pad.field(EDITOR)).toBeUndefined()
+    // 선은 이어진 두 점 사이에 그어진다.
+    const circle = (label: string) => {
+      const r = pad.region(label)!
+      return [r.x + 22, r.y + 16]
+    }
+    expect(pad.latest()).toContainEqual(expect.objectContaining({ op: 'line', points: [...circle('계획, 링크 3개'), ...circle('회의록, 링크 2개')] }))
+
+    pad.press('회의록, 링크 2개')
+    await pad.see('notes/회의록.md')
+    expect(pad.region('그래프')).toMatchObject({ on: false })
+    // 아직 없는 메모의 점을 누르면 그 이름으로 만든다.
+    pad.press('그래프')
+    await pad.until(() => pad.region('아직 없음 (아직 없는 메모), 링크 1개'), 'the graph')
+    pad.press('아직 없음 (아직 없는 메모), 링크 1개')
+    await pad.until(() => exists('아직 없음.md'), 'the new note')
+  })
+
+  it('opens another note beside the one being edited, for reference', async () => {
+    write('글.md', '# 쓰는 글')
+    write('참고.md', '# 참고할 것\n\n- [ ] 누를 수 없는 체크\n\n[[글]]')
+    const pad = await openNotepad('글.md')
+    pad.rightPress('참고')
+    await pad.until(() => pad.menu(), 'the menu')
+    expect(pad.menu()).toContain('옆에 열기')
+    pad.choose('옆에 열기')
+    await pad.until(() => pad.region('참고 메모 닫기'), 'the reference pane')
+    // 본문(폭 650)을 편집과 참고가 반씩 나눈다. 지금 메모는 그대로다.
+    expect(pad.field(EDITOR)).toMatchObject({ x: 264, w: 325 - 28 })
+    expect(pad.region('글', 'tab')).toMatchObject({ on: true })
+    expect(pad.latest()).toContainEqual(expect.objectContaining({ op: 'text', text: '참고할 것', x: 250 + 325 + 1 + 20, size: 22 }))
+    // 참고 쪽의 체크는 누를 수 없다 (지금 편집하는 메모가 바뀌면 안 된다).
+    expect(pad.latest().filter((op) => op.op === 'region' && op.role === 'checkbox')).toMatchObject([{ disabled: true }])
+
+    // 나란히 보기와 함께면 셋으로 나뉜다.
+    pad.press('나란히')
+    await pad.until(() => pad.field(EDITOR)?.w === Math.floor(650 / 3) - 28, 'three panes')
+    // 이름을 바꿔도 따라간다.
+    await host.sh('mv notes/참고.md notes/자료.md')
+    pad.send(GuiEvent.focus, 1)
+    await pad.until(() => !pad.region('참고 메모 닫기'), 'the pane to close when its note is gone')
+    pad.rightPress('자료')
+    await pad.until(() => pad.menu()?.includes('옆에 열기'), 'the menu')
+    pad.choose('옆에 열기')
+    await pad.until(() => pad.region('자료 편집하러 가기'), 'the pane')
+    pad.press('자료 편집하러 가기')
+    await pad.see('notes/자료.md')
+    pad.press('참고 메모 닫기')
+    await pad.until(() => !pad.region('참고 메모 닫기'), 'the pane to close')
+  })
+
+  it('moves a note by dragging it onto a folder', async () => {
+    write('가.md', '내용')
+    write('보관/나.md', '')
+    const pad = await openNotepad('가.md')
+    const center = (label: string) => {
+      const r = pad.region(label, 'treeitem')!
+      return [r.x + r.w / 2, r.y + r.h / 2] as const
+    }
+    const [from, to] = [center('가'), center('보관')]
+    pad.pointer(GuiEvent.pointerDown, ...from)
+    // 조금 움직인 것은 끌기가 아니다.
+    pad.pointer(GuiEvent.pointerMove, from[0] + 2, from[1] + 1, 1)
+    pad.pointer(GuiEvent.pointerMove, ...to, 1)
+    // 끄는 동안 이름표가 위층에서 포인터를 따라다니고, 놓으면 들어갈 폴더가 표시된다.
+    await pad.until(() => pad.latest().some((op) => op.op === 'overlay'), 'the drag label')
+    const folder = pad.region('보관', 'treeitem')!
+    await pad.until(() => pad.latest().some((op) => op.op === 'frame' && op.x === folder.x && op.y === folder.y && op.color === '#4553d6'), 'the drop target')
+    pad.pointer(GuiEvent.pointerUp, ...to)
+    await pad.until(() => exists('보관/가.md'), 'the note to move')
+    expect(exists('가.md')).toBe(false)
+    await pad.see('notes/보관/가.md')
+    expect(pad.latest().some((op) => op.op === 'overlay')).toBe(false)
+
+    // 폴더 밖 빈 곳에 놓으면 보관함 맨 위로 나온다.
+    const again = center('가')
+    pad.pointer(GuiEvent.pointerDown, ...again)
+    pad.pointer(GuiEvent.pointerMove, 100, 500, 1)
+    pad.pointer(GuiEvent.pointerUp, 100, 500)
+    await pad.until(() => exists('가.md'), 'the note to come back')
+    // 본문 쪽에 놓으면 아무 일도 없다.
+    const third = center('가')
+    pad.pointer(GuiEvent.pointerDown, ...third)
+    pad.pointer(GuiEvent.pointerMove, 600, 300, 1)
+    pad.pointer(GuiEvent.pointerUp, 600, 300)
+    await pad.until(() => !pad.latest().some((op) => op.op === 'overlay'), 'the drag to end')
+    expect(exists('가.md')).toBe(true)
   })
 
   it('scrolls a long tree with the wheel, drawing only the visible rows', async () => {

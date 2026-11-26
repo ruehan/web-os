@@ -4,6 +4,7 @@
 //! 글을 치는 곳만은 화면 쪽의 실제 입력 칸을 빌려 쓰고(한글 조합, 선택, 복사·붙여넣기를 위해서),
 //! 메뉴는 시스템의 것을 띄워 달라고 한다. 파일을 읽고 쓰는 것은 다른 프로그램과 똑같은 파일 시스템 콜이다.
 
+mod graph;
 mod markdown;
 mod preview;
 mod ui;
@@ -23,6 +24,10 @@ const EDITOR: u32 = 1;
 const TITLE: u32 = 2;
 const SEARCH: u32 = 3;
 const DIR_NAME: u32 = 4;
+const QUICK: u32 = 5;
+
+/// 최근에 연 메모를 이만큼 기억한다.
+const RECENT_LIMIT: usize = 20;
 
 /// 마지막 입력 뒤 이만큼 조용하면 저장한다.
 const SAVE_DELAY_MS: u32 = 400;
@@ -98,6 +103,17 @@ enum Action {
     ToggleBacklinks,
     ToggleOutline,
     ToggleTags,
+    ToggleGraph,
+    /// 그래프의 점: 메모의 경로(없는 메모는 이름)와, 실제로 있는 메모인가
+    GraphNode { id: String, label: String, exists: bool },
+    QuickOpen,
+    QuickPick(String),
+    QuickClose,
+    /// 옆에 참고로 펼친다
+    Beside(String),
+    CloseBeside,
+    /// 눌러도 아무 일도 없는 자리 (아래에 깔린 것이 눌리지 않게 막는다)
+    Nothing,
 }
 
 struct Row {
@@ -163,6 +179,34 @@ struct App {
     tags_open: bool,
     /// 마지막으로 그린 트리 영역의 높이 (스크롤의 끝을 정할 때 쓴다)
     tree_height: RefCell<f32>,
+    graph_open: bool,
+    /// 자리를 잡아 둔 그래프와, 그것을 만든 입력의 지문 (보관함이나 크기가 바뀌면 다시 만든다)
+    graph: RefCell<Option<(u64, graph::Graph)>>,
+    /// 빠른 열기 창에 친 글자. 닫혀 있으면 None.
+    quick: Option<String>,
+    quick_at: usize,
+    /// 최근에 연 메모 (가장 최근 것이 앞)
+    recent: Vec<String>,
+    /// 옆에 참고로 펼쳐 둔 메모
+    beside: Option<String>,
+    beside_scroll: f32,
+    beside_info: RefCell<PreviewInfo>,
+    /// 트리에서 누르고 있는 항목과 누른 자리 (끌기 시작을 알아내려고)
+    press: Option<(String, (f32, f32))>,
+    /// 끌고 있는 항목
+    dragging: Option<String>,
+}
+
+/// 이름에 친 글자들이 순서대로 들어 있는가. 붙어 있으면 앞쪽일수록, 흩어져 있으면 그다음으로 친다.
+fn match_score(name: &str, typed: &str) -> Option<usize> {
+    if let Some(at) = name.find(typed) {
+        return Some(name[..at].chars().count());
+    }
+    let mut rest = name;
+    for ch in typed.chars() {
+        rest = &rest[rest.find(ch)? + ch.len_utf8()..];
+    }
+    Some(1000 + name.chars().count())
 }
 
 fn describe(what: &str, e: &io::Error) -> String {
@@ -348,6 +392,11 @@ impl App {
         if !self.tabs.iter().any(|tab| tab == path) {
             self.tabs.push(path.to_string());
         }
+        if kind_of(path) == Kind::Note {
+            self.recent.retain(|p| p != path);
+            self.recent.insert(0, path.to_string());
+            self.recent.truncate(RECENT_LIMIT);
+        }
         if record && self.trail.get(self.trail_at).map(String::as_str) != Some(path) {
             self.trail.truncate((self.trail_at + 1).min(self.trail.len()));
             self.trail.push(path.to_string());
@@ -358,6 +407,8 @@ impl App {
     fn open(&mut self, path: &str, record: bool) {
         self.stay_empty = false;
         self.error.clear();
+        self.graph_open = false;
+        self.quick = None;
         self.show(path, record);
         self.active_dir = dir_of(path).to_string();
         self.confirming = None;
@@ -390,6 +441,14 @@ impl App {
             }
         }
         (self.trail, self.trail_at) = (trail, at);
+        let mut recent: Vec<String> = Vec::new();
+        for path in self.recent.iter().filter_map(|p| to(p)) {
+            if !recent.contains(&path) {
+                recent.push(path);
+            }
+        }
+        self.recent = recent;
+        self.beside = self.beside.as_deref().and_then(&to);
         if let Some(path) = self.current.clone() {
             match to(&path) {
                 Some(moved) if moved == path => {}
@@ -539,6 +598,63 @@ impl App {
         if let (Some(view), Some(&(_, y))) = (preview.view, preview.headings.iter().find(|(at, _)| *at == line)) {
             self.preview_scroll = (y - 8.0).clamp(0.0, (preview.height - view.h).max(0.0));
         }
+    }
+
+    // ───────────── 빠른 열기 ─────────────
+
+    /// 친 글자가 없으면 최근에 연 메모부터, 있으면 이름이 맞는 메모를 가까운 순서로
+    fn quick_hits(&self) -> Vec<&str> {
+        let typed = self.quick.as_deref().unwrap_or("").trim().to_lowercase();
+        let all: Vec<&str> = self.notes().collect();
+        if typed.is_empty() {
+            let recent = self.recent.iter().map(String::as_str).filter(|p| all.contains(p));
+            return recent.chain(all.iter().copied().filter(|p| !self.recent.iter().any(|r| r == p))).take(8).collect();
+        }
+        let mut hits: Vec<(usize, &str)> = all.iter().filter_map(|path| Some((match_score(&stem_of(path).to_lowercase(), &typed)?, *path))).collect();
+        hits.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.len().cmp(&b.1.len())).then(a.1.cmp(b.1)));
+        hits.into_iter().take(8).map(|(_, path)| path).collect()
+    }
+
+    fn open_quick(&mut self) {
+        self.quick = Some(String::new());
+        self.quick_at = 0;
+        let _ = self.window.set_text(QUICK, "");
+        self.focus = Some((QUICK, false));
+    }
+
+    fn close_quick(&mut self) {
+        self.quick = None;
+        if self.current.is_some() && self.view_mode() != Mode::Read {
+            self.focus = Some((EDITOR, false));
+        }
+    }
+
+    fn quick_key(&mut self, key: Key) {
+        let hits = self.quick_hits().len().max(1);
+        match key {
+            Key::Down => self.quick_at = (self.quick_at + 1) % hits,
+            Key::Up => self.quick_at = (self.quick_at + hits - 1) % hits,
+            Key::Enter => {
+                if let Some(path) = self.quick_hits().get(self.quick_at).map(|p| p.to_string()) {
+                    self.open(&path, true);
+                }
+            }
+            _ => self.close_quick(),
+        }
+    }
+
+    // ───────────── 끌어서 옮기기 ─────────────
+
+    /// 끌고 있는 것을 지금 놓으면 들어갈 폴더. 놓을 수 없는 자리면 None.
+    fn drop_dir(&self) -> Option<String> {
+        let path = self.dragging.as_deref()?;
+        let dest = match &self.hits.get(self.hit_at(self.mouse)?)?.1 {
+            Action::Dir(dir) => dir.clone(),
+            Action::Open(file) if self.mouse?.0 < self.side() => dir_of(file).to_string(),
+            Action::TreeBlank => String::new(),
+            _ => return None,
+        };
+        vault::move_problem(path, &dest, &self.names_in(&dest)).is_none().then_some(dest)
     }
 
     fn set_query(&mut self, query: &str) {
@@ -759,11 +875,25 @@ impl App {
 
     fn draw(&mut self) -> Frame {
         let theme = if self.dark { &DARK } else { &LIGHT };
-        let mut ui = Ui::new(self.window, std::mem::take(&mut self.widths), theme, self.mouse);
+        // 빠른 열기가 떠 있는 동안에는 그 아래의 것들이 포인터에 반응하지 않는다.
+        let below = if self.quick.is_some() || self.dragging.is_some() { None } else { self.mouse };
+        let mut ui = Ui::new(self.window, std::mem::take(&mut self.widths), theme, below);
         let focus = self.focus.take();
         ui.f.clear(theme.surface);
         self.draw_main(&mut ui, focus);
         self.draw_side(&mut ui, focus);
+        ui.set_mouse(self.mouse);
+        if self.quick.is_some() {
+            self.draw_quick(&mut ui, focus);
+        } else if let (Some(path), Some((x, y))) = (&self.dragging, self.mouse) {
+            // 끌고 있는 것의 이름표: 입력 칸 위로도 따라다니도록 위층에 그린다.
+            ui.f.overlay();
+            let name = shown(path);
+            let w = ui.width(name, 12.5, Style::PLAIN) + 20.0;
+            ui.f.rect(x + 12.0, y + 6.0, w, 24.0, RADIUS, theme.surface);
+            ui.f.frame(x + 12.0, y + 6.0, w, 24.0, RADIUS, if self.drop_dir().is_some() { theme.accent } else { theme.line_strong }, 1.0);
+            ui.text(x + 22.0, y + 18.0, 12.5, theme.text, Style::PLAIN, name);
+        }
         if let Some(at) = self.caret.take() {
             ui.f.select(EDITOR, at, at);
         }
@@ -825,7 +955,9 @@ impl App {
         ui.tool(8.0, 38.0, "새 폴더", Tool::Plain, false, Some(Action::NewFolder));
 
         // 찾기
-        let find = Rect::new(8.0, 70.0, side - 17.0, 28.0);
+        let graph = ui.tool_width("그래프");
+        ui.tool(side - 9.0 - graph, 71.0, "그래프", Tool::Plain, self.graph_open, Some(Action::ToggleGraph));
+        let find = Rect::new(8.0, 70.0, (side - 23.0 - graph).max(40.0), 28.0);
         ui.field_box(find, self.focused == Some(SEARCH));
         self.input(ui, find, SEARCH, 13.0, false, "메모 찾기", "메모 찾기", focus);
 
@@ -932,6 +1064,11 @@ impl App {
         if rows.is_empty() {
             ui.f.styled(area.x + area.w / 2.0, area.y + 26.0, 12.0, theme.muted, Align::Center, Style::PLAIN, "아직 메모가 없습니다.");
         }
+        let drop = self.drop_dir();
+        if drop.as_deref() == Some("") {
+            // 보관함 맨 위로 옮긴다.
+            ui.f.frame(area.x + 3.0, area.y, area.w - 6.0, area.h - 3.0, RADIUS, theme.accent, 1.5);
+        }
         for (i, row) in rows.iter().enumerate() {
             let rect = Rect::new(6.0, area.y + i as f32 * TREE_ROW - scroll, area.w - 12.0, TREE_ROW);
             if rect.bottom() < area.y || rect.y > area.bottom() {
@@ -941,7 +1078,11 @@ impl App {
             let selected = !is_dir && self.current.as_deref() == Some(row.path.as_str());
             let active = is_dir && self.active_dir == row.path;
             let renaming = self.renaming_dir.as_deref() == Some(row.path.as_str());
-            if selected {
+            if is_dir && drop.as_deref() == Some(row.path.as_str()) {
+                // 끌고 있는 것을 놓으면 들어갈 폴더
+                ui.f.rect(rect.x, rect.y, rect.w, rect.h, RADIUS, theme.accent_soft);
+                ui.f.frame(rect.x, rect.y, rect.w, rect.h, RADIUS, theme.accent, 1.5);
+            } else if selected {
                 ui.f.rect(rect.x, rect.y, rect.w, rect.h, RADIUS, theme.accent_soft);
             } else if ui.hot(rect) {
                 ui.f.rect(rect.x, rect.y, rect.w, rect.h, RADIUS, theme.hover);
@@ -1033,6 +1174,11 @@ impl App {
             y += PROMPT_H;
         }
 
+        if self.graph_open {
+            *self.preview.borrow_mut() = PreviewInfo::default();
+            *self.beside_info.borrow_mut() = PreviewInfo::default();
+            return self.draw_graph(ui, Rect::new(x0, y, width, (self.h - y).max(0.0)));
+        }
         let Some(path) = self.current.as_deref() else {
             let mid = y + (self.h - y) / 2.0;
             ui.f.styled(x0 + width / 2.0, mid, 13.0, theme.muted, Align::Center, Style::PLAIN, "“새 메모”를 눌러 적기 시작하세요.");
@@ -1138,15 +1284,22 @@ impl App {
             return;
         }
         let mode = self.view_mode();
-        // 나란히 보기: 왼쪽에서 쓰고 오른쪽에서 결과를 본다.
-        let (editor, reading) = match mode {
-            Mode::Edit => (Some(body), None),
-            Mode::Read => (None, Some(body)),
-            Mode::Split => {
-                let half = (body.w / 2.0).floor();
-                (Some(Rect::new(body.x, body.y, half, body.h)), Some(Rect::new(body.x + half, body.y, body.w - half, body.h)))
-            }
+        // 나란히 보기: 왼쪽에서 쓰고 오른쪽에서 결과를 본다. 옆에 펼친 참고 메모가 있으면 그 오른쪽에 온다.
+        let beside = self.beside.as_deref().filter(|path| self.texts.contains_key(*path));
+        let shown_parts = [mode != Mode::Read, mode != Mode::Edit, beside.is_some()];
+        let count = shown_parts.iter().filter(|on| **on).count() as f32;
+        let part = (body.w / count).floor();
+        let mut next = body.x;
+        let mut take = |on: bool, last: bool| {
+            on.then(|| {
+                let rect = Rect::new(next, body.y, if last { body.right() - next } else { part }, body.h);
+                next += part;
+                rect
+            })
         };
+        let editor = take(shown_parts[0], !shown_parts[1] && !shown_parts[2]);
+        let reading = take(shown_parts[1], !shown_parts[2]);
+        let reference = take(shown_parts[2], true);
         if let Some(rect) = editor {
             ui.f.field(&Field {
                 id: EDITOR,
@@ -1168,29 +1321,158 @@ impl App {
         }
         let mut info = PreviewInfo::default();
         if let Some(view) = reading {
-            if mode == Mode::Split {
+            if editor.is_some() {
                 ui.vline(view.x, view.y, view.h);
             }
-            let files = self.files();
-            let act = |target: Target| match target {
-                Target::Link(to) => Action::Link(to),
-                Target::Tag(name) => Action::Tag(name),
-                Target::Toggle(line) => Action::Toggle(line),
-            };
-            // 먼저 높이만 재서 스크롤의 끝을 정하고, 그다음에 그린다.
-            let measured = preview::render(ui, &files, &self.texts, &self.text, view, 0.0, false, true, &act);
-            let scroll = self.preview_scroll.min((measured.height - view.h).max(0.0));
-            ui.clip(view);
-            preview::render(ui, &files, &self.texts, &self.text, view, scroll, true, true, &act);
-            if measured.height > view.h && view.h > 0.0 {
-                let thumb = (view.h * view.h / measured.height).max(24.0);
-                let top = view.y + (view.h - thumb) * scroll / (measured.height - view.h);
-                ui.f.rect(view.right() - 5.0, top, 3.0, thumb, 1.5, theme.line_strong);
-            }
-            ui.unclip();
-            info = PreviewInfo { view: Some(view), height: measured.height, headings: measured.headings };
+            info = self.draw_preview(ui, view, &self.text, self.preview_scroll, true);
         }
         *self.preview.borrow_mut() = info;
+
+        let mut info = PreviewInfo::default();
+        if let (Some(rect), Some(path)) = (reference, beside) {
+            const HEAD: f32 = 31.0;
+            ui.vline(rect.x, rect.y, rect.h);
+            ui.f.rect(rect.x + 1.0, rect.y, rect.w - 1.0, HEAD - 1.0, 0.0, theme.surface2);
+            ui.hline(rect.x + 1.0, rect.y + HEAD - 1.0, rect.w - 1.0);
+            let name = stem_of(path);
+            let style = Style { bold: true, underline: true, ..Style::PLAIN };
+            let fitted = ui.fit(name, 12.5, style, rect.w - 50.0);
+            let name_w = ui.width(&fitted, 12.5, style);
+            ui.text(rect.x + 14.0, rect.y + HEAD / 2.0, 12.5, theme.accent, style, &fitted);
+            // 이름을 누르면 그 메모를 편집하러 간다.
+            ui.target(Rect::new(rect.x + 14.0, rect.y + 4.0, name_w, HEAD - 8.0), Role::Link, false, &format!("{name} 편집하러 가기"), Action::Open(path.to_string()));
+            ui.close_button(Rect::new(rect.right() - 26.0, rect.y + 6.0, 18.0, 18.0), false, "참고 메모 닫기", Action::CloseBeside);
+            let view = Rect::new(rect.x + 1.0, rect.y + HEAD, rect.w - 1.0, (rect.h - HEAD).max(0.0));
+            // 체크를 눌러도 지금 편집하는 메모가 바뀌면 안 되므로 누를 수 없게 한다.
+            info = self.draw_preview(ui, view, &self.texts[path], self.beside_scroll, false);
+        }
+        *self.beside_info.borrow_mut() = info;
+    }
+
+    /// `view` 안에 마크다운을 그린다. 그린 자리와 문서의 높이를 돌려준다 (휠과 목차가 쓴다).
+    fn draw_preview(&self, ui: &mut Ui<Action>, view: Rect, text: &str, scroll: f32, interactive: bool) -> PreviewInfo {
+        let files = self.files();
+        let act = |target: Target| match target {
+            Target::Link(to) => Action::Link(to),
+            Target::Tag(name) => Action::Tag(name),
+            Target::Toggle(line) => Action::Toggle(line),
+        };
+        // 먼저 높이만 재서 스크롤의 끝을 정하고, 그다음에 그린다.
+        let measured = preview::render(ui, &files, &self.texts, text, view, 0.0, false, interactive, &act);
+        let scroll = scroll.min((measured.height - view.h).max(0.0));
+        ui.clip(view);
+        preview::render(ui, &files, &self.texts, text, view, scroll, true, interactive, &act);
+        if measured.height > view.h && view.h > 0.0 {
+            let thumb = (view.h * view.h / measured.height).max(24.0);
+            let top = view.y + (view.h - thumb) * scroll / (measured.height - view.h);
+            ui.f.rect(view.right() - 5.0, top, 3.0, thumb, 1.5, ui.theme.line_strong);
+        }
+        ui.unclip();
+        PreviewInfo { view: Some(view), height: measured.height, headings: measured.headings }
+    }
+
+    /// 메모를 점으로, 링크를 선으로 그린 관계도
+    fn draw_graph(&self, ui: &mut Ui<Action>, area: Rect) {
+        use std::hash::{Hash, Hasher};
+        let theme = ui.theme;
+        let files = self.files();
+        let notes: Vec<(&str, &str)> = self.notes().map(|path| (path, self.texts.get(path).map_or("", String::as_str))).collect();
+        // 자리 잡기는 오래 걸리므로, 보관함과 크기가 그대로면 지난번 것을 쓴다.
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        (&files, &notes, area.w.to_bits(), area.h.to_bits()).hash(&mut hasher);
+        let key = hasher.finish();
+        let mut cache = self.graph.borrow_mut();
+        if cache.as_ref().is_none_or(|(known, _)| *known != key) {
+            let mut graph = graph::build(&notes, &files);
+            graph::layout(&mut graph, area.w, area.h);
+            *cache = Some((key, graph));
+        }
+        let graph = &cache.as_ref().expect("just filled").1;
+        if graph.nodes.is_empty() {
+            ui.f.styled(area.x + area.w / 2.0, area.mid_y(), 13.0, theme.muted, Align::Center, Style::PLAIN, "메모를 만들고 [[링크]]로 이으면 여기에 그려집니다.");
+            return;
+        }
+        let spot = |node: &graph::Node| (area.x + node.x, area.y + node.y);
+        // 점이 작아도 쉽게 누를 수 있도록, 누르는 자리는 이름표까지 덮는다.
+        let reach = |node: &graph::Node| Rect::new(area.x + node.x - 22.0, area.y + node.y - 16.0, 44.0, 44.0);
+        // 포인터를 올린 점과 그 이웃들만 또렷하게 그린다.
+        let hover = graph.nodes.iter().rposition(|node| ui.hot(reach(node)));
+        let near = |i: usize| hover.is_none_or(|h| h == i || graph.links.iter().any(|&(a, b)| (a, b) == (h, i) || (a, b) == (i, h)));
+        let dim = |color: webos::gui::Color, faded: bool| if faded { color.alpha(((color.0 & 0xff) / 5) as u8) } else { color };
+        ui.clip(area);
+        for &(a, b) in &graph.links {
+            let lit = hover.is_some_and(|h| h == a || h == b);
+            let color = if lit { theme.accent } else { dim(theme.line_strong, hover.is_some()) };
+            ui.f.line(&[spot(&graph.nodes[a]), spot(&graph.nodes[b])], color, 1.0);
+        }
+        for (i, node) in graph.nodes.iter().enumerate() {
+            let (x, y) = spot(node);
+            let extra = (node.degree as f32 * 1.5).min(7.0);
+            let r = 5.0 + extra;
+            let faded = !near(i);
+            let current = self.current.as_deref() == Some(node.id.as_str());
+            ui.f.circle(x, y, r + 1.5, theme.surface);
+            if node.exists {
+                ui.f.circle(x, y, r, dim(if current || hover == Some(i) { theme.accent } else { theme.muted }, faded));
+            } else {
+                // 링크만 있고 아직 없는 메모: 속이 빈 점
+                ui.f.circle(x, y, r, dim(theme.muted, faded));
+                ui.f.circle(x, y, r - 1.5, theme.surface);
+            }
+            let ink = if node.exists { theme.text } else { theme.muted };
+            ui.f.styled(x, y + 20.0 + extra, 11.0, dim(ink, faded), Align::Center, Style::PLAIN, &node.label);
+            let missing = if node.exists { "" } else { " (아직 없는 메모)" };
+            let label = format!("{}{missing}, 링크 {}개", node.label, node.degree);
+            ui.target(reach(node), Role::Button, current, &label, Action::GraphNode { id: node.id.clone(), label: node.label.clone(), exists: node.exists });
+        }
+        let hint = format!(
+            "메모 {}개 · 링크 {}개 · 점을 누르면 그 메모가 열립니다. 속이 빈 점은 링크만 있고 아직 없는 메모입니다.",
+            graph.nodes.iter().filter(|n| n.exists).count(),
+            graph.links.len()
+        );
+        ui.label(area.x + 12.0, area.bottom() - 17.0, 12.0, theme.muted, Style::PLAIN, area.w - 24.0, &hint);
+        ui.unclip();
+    }
+
+    /// 빠른 열기: 이름 몇 글자로 메모를 찾아 연다. 입력 칸들 위에 뜬다.
+    fn draw_quick(&self, ui: &mut Ui<Action>, focus: Option<(u32, bool)>) {
+        const ROW: f32 = 29.0;
+        let theme = ui.theme;
+        ui.f.overlay();
+        let all = Rect::new(0.0, 0.0, self.w, self.h);
+        let scrim = if self.dark { webos::gui::Color::rgba(13, 14, 18, 115) } else { webos::gui::Color::rgba(233, 234, 240, 115) };
+        ui.f.rect(0.0, 0.0, self.w, self.h, 0.0, scrim);
+        ui.hit(all, Action::QuickClose);
+        let hits = self.quick_hits();
+        let width = 420f32.min(self.w - 32.0).max(120.0);
+        let list = if hits.is_empty() { 44.0 } else { hits.len() as f32 * ROW };
+        let panel = Rect::new(((self.w - width) / 2.0).round(), 48.0, width, 8.0 + 28.0 + 6.0 + list + 8.0);
+        // 떠 있는 느낌의 그림자
+        ui.f.rect(panel.x - 1.0, panel.y + 6.0, panel.w + 2.0, panel.h + 6.0, 14.0, webos::gui::Color::rgba(0, 0, 0, 22));
+        ui.f.rect(panel.x, panel.y + 2.0, panel.w, panel.h + 3.0, 11.0, webos::gui::Color::rgba(0, 0, 0, 26));
+        ui.f.rect(panel.x, panel.y, panel.w, panel.h, 10.0, theme.surface);
+        ui.f.frame(panel.x, panel.y, panel.w, panel.h, 10.0, theme.line_strong, 1.0);
+        ui.hit(panel, Action::Nothing);
+        let input = Rect::new(panel.x + 8.0, panel.y + 8.0, panel.w - 16.0, 28.0);
+        ui.field_box(input, true);
+        self.input(ui, input, QUICK, 13.0, false, "열 메모의 이름", "메모 이름", focus);
+        let top = input.bottom() + 6.0;
+        if hits.is_empty() {
+            ui.f.styled(panel.x + panel.w / 2.0, top + 22.0, 12.0, theme.muted, Align::Center, Style::PLAIN, "그런 이름의 메모가 없습니다.");
+        }
+        for (i, path) in hits.iter().enumerate() {
+            let rect = Rect::new(panel.x + 8.0, top + i as f32 * ROW, panel.w - 16.0, ROW);
+            let selected = i == self.quick_at;
+            if selected {
+                ui.f.rect(rect.x, rect.y, rect.w, rect.h, RADIUS, theme.accent_soft);
+            }
+            let dir = dir_of(path);
+            let dir_w = ui.width(dir, 12.0, Style::PLAIN).min(rect.w * 0.45);
+            ui.label(rect.x + 8.0, rect.mid_y(), 13.0, theme.text, Style::BOLD, rect.w - 26.0 - dir_w, stem_of(path));
+            let fitted = ui.fit(dir, 12.0, Style::PLAIN, dir_w + 1.0);
+            ui.f.styled(rect.right() - 8.0, rect.mid_y(), 12.0, theme.muted, Align::Right, Style::PLAIN, &fitted);
+            ui.target(rect, Role::Option, selected, stem_of(path), Action::QuickPick(path.to_string()));
+        }
     }
 
     /// 열어 둔 메모들의 탭과 뒤로·앞으로 단추
@@ -1217,7 +1499,10 @@ impl App {
             }
             x += 30.0;
         }
-        let strip = Rect::new(x, 0.0, (x0 + width - 8.0 - x).max(0.0), TABS_H - 1.0);
+        // 오른쪽 끝: 빠른 열기
+        let quick = ui.tool_width("빠른 열기");
+        ui.tool(x0 + width - 8.0 - quick, 5.0, "빠른 열기", Tool::Plain, false, Some(Action::QuickOpen));
+        let strip = Rect::new(x, 0.0, (x0 + width - 14.0 - quick - x).max(0.0), TABS_H - 1.0);
         if self.tabs.is_empty() || strip.w < 20.0 {
             return;
         }
@@ -1229,7 +1514,7 @@ impl App {
         ui.clip(strip);
         for (i, path) in self.tabs.iter().enumerate() {
             let rect = Rect::new(strip.x + i as f32 * (tab_w + 2.0) - offset, 5.0, tab_w, TOOL_H);
-            let selected = self.current.as_deref() == Some(path.as_str());
+            let selected = self.current.as_deref() == Some(path.as_str()) && !self.graph_open;
             if selected {
                 ui.f.rect(rect.x, rect.y, rect.w, rect.h, RADIUS, theme.surface);
                 ui.f.frame(rect.x, rect.y, rect.w, rect.h, RADIUS, theme.line, 1.0);
@@ -1265,6 +1550,7 @@ impl App {
             Action::Open(path) => {
                 let mut items = vec![item("열기", Action::Open(path.clone()))];
                 if kind_of(&path) == Kind::Note {
+                    items.push(item("옆에 열기", Action::Beside(path.clone())));
                     items.push(item("이름 바꾸기", Action::RenameNote(path.clone())));
                 }
                 items.extend([item("다른 폴더로 옮기기…", Action::MoveMenu(path.clone())), separator(), danger("삭제…", Action::AskDelete(path))]);
@@ -1285,10 +1571,16 @@ impl App {
                 self.active_dir.clear();
                 vec![item("새 메모", Action::NewNoteIn(String::new())), item("새 폴더", Action::NewFolderIn(String::new()))]
             }
-            Action::Tab(path) | Action::CloseTab(path) => vec![
-                item("탭 닫기", Action::CloseTab(path.clone())),
-                (MenuItem::new("다른 탭 모두 닫기").disabled_if(self.tabs.len() < 2), Some(Action::CloseOthers(path))),
-            ],
+            Action::Tab(path) | Action::CloseTab(path) => {
+                let mut items = vec![
+                    item("탭 닫기", Action::CloseTab(path.clone())),
+                    (MenuItem::new("다른 탭 모두 닫기").disabled_if(self.tabs.len() < 2), Some(Action::CloseOthers(path.clone()))),
+                ];
+                if kind_of(&path) == Kind::Note {
+                    items.extend([separator(), item("옆에 열기", Action::Beside(path))]);
+                }
+                items
+            }
             _ => return,
         };
         self.show_menu(at, items);
@@ -1369,6 +1661,24 @@ impl App {
             Action::ToggleBacklinks => self.backlinks_open = !self.backlinks_open,
             Action::ToggleOutline => self.outline_open = !self.outline_open,
             Action::ToggleTags => self.tags_open = !self.tags_open,
+            Action::ToggleGraph => self.graph_open = !self.graph_open,
+            Action::GraphNode { id, label, exists } => {
+                if exists {
+                    self.open(&id, true);
+                } else {
+                    self.graph_open = false;
+                    self.open_link(&label);
+                }
+            }
+            Action::QuickOpen => self.open_quick(),
+            Action::QuickPick(path) => self.open(&path, true),
+            Action::QuickClose => self.close_quick(),
+            Action::Beside(path) => {
+                self.beside = Some(path);
+                self.beside_scroll = 0.0;
+            }
+            Action::CloseBeside => self.beside = None,
+            Action::Nothing => {}
         }
     }
 
@@ -1381,7 +1691,32 @@ impl App {
             }
             Event::PointerMove { x, y } => {
                 self.mouse = Some((x, y));
-                return self.hit_at(self.mouse) != self.hot;
+                // 누른 채로 조금 움직이면 끌기가 시작된다.
+                if let Some((path, from)) = &self.press {
+                    if self.dragging.is_none() && (x - from.0).hypot(y - from.1) > 5.0 {
+                        self.dragging = Some(path.clone());
+                    }
+                }
+                if self.dragging.is_some() {
+                    return true; // 이름표가 포인터를 따라다닌다
+                }
+                let over = self.hit_at(self.mouse);
+                // 빠른 열기의 목록은 포인터를 올린 줄이 골라진다.
+                if let Some(Action::QuickPick(path)) = over.map(|i| &self.hits[i].1) {
+                    if let Some(at) = self.quick_hits().iter().position(|hit| hit == path) {
+                        self.quick_at = at;
+                    }
+                }
+                return over != self.hot;
+            }
+            Event::PointerUp { .. } => {
+                self.press = None;
+                let Some(path) = self.dragging.clone() else { return false };
+                let dest = self.drop_dir();
+                self.dragging = None;
+                if let Some(dest) = dest {
+                    self.move_to(&path, &dest);
+                }
             }
             Event::PointerLeave => {
                 self.mouse = None;
@@ -1391,7 +1726,15 @@ impl App {
                 self.mouse = Some((x, y));
                 let Some(action) = self.hit_at(self.mouse).map(|i| self.hits[i].1.clone()) else { return false };
                 match button {
-                    0 => self.perform(action, (x, y), clicks),
+                    0 => {
+                        // 트리의 항목은 끌어서 다른 폴더로 옮길 수 있다.
+                        if x < self.side() && self.query.trim().is_empty() {
+                            if let Action::Open(path) | Action::Dir(path) = &action {
+                                self.press = Some((path.clone(), (x, y)));
+                            }
+                        }
+                        self.perform(action, (x, y), clicks)
+                    }
                     // 탭은 가운데 단추로 누르면 닫힌다.
                     1 => match action {
                         Action::Tab(path) => self.close_tab(&path),
@@ -1408,14 +1751,24 @@ impl App {
                 self.tree_scroll = to;
             }
             Event::Wheel { x, y, dy } => {
-                let preview = self.preview.borrow();
-                let Some(view) = preview.view.filter(|view| view.contains((x, y))) else { return false };
-                let to = (self.preview_scroll + dy).clamp(0.0, (preview.height - view.h).max(0.0));
-                if to == self.preview_scroll {
+                if self.quick.is_some() {
                     return false;
                 }
-                drop(preview);
-                self.preview_scroll = to;
+                // 포인터가 올라가 있는 미리보기(본문의 것 또는 옆에 펼친 것)를 민다.
+                let over = |info: &RefCell<PreviewInfo>| {
+                    let info = info.borrow();
+                    info.view.filter(|view| view.contains((x, y))).map(|view| (info.height - view.h).max(0.0))
+                };
+                let (scroll, max) = match (over(&self.preview), over(&self.beside_info)) {
+                    (Some(max), _) => (&mut self.preview_scroll, max),
+                    (None, Some(max)) => (&mut self.beside_scroll, max),
+                    (None, None) => return false,
+                };
+                let to = (scroll.min(max) + dy).clamp(0.0, max);
+                if to == *scroll {
+                    return false;
+                }
+                *scroll = to;
             }
             Event::Input { field } => match field {
                 EDITOR => self.typed(),
@@ -1424,6 +1777,10 @@ impl App {
                 SEARCH => {
                     self.query = self.window.text(SEARCH).unwrap_or_default();
                     self.tree_scroll = 0.0;
+                }
+                QUICK if self.quick.is_some() => {
+                    self.quick = Some(self.window.text(QUICK).unwrap_or_default());
+                    self.quick_at = 0;
                 }
                 _ => return false,
             },
@@ -1436,6 +1793,7 @@ impl App {
                     self.commit_dir_name();
                 }
             }
+            Event::Key { key: key @ (Key::Up | Key::Down | Key::Enter | Key::Escape), .. } if self.quick.is_some() => self.quick_key(key),
             Event::Key { key: Key::Enter, .. } if self.focused == Some(TITLE) => {
                 self.commit_title();
                 self.focus = Some((EDITOR, false));
@@ -1451,6 +1809,7 @@ impl App {
             }
             Event::Key { key, mods } if mods.command() => match key {
                 Key::Char(c) if c.eq_ignore_ascii_case(&'s') && !mods.alt => self.save(),
+                Key::Char(c) if c.eq_ignore_ascii_case(&'o') && !mods.alt => self.open_quick(),
                 // 어디에 커서가 있든 Ctrl/Cmd+Alt+N 으로 새 메모를 만든다. (Ctrl/Cmd+N 은 브라우저가 새 창에 쓴다.)
                 Key::Char(c) if c.eq_ignore_ascii_case(&'n') && mods.alt => self.new_note(&self.active_dir.clone()),
                 Key::Left if mods.alt => self.go(-1),
@@ -1534,6 +1893,16 @@ fn main() {
         outline_open: true,
         tags_open: false,
         tree_height: RefCell::new(0.0),
+        graph_open: false,
+        graph: RefCell::new(None),
+        quick: None,
+        quick_at: 0,
+        recent: Vec::new(),
+        beside: None,
+        beside_scroll: 0.0,
+        beside_info: RefCell::default(),
+        press: None,
+        dragging: None,
     };
     // 실행할 때 파일 이름을 주면 그것을 연다: notepad 장보기.md
     match env::args().nth(1) {

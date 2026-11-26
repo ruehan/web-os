@@ -243,6 +243,12 @@ impl Frame {
         self.s(label);
     }
 
+    /// 이 뒤에 그리는 것은 입력 칸보다 위에 온다 (입력 칸을 덮는 창 등).
+    /// 이 뒤에 놓는 입력 칸은 그 위층보다도 위에 온다.
+    pub fn overlay(&mut self) {
+        self.op(13);
+    }
+
     /// 입력 칸의 커서를 옮긴다 (`start`와 `end`가 다르면 그 사이를 고른다). 자리는 글의 바이트 위치다.
     /// 화면 쪽은 커서가 보이도록 칸을 스크롤하고 초점을 준다. 옮기고 싶을 때의 묶음 하나에만 넣는다.
     pub fn select(&mut self, field: u32, start: usize, end: usize) {

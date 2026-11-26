@@ -356,6 +356,18 @@ button {
   font-family: inherit;
 }
 
+/* 입력 칸보다 위에 그리는 층. 그린 것이 있을 때만 입력을 받는다. */
+.surface-top {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+}
+
+.surface-regions {
+  z-index: 4;
+}
+
 /* 그림 속 단추·항목의 자리를 알려 주는 보이지 않는 요소들. 누르는 것은 아래의 그림이 받는다. */
 .surface-regions,
 .surface-region {

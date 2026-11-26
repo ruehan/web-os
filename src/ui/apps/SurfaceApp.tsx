@@ -97,6 +97,7 @@ function paint(ctx: CanvasRenderingContext2D, ops: DrawOp[], width: number, heig
       case 'region': // 보이지 않는 요소로 놓는다
       case 'menu': // 시스템의 메뉴로 띄운다
       case 'select': // 입력 칸의 커서를 옮긴다
+      case 'overlay': // 위층과의 경계 (아래에서 나눠 그린다)
         break
     }
   }
@@ -118,6 +119,8 @@ export function SurfaceApp(props: AppProps) {
   /** 이 창에서 마지막으로 커서가 있던 입력 칸. 창이 다시 앞으로 오면 거기로 돌아간다. */
   let lastField: number | undefined
   let layer!: HTMLDivElement
+  /** 입력 칸보다 위에 그리는 캔버스 */
+  let top!: HTMLCanvasElement
   const regions: HTMLDivElement[] = []
   const dark = window.matchMedia('(prefers-color-scheme: dark)')
   const isDark = () => settings.theme === 'dark' || (settings.theme === 'system' && dark.matches)
@@ -125,11 +128,23 @@ export function SurfaceApp(props: AppProps) {
   const point = (kind: number, [x, y]: readonly [number, number], c = 0) => gui.send(pid, encodePointer(kind, x, y, c))
 
   function redraw() {
-    const ctx = canvas.getContext('2d')
-    if (!ctx || size.w === 0) return
+    if (size.w === 0) return
     const scale = window.devicePixelRatio || 1
-    ctx.setTransform(scale, 0, 0, scale, 0, 0)
-    paint(ctx, ops, size.w, size.h, fontFamilies())
+    // overlay 명령의 앞은 아래 캔버스에, 뒤는 입력 칸 위의 캔버스에 그린다.
+    const split = ops.findIndex((op) => op.op === 'overlay')
+    const layers = [
+      [canvas, split < 0 ? ops : ops.slice(0, split)],
+      [top, split < 0 ? [] : ops.slice(split + 1)],
+    ] as const
+    for (const [target, list] of layers) {
+      const ctx = target.getContext('2d')
+      if (!ctx) continue
+      ctx.setTransform(scale, 0, 0, scale, 0, 0)
+      if (target === top) ctx.clearRect(0, 0, size.w, size.h)
+      paint(ctx, list, size.w, size.h, fontFamilies())
+    }
+    // 위층에 그린 것이 있을 때만 위층이 입력을 받는다 (없으면 아래의 입력 칸을 누를 수 있어야 한다).
+    top.style.pointerEvents = split < 0 ? 'none' : 'auto'
   }
 
   /** 창의 크기에 캔버스를 맞추고 프로그램에 알린다. */
@@ -139,8 +154,10 @@ export function SurfaceApp(props: AppProps) {
     const scale = window.devicePixelRatio || 1
     size = { w, h }
     // 화면 배율만큼 촘촘하게 그려서 고해상도 화면에서도 선명하게 한다. 프로그램이 보는 좌표는 그대로다.
-    canvas.width = Math.round(w * scale)
-    canvas.height = Math.round(h * scale)
+    for (const target of [canvas, top]) {
+      target.width = Math.round(w * scale)
+      target.height = Math.round(h * scale)
+    }
     redraw()
     send(GuiEvent.resize, w, h, isDark() ? 1 : 0)
   }
@@ -271,6 +288,7 @@ export function SurfaceApp(props: AppProps) {
   /** 그리기 명령에 든 입력 칸들을 실제 요소로 맞춘다: 새 칸은 만들고, 빠진 칸은 치우고, 자리와 모양을 고친다. */
   function placeFields() {
     const wanted = ops.filter((op): op is FieldOp => op.op === 'field')
+    const split = ops.findIndex((op) => op.op === 'overlay')
     for (const [id, el] of fields) {
       if (wanted.some((op) => op.id === id && op.multiline === el instanceof HTMLTextAreaElement)) continue
       // 커서가 있던 칸이 사라지면 키 입력이 갈 곳이 없어지므로 그림으로 옮긴다.
@@ -295,6 +313,8 @@ export function SurfaceApp(props: AppProps) {
         fontWeight: op.bold ? '600' : '',
         // 한 줄짜리 칸은 글이 세로 가운데에 오게 한다.
         lineHeight: op.multiline ? '' : `${op.h}px`,
+        // overlay 뒤에 놓은 칸은 위층보다도 위에 온다.
+        zIndex: split >= 0 && ops.indexOf(op) > split ? '3' : '',
       })
       // 프로그램은 커서를 옮기고 싶은 그림에만 focus를 켜서 보낸다 (파일을 새로 열었을 때 등).
       if (op.focus) {
@@ -361,6 +381,32 @@ export function SurfaceApp(props: AppProps) {
     }),
   )
 
+  /** 포인터 입력을 프로그램에 전한다. 아래 캔버스와 위층 캔버스가 같이 쓴다. */
+  const pointer = {
+    onPointerDown: (e: PointerEvent) => {
+      ;(e.currentTarget as HTMLCanvasElement).setPointerCapture(e.pointerId)
+      // 위층을 눌러도 입력 칸의 커서는 그대로 둔다 (위층에 놓인 칸에 글을 치는 중일 수 있다).
+      if (e.currentTarget === canvas) {
+        canvas.focus({ preventScroll: true })
+        lastField = undefined
+      } else e.preventDefault()
+      point(GuiEvent.pointerDown, at(e), e.button + 256 * (clicksAt(e) - 1))
+    },
+    onPointerMove: (e: PointerEvent) => {
+      // 빠르게 움직이면 브라우저가 여러 위치를 한 번에 묶어 준다. 선이 각지지 않게 모두 전한다.
+      for (const step of e.getCoalescedEvents?.().length ? e.getCoalescedEvents() : [e]) point(GuiEvent.pointerMove, at(step), e.buttons)
+    },
+    onPointerUp: (e: PointerEvent) => point(GuiEvent.pointerUp, at(e)),
+    onPointerCancel: (e: PointerEvent) => point(GuiEvent.pointerUp, at(e)),
+    onPointerLeave: () => send(GuiEvent.pointerLeave),
+    onWheel: (e: WheelEvent) => {
+      // 줄 단위로 알려 주는 마우스는 한 줄을 대략의 픽셀로 바꾼다.
+      const dy = e.deltaMode === WheelEvent.DOM_DELTA_LINE ? e.deltaY * 30 : e.deltaY
+      if (dy) point(GuiEvent.wheel, at(e), dy)
+    },
+    onContextMenu: (e: MouseEvent) => e.preventDefault(),
+  }
+
   return (
     <div class="surface-host" ref={host} data-pid={pid}>
       <canvas
@@ -369,27 +415,10 @@ export function SurfaceApp(props: AppProps) {
         tabindex="0"
         role="application"
         aria-label={props.args.title}
-        onPointerDown={(e) => {
-          canvas.setPointerCapture(e.pointerId)
-          canvas.focus({ preventScroll: true })
-          lastField = undefined
-          point(GuiEvent.pointerDown, at(e), e.button + 256 * (clicksAt(e) - 1))
-        }}
-        onPointerMove={(e) => {
-          // 빠르게 움직이면 브라우저가 여러 위치를 한 번에 묶어 준다. 선이 각지지 않게 모두 전한다.
-          for (const step of e.getCoalescedEvents?.().length ? e.getCoalescedEvents() : [e]) point(GuiEvent.pointerMove, at(step), e.buttons)
-        }}
-        onPointerUp={(e) => point(GuiEvent.pointerUp, at(e))}
-        onPointerCancel={(e) => point(GuiEvent.pointerUp, at(e))}
-        onPointerLeave={() => send(GuiEvent.pointerLeave)}
-        onWheel={(e) => {
-          // 줄 단위로 알려 주는 마우스는 한 줄을 대략의 픽셀로 바꾼다.
-          const dy = e.deltaMode === WheelEvent.DOM_DELTA_LINE ? e.deltaY * 30 : e.deltaY
-          if (dy) point(GuiEvent.wheel, at(e), dy)
-        }}
-        onContextMenu={(e) => e.preventDefault()}
+        {...pointer}
         onKeyDown={(e) => key(e)}
       />
+      <canvas class="surface surface-top" ref={top} aria-hidden="true" {...pointer} />
       <div class="surface-regions" ref={layer} />
     </div>
   )
