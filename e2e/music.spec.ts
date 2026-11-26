@@ -60,7 +60,7 @@ test.beforeEach(async ({ page }) => {
 test('plays a picked song in a YouTube player placed inside the window', async ({ page }) => {
   await launch(page, '음악')
   // 글의 목록부터 보인다.
-  await expect(music(page).getByRole('link')).toHaveText(['내 글'])
+  await expect(music(page).getByRole('link')).toHaveText(['내 글', '요즘 듣는 인디 밴드 셋'])
   await expect(player(page)).toHaveCount(0)
   await music(page).getByRole('link', { name: '내 글' }).click()
   await expect(music(page).getByRole('option', { name: '하나', exact: true })).toBeVisible()

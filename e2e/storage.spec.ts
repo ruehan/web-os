@@ -37,8 +37,8 @@ test('the system files under /usr follow the deployment: changed ones are restor
   await type(page, 'mkdir -p /usr/share/music/playlists && echo old > /usr/share/music/playlists/gone.md && echo changed > /usr/share/music/songs.txt')
   await expectScreen(page).toMatch(/songs\.txt\nguest@webos:~\$$/)
   await reload(page)
-  await type(page, 'ls /usr/share/music; head -n 1 /usr/share/music/songs.txt')
-  await expectScreen(page).toContain('songs.txt\nsongs.txt\n// 음악 앱에 등록한 곡들입니다.')
+  await type(page, 'cd /usr/share/music; ls playlists | grep -c gone; head -n 1 songs.txt')
+  await expectScreen(page).toContain('songs.txt\n0\n// 음악 앱에 등록한 곡들입니다.')
 })
 
 test('the first visit installs the default files and says so', async ({ page }) => {
