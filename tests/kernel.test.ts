@@ -272,7 +272,11 @@ describe('/proc', () => {
     expect(out[0]).toBe('  PID  PPID STAT TTY COMMAND')
     expect(out[1]).toBe('    1     0 S    1   sh')
     expect(out[2]).toBe('    2     1 R    1   sleep 5')
-    expect(out.slice(3).map((l) => l.replace(/^\s+\d+/, ''))).toEqual(['     1 R    1   ps', '     1 S    1   cat'])
+    // cat은 ps가 목록을 읽는 순간에 이미 입력을 기다리며 멈춰 있을 수도(S), 아직 막 시작해 돌고 있을 수도(R) 있다.
+    const rest = out.slice(3).map((l) => l.replace(/^\s+\d+/, ''))
+    expect(rest[0]).toBe('     1 R    1   ps')
+    expect(rest[1]).toMatch(/^     1 [RS]    1   cat$/)
+    expect(rest).toHaveLength(2)
   })
 
   it('reading /proc does not count as a filesystem change', async () => {

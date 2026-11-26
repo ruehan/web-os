@@ -138,8 +138,10 @@ export function SurfaceApp(props: AppProps) {
   const fieldOps = new Map<number, FieldOp>()
   /** 방금 줄이 바뀌려 한 칸들 (곧 올 입력이 그 줄바꿈이다) */
   const broke = new Set<number>()
-  /** 조합을 확정하려고 초점을 잠깐 떼는 중이다 (프로그램에는 초점이 옮겨진 것으로 알리지 않는다). */
-  let settling = false
+  /** 조합이 확정되기를 기다리고 있는 키 (확정되면 deliver로 프로그램에 전한다) */
+  let held: { id: number; deliver(): void; timer: ReturnType<typeof setTimeout> | undefined } | undefined
+  /** 칸마다 마지막으로 조합이 확정된 때 */
+  const settled = new Map<number, number>()
   /** 조합 중에 이미 프로그램에 전한 키. 브라우저가 같은 키를 곧바로 한 번 더 알리면 그것은 버린다. */
   let echo: { key: string; at: number } | undefined
   /** 방금 Enter를 눌러 줄바꿈을 기다리는 칸들과, 그때 함께 누른 키 */
@@ -235,12 +237,33 @@ export function SurfaceApp(props: AppProps) {
         const taken = !command && !alongside && (asked || (single && ['Enter', 'ArrowUp', 'ArrowDown'].includes(name)))
         if (alongside) enters.set(id, modsOf(e))
         if (!taken) return
-        // 조합하던 글자를 먼저 확정해 글에 넣고, 그 글과 커서 자리를 알린 다음에 키를 전한다.
+        // 이 키를 받은 입력기는 곧 조합하던 글자를 확정한다. 그것을 기다렸다가, 확정된 글과 커서 자리를 알린 다음에 키를 전한다.
+        // (여기서 조합을 억지로 끝내면 안 된다: 입력기가 제 차례에 같은 글자를 한 번 더 넣는다.)
         e.preventDefault()
-        settle(id, field)
         echo = { key: name, at: e.timeStamp }
-        reportCaret(id, field)
-        return send(GuiEvent.key, code, modsOf(e))
+        const deliver = () => {
+          if (held?.deliver !== deliver) return
+          clearTimeout(held.timer)
+          held = undefined
+          if (!field.isConnected) return
+          if (texts.get(id) !== field.value) {
+            texts.set(id, field.value)
+            gui.setText(pid, id, field.value)
+            paintLayer(id)
+          }
+          echo = { key: name, at: performance.now() }
+          reportCaret(id, field)
+          send(GuiEvent.key, code, modsOf(e))
+        }
+        held?.deliver()
+        // 어떤 브라우저는 확정을 먼저 알리고 키를 나중에 알린다. 방금 확정됐으면 기다릴 것이 없다.
+        if (e.timeStamp - (settled.get(id) ?? -1e9) < 60) {
+          held = { id, deliver, timer: undefined }
+          return deliver()
+        }
+        // 확정 알림이 오지 않는 경우에도 키가 사라지지는 않게, 잠깐만 기다린다.
+        held = { id, deliver, timer: setTimeout(deliver, 150) }
+        return
       }
       // 키를 받는 프로그램이 그 순간의 커서 자리를 알고 있도록, 달라졌으면 먼저 알린다.
       reportCaret(id, field)
@@ -253,25 +276,6 @@ export function SurfaceApp(props: AppProps) {
     } else if (composing) return
     if (!isBrowserKey(e) && !(field && command && isEditingKey(e))) e.preventDefault()
     send(GuiEvent.key, code, modsOf(e))
-  }
-
-  /**
-   * 조합 중인 글자를 확정한다. 입력 칸에서 초점을 잠깐 뗐다가 돌려주면 입력기가 조합을 끝내고 글자를 그대로 남긴다.
-   * 그 글이 프로그램에 아직 전해지지 않았으면 전한다.
-   */
-  function settle(id: number, el: FieldElement) {
-    settling = true
-    try {
-      el.blur()
-      el.focus({ preventScroll: true })
-    } finally {
-      settling = false
-    }
-    if (texts.get(id) !== el.value) {
-      texts.set(id, el.value)
-      gui.setText(pid, id, el.value)
-      paintLayer(id)
-    }
   }
 
   /** 입력 칸의 커서 자리(또는 고른 범위)가 지난번에 알린 것과 다르면 프로그램에 알린다. 자리는 UTF-8 바이트 위치다. */
@@ -347,11 +351,16 @@ export function SurfaceApp(props: AppProps) {
     for (const type of ['keyup', 'pointerup', 'select', 'selectionchange', 'focus']) el.addEventListener(type, () => reportCaret(op.id, el))
     el.addEventListener('focus', () => {
       lastField = op.id
-      if (!settling) send(GuiEvent.fieldFocus, op.id, 1)
+      send(GuiEvent.fieldFocus, op.id, 1)
     })
     el.addEventListener('blur', () => {
       // 창이 뒤로 간 것은 focus 이벤트로 따로 알린다. 여기서는 창 안에서 다른 곳으로 옮긴 것만 알린다.
-      if (!settling && document.hasFocus() && props.focused()) send(GuiEvent.fieldFocus, op.id, 0)
+      if (document.hasFocus() && props.focused()) send(GuiEvent.fieldFocus, op.id, 0)
+    })
+    el.addEventListener('compositionend', (e) => {
+      settled.set(op.id, e.timeStamp)
+      // 확정된 글자가 글에 들어간 뒤에(뒤따르는 input 다음에) 기다리던 키를 전한다.
+      if (held?.id === op.id) setTimeout(held.deliver, 0)
     })
     el.addEventListener('keydown', (e) => key(e as KeyboardEvent, el, op.id))
     host.append(el)

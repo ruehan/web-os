@@ -472,9 +472,13 @@ async function compose(page: Page, cdp: CDPSession, steps: string[]) {
   }
 }
 
-/** 조합 중에 누른 키: 브라우저는 이런 키를 "조합 중"이라고 표시해서 알린다. */
-async function pressWhileComposing(cdp: CDPSession, key: string, vk: number) {
+/**
+ * 조합 중에 누른 키. 브라우저는 이런 키를 "조합 중"이라고 표시해서 알리고, 입력기는 그 키를 받고 나서 조합하던 글자를 확정한다.
+ * (commit을 주지 않으면 확정 알림이 오지 않는 경우를 흉내 낸다.)
+ */
+async function pressWhileComposing(cdp: CDPSession, key: string, vk: number, commit?: string) {
   await cdp.send('Input.dispatchKeyEvent', { type: 'rawKeyDown', key, code: key, windowsVirtualKeyCode: vk })
+  if (commit !== undefined) await cdp.send('Input.insertText', { text: commit })
   await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key, code: key, windowsVirtualKeyCode: vk })
 }
 
@@ -488,7 +492,7 @@ test('keys pressed while the last Korean letter is still being composed do what 
 
   // 제목: "한"의 조합이 끝나지 않은 채 Enter. 글자가 확정되고 그 이름으로 바뀐다.
   await compose(page, cdp, ['ㅎ', '하', '한'])
-  await pressWhileComposing(cdp, 'Enter', 13)
+  await pressWhileComposing(cdp, 'Enter', 13, '한')
   expect(await seen).toBe(true)
   await expect(spot(page, 'tab', '한')).toHaveAttribute('aria-selected', 'true')
   await expect(editor(page)).toBeFocused()
@@ -501,7 +505,7 @@ test('keys pressed while the last Korean letter is still being composed do what 
   await expect(pad(page).getByRole('option')).toHaveCount(8)
   await compose(page, cdp, ['ㅈ', '제'])
   await expect(pad(page).getByRole('option')).toHaveCount(3)
-  await pressWhileComposing(cdp, 'ArrowDown', 40)
+  await pressWhileComposing(cdp, 'ArrowDown', 40, '제')
   await expect(spot(page, 'option', '제목 2')).toHaveAttribute('aria-selected', 'true')
   // 조합하던 글자는 확정되어 남고, 한 번만 내려간다.
   await expect(editor(page)).toHaveValue('/제')
@@ -518,7 +522,7 @@ test('keys pressed while the last Korean letter is still being composed do what 
   // "인"이 조합 중인 채로 Enter: 글자가 확정되고 그 명령이 들어간다 (줄이 하나 더 바뀌지는 않는다).
   await compose(page, cdp, ['이', '인'])
   await expect(pad(page).getByRole('option')).toHaveCount(1)
-  await pressWhileComposing(cdp, 'Enter', 13)
+  await pressWhileComposing(cdp, 'Enter', 13, '인')
   await expect(editor(page)).toHaveValue('## 둘째\n> ')
   await expect(pad(page).getByRole('option')).toHaveCount(0)
 
