@@ -339,8 +339,11 @@ export function runWasi(
       view().setUint32(versionPtr, res.ret ?? 0, true)
       return res.data!.length
     },
-    gui_set_text: (field: number, ptr: number, len: number) =>
-      -sys.call({ nr: Sys.guisettext, args: [field], data: bytes().slice(ptr, ptr + len) }).errno,
+    // guarded가 1이면 사용자가 그사이 더 치지 않았을 때만 정한다: 정했으면 1, 버렸으면 0.
+    gui_set_text(field: number, ptr: number, len: number, guarded: number) {
+      const res = sys.call({ nr: Sys.guisettext, args: [field, guarded], data: bytes().slice(ptr, ptr + len) })
+      return res.errno ? -res.errno : (res.ret ?? 0)
+    },
     // 글들의 폭을 잰다. 폭(f32)을 최대 cap개까지 out에 쓰고 그 개수를 돌려준다.
     gui_measure(reqPtr: number, reqLen: number, out: number, cap: number) {
       const res = sys.call({ nr: Sys.guimeasure, args: [], data: bytes().slice(reqPtr, reqPtr + reqLen) })

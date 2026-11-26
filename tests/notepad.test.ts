@@ -136,7 +136,7 @@ describe('notepad', () => {
     // 글의 내용은 그리기 명령에 들어 있지 않다. 칸의 자리와 모양만 있다.
     expect(pad.field(EDITOR)).toEqual({
       op: 'field', id: EDITOR, x: 264, y: 95, w: 622, h: 437, size: 13, color: '#191a20', background: '#ffffff',
-      multiline: true, mono: true, bold: false, focus: true, select: false, label: '메모 내용', placeholder: '',
+      multiline: true, mono: true, bold: false, focus: true, select: false, keys: true, grabEnter: false, label: '메모 내용', placeholder: '',
     })
     expect(pad.field(TITLE)).toMatchObject({ multiline: false, bold: true, size: 15, label: '제목', focus: false })
     expect(pad.field(SEARCH)).toMatchObject({ placeholder: '메모 찾기' })
@@ -695,6 +695,172 @@ describe('notepad', () => {
     pad.pointer(GuiEvent.pointerUp, 600, 300)
     await pad.until(() => !pad.latest().some((op) => op.op === 'overlay'), 'the drag to end')
     expect(exists('가.md')).toBe(true)
+  })
+
+  describe('writing helpers', () => {
+    /** 사용자가 본문 칸에서 한 일을 화면 쪽이 알리는 순서대로 흉내 낸다. */
+    async function editing(text: string, name = '글.md') {
+      write(name, text)
+      const pad = await openNotepad(name)
+      pad.send(GuiEvent.fieldFocus, EDITOR, 1)
+      const caret = (start: number, end = start) => pad.send(GuiEvent.caret, EDITOR, start, end)
+      const selects = () => all('gui-draw', pad.pid).flatMap((e) => decodeDrawList(e.data).filter((op) => op.op === 'select'))
+      const sets = () => all('gui-text', pad.pid).filter((e) => e.field === EDITOR).length
+      /** 사용자가 마지막으로 친 글과, 그때까지 프로그램이 칸의 글을 정한 횟수 */
+      let typed: { text: string; sets: number } | undefined
+      /** 지금 칸에 있는 글: 사용자가 친 것과 프로그램이 정한 것 중 나중 것 */
+      const value = () => (typed && typed.sets === sets() ? typed.text : pad.shown()!)
+      const type = (text: string) => {
+        typed = { text, sets: sets() }
+        pad.type(text)
+      }
+      const moved = () => selects().at(-1) as { start: number; end: number } | undefined
+      return {
+        pad,
+        caret,
+        type,
+        /** 프로그램이 커서를 이 자리로 옮길 때까지 기다린다. */
+        lands: (start: number, end = start) => host.until(() => moved()?.start === start && moved()?.end === end, `the cursor at ${start}..${end}`),
+        /** 커서 자리에서 Enter: 칸이 줄을 바꾸고, 바뀐 글과 커서 자리, 그리고 Enter가 차례로 전해진다. */
+        enter(at: number, mods = 0) {
+          const bytes = utf8(value())
+          type(new TextDecoder().decode(bytes.slice(0, at)) + '\n' + new TextDecoder().decode(bytes.slice(at)))
+          caret(at + 1)
+          pad.send(GuiEvent.key, keyCode('Enter'), mods)
+        },
+        key: (key: string, mods = 0) => pad.send(GuiEvent.key, keyCode(key), mods),
+        /** 프로그램이 마지막으로 옮긴 커서 자리 */
+        moved,
+        becomes: (text: string) => host.until(() => pad.shown() === text, `the text to become ${JSON.stringify(text)}`),
+      }
+    }
+    const len = (text: string) => utf8(text).length
+
+    it('continues a list when Enter is pressed at the end of an item', async () => {
+      const ed = await editing('- 우유')
+      ed.enter(len('- 우유'))
+      await ed.becomes('- 우유\n- ')
+      await ed.lands(len('- 우유\n- '))
+      await host.until(() => file('글.md') === '- 우유\n- ', 'the file')
+
+      // 빈 항목에서 한 번 더 치면 목록이 끝난다.
+      ed.enter(len('- 우유\n- '))
+      await ed.becomes('- 우유\n')
+      // 번호는 하나 올리고, 체크 목록은 빈 상자로 시작한다.
+      ed.type('1. 하나\n- [x] 끝')
+      ed.enter(len('1. 하나'))
+      await ed.becomes('1. 하나\n2. \n- [x] 끝')
+      ed.enter(len('1. 하나\n2. \n- [x] 끝'))
+      await ed.becomes('1. 하나\n2. \n- [x] 끝\n- [ ] ')
+    })
+
+    it('leaves ordinary line breaks alone', async () => {
+      const ed = await editing('그냥 글\n- 목록')
+      const count = () => all('gui-text', ed.pad.pid).filter((e) => e.field === EDITOR).length
+      const before = count()
+      ed.enter(len('그냥 글'))
+      // Shift+Enter는 목록에서도 그냥 줄바꿈이다.
+      ed.enter(len('그냥 글\n\n- 목록'), Mod.shift)
+      await host.until(() => file('글.md') === '그냥 글\n\n- 목록\n', 'the file')
+      // 프로그램은 입력 칸의 글을 건드리지 않았다.
+      expect(count()).toBe(before)
+      expect(ed.moved()).toBeUndefined()
+    })
+
+    it('does not continue lists in plain text notes', async () => {
+      const ed = await editing('- 우유', '글.txt')
+      expect(ed.pad.field(EDITOR)).toMatchObject({ keys: false })
+      ed.enter(len('- 우유'))
+      await host.until(() => file('글.txt') === '- 우유\n', 'the file')
+    })
+
+    it('indents with Tab and outdents with Shift+Tab', async () => {
+      const ed = await editing('- 하나\n- 둘\n글')
+      ed.caret(len('- 하나\n- 둘'))
+      ed.key('Tab')
+      await ed.becomes('- 하나\n  - 둘\n글')
+      await ed.lands(len('- 하나\n  - 둘'))
+      ed.key('Tab', Mod.shift)
+      await ed.becomes('- 하나\n- 둘\n글')
+      // 여러 줄을 고르면 모두 옮긴다.
+      ed.caret(0, len('- 하나\n- 둘'))
+      ed.key('Tab')
+      await ed.becomes('  - 하나\n  - 둘\n글')
+      await ed.lands(2, len('  - 하나\n  - 둘'))
+      // 목록이 아닌 줄에서는 그 자리에 공백 두 칸을 넣는다.
+      ed.caret(len('  - 하나\n  - 둘\n글'))
+      ed.key('Tab')
+      await ed.becomes('  - 하나\n  - 둘\n글  ')
+    })
+
+    it('never overwrites what was typed while it was working', async () => {
+      const ed = await editing('- 하나')
+      const sets = () => all('gui-text', ed.pad.pid).filter((e) => e.field === EDITOR).length
+      const before = sets()
+      // Tab을 누른 직후, 프로그램이 그것을 처리하기도 전에 글자를 더 쳤다.
+      ed.caret(len('- 하나'))
+      ed.key('Tab')
+      ed.type('- 하나 더')
+      await host.until(() => file('글.md') === '- 하나 더', 'the typed text to be saved')
+      // 들여 쓴 글로 덮어쓰지 않았다: 프로그램은 칸의 글을 건드리지 않았다.
+      expect(sets()).toBe(before)
+      // 그다음부터는 다시 평소대로 된다.
+      ed.caret(len('- 하나 더'))
+      ed.key('Tab')
+      await ed.becomes('  - 하나 더')
+    })
+
+    it('wraps the selection with Ctrl+B, I and K', async () => {
+      const ed = await editing('가 나 다')
+      ed.caret(len('가 '), len('가 나'))
+      ed.key('b', Mod.ctrl)
+      await ed.becomes('가 **나** 다')
+      // 감싼 안쪽이 고른 채로 남아, 이어서 다른 것으로 감쌀 수 있다.
+      await ed.lands(len('가 **'), len('가 **나'))
+      ed.key('i', Mod.meta)
+      await ed.becomes('가 ***나*** 다')
+      ed.caret(len('가 ***나*** 다'))
+      ed.key('k', Mod.ctrl)
+      await ed.becomes('가 ***나*** 다[[]]')
+      await ed.lands(len('가 ***나*** 다[['))
+    })
+
+    it('offers notes to link while the cursor is inside an open [[', async () => {
+      write('회의록.md', '')
+      write('회계.md', '')
+      write('그림.png', '')
+      write('무관.md', '')
+      const ed = await editing('보기 [[회')
+      ed.caret(len('보기 [[회'))
+      await ed.pad.see('링크할 메모 (Tab으로 첫 번째 선택)')
+      expect(ed.pad.regions('button').filter((label) => label.startsWith('회'))).toEqual(['회계', '회의록'])
+      // 고르는 동안에는 Enter가 줄바꿈이 아니라 "이것으로"다.
+      expect(ed.pad.field(EDITOR)).toMatchObject({ grabEnter: true })
+      ed.key('Tab')
+      await ed.becomes('보기 [[회계]]')
+      await ed.pad.until(() => !ed.pad.region('회의록', 'button'), 'the choices to go')
+      await ed.lands(len('보기 [[회계]]'))
+      expect(ed.pad.field(EDITOR)).toMatchObject({ grabEnter: false })
+
+      // 단추를 눌러 고를 수도 있다. 뒤에 이미 ]]가 있으면 다시 붙이지 않는다.
+      ed.type('[[그]] 끝')
+      ed.caret(len('[[그'))
+      await ed.pad.until(() => ed.pad.region('그림.png', 'button'), 'the image to be offered')
+      ed.pad.press('그림.png')
+      await ed.becomes('[[그림.png]] 끝')
+      // 커서가 [[ 밖으로 나가거나 Esc를 누르면 사라진다.
+      ed.type('[[')
+      ed.caret(2)
+      await ed.pad.until(() => ed.pad.region('회계', 'button'), 'everything to be offered')
+      ed.key('Escape')
+      await ed.pad.until(() => !ed.pad.region('회계', 'button'), 'the choices to go')
+      ed.caret(2)
+      ed.type('[[회')
+      ed.caret(len('[[회'))
+      await ed.pad.until(() => ed.pad.region('회계', 'button'), 'the choices again')
+      ed.caret(0)
+      await ed.pad.until(() => !ed.pad.region('회계', 'button'), 'the choices to go')
+    })
   })
 
   it('scrolls a long tree with the wheel, drawing only the visible rows', async () => {

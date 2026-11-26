@@ -66,7 +66,11 @@ interface Process {
     events: Uint8Array[]
     queue: WaitQueue
     /** 입력 칸의 글: 칸 번호 → 글과, 바뀔 때마다 올라가는 판 번호 */
-    fields: Map<number, { data: Uint8Array; version: number }>
+    /**
+     * 입력 칸들의 글. version은 글이 바뀔 때마다(누가 바꾸든) 오르고, edits는 사용자가 고친 횟수,
+     * seen은 프로세스가 마지막으로 글을 읽었을 때의 edits다 (그 뒤로 사용자가 더 고쳤는지 알아내는 데 쓴다).
+     */
+    fields: Map<number, { data: Uint8Array; version: number; edits: number; seen: number }>
     /** 화면 쪽에 글자 폭을 물어 두고 답을 기다리는 중인가, 그리고 온 답 */
     asking: boolean
     reply?: Uint8Array
@@ -178,7 +182,8 @@ export class Kernel {
   guiText(pid: number, field: number, data: Uint8Array): void {
     const gui = this.procs.get(pid)?.gui
     if (!gui) return
-    gui.fields.set(field, { data, version: (gui.fields.get(field)?.version ?? 0) + 1 })
+    const old = gui.fields.get(field)
+    gui.fields.set(field, { data, version: (old?.version ?? 0) + 1, edits: (old?.edits ?? 0) + 1, seen: old?.seen ?? 0 })
     // 프로세스가 아직 가져가지 않은 같은 칸의 알림이 맨 뒤에 있으면 그것을 고쳐 쓴다 (빠르게 칠 때 쌓이지 않게).
     const last = gui.events.at(-1)
     const view = last && new DataView(last.buffer, last.byteOffset)
@@ -692,14 +697,21 @@ export class Kernel {
         const field = proc.gui.fields.get(a0)
         if (!field) return { errno: 0, ret: 0, data: new Uint8Array(0) }
         const max = Math.min(req.args[2] ?? 0, PAYLOAD_MAX)
+        // 처음부터 읽기 시작할 때, 사용자의 고침을 어디까지 보았는지 적어 둔다.
+        if (a1 === 0) field.seen = field.edits
         return { errno: 0, ret: field.version, data: field.data.subarray(a1, a1 + max) }
       }
       case Sys.guisettext: {
         if (!proc.gui) throw new KernelError(Errno.BADF)
         const data = req.data ?? new Uint8Array(0)
-        proc.gui.fields.set(a0, { data, version: (proc.gui.fields.get(a0)?.version ?? 0) + 1 })
-        this.host.emit({ type: 'gui-text', pid: proc.pid, field: a0, data })
-        return { errno: 0 }
+        const old = proc.gui.fields.get(a0)
+        const [edits, seen] = [old?.edits ?? 0, old?.seen ?? 0]
+        // 사용자가 친 글을 바탕으로 고쳐 쓰는 경우(a1 = 1): 프로세스가 읽은 뒤로 사용자가 더 쳤으면 버린다.
+        // 아직 커널에 닿지 않은 고침은 화면 쪽이 같은 방법으로 걸러 낸다 (after).
+        if (a1 === 1 && edits !== seen) return { errno: 0, ret: 0 }
+        proc.gui.fields.set(a0, { data, version: (old?.version ?? 0) + 1, edits, seen })
+        this.host.emit({ type: 'gui-text', pid: proc.pid, field: a0, data, ...(a1 === 1 ? { after: edits } : {}) })
+        return { errno: 0, ret: a1 === 1 ? 1 : 0 }
       }
       case Sys.guimeasure: {
         const gui = proc.gui

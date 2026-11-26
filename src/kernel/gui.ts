@@ -35,6 +35,11 @@ export const GuiEvent = {
   menu: 11,
   /** 포인터가 창의 그림 밖으로 나갔다 (입력 칸 위로 간 것도 포함). 마우스를 올린 표시를 지울 때 쓴다. */
   pointerLeave: 12,
+  /**
+   * 입력 칸의 커서가 옮겨졌거나 고른 범위가 바뀌었다. a 칸의 번호, b 시작, c 끝 (글의 UTF-8 바이트 위치. 커서만 있으면 둘이 같다).
+   * 글이 바뀌어 옮겨진 경우에는 그 input 이벤트 다음에 온다.
+   */
+  caret: 13,
 } as const
 
 /** key 이벤트의 특수 키 */
@@ -76,7 +81,7 @@ export function keyCode(key: string): number | undefined {
 const Op = { clear: 1, rect: 2, frame: 3, line: 4, circle: 5, text: 6, clip: 7, unclip: 8, field: 9, region: 10, menu: 11, select: 12, overlay: 13 } as const
 
 /** 입력 칸의 성질 (field 명령의 flags) */
-export const FieldFlag = { multiline: 1, mono: 2, focus: 4, bold: 8, select: 16 } as const
+export const FieldFlag = { multiline: 1, mono: 2, focus: 4, bold: 8, select: 16, keys: 32, grabEnter: 64 } as const
 
 /** 글자의 꾸밈 (text 명령의 flags에서 정렬 두 비트 다음) */
 export const TextFlag = { bold: 4, mono: 8, italic: 16, strike: 32, underline: 64 } as const
@@ -132,6 +137,14 @@ export type DrawOp =
       focus: boolean
       /** focus와 함께: 커서를 옮기면서 글 전체를 고른다 (이름을 바꿀 때) */
       select: boolean
+      /**
+       * 여러 줄 칸에서: Tab과 Enter를 프로그램에 key 이벤트로 알린다. Tab은 칸의 기본 동작(다음 칸으로 가기)을 하지 않고,
+       * Enter는 줄바꿈을 한 뒤에, 그 input과 caret 이벤트 다음에 알린다. 그래서 프로그램이 Enter를 받았을 때는
+       * 커서 바로 앞이 방금 들어간 줄바꿈이고, 그 결과를 고칠 수 있다 (목록 이어 쓰기 등).
+       */
+      keys: boolean
+      /** keys와 함께: Enter도 줄바꿈을 하지 않고 프로그램에만 알린다 (고를 것이 떠 있을 때) */
+      grabEnter: boolean
       /** 화면 낭독기 등에 알려 줄 이름 */
       label: string
       /** 비어 있을 때 흐리게 보여 줄 글 */
@@ -257,6 +270,8 @@ export function decodeDrawList(data: Uint8Array): DrawOp[] {
           bold: (flags & FieldFlag.bold) !== 0,
           focus: (flags & FieldFlag.focus) !== 0,
           select: (flags & FieldFlag.select) !== 0,
+          keys: (flags & FieldFlag.keys) !== 0,
+          grabEnter: (flags & FieldFlag.grabEnter) !== 0,
         })
         break
       }

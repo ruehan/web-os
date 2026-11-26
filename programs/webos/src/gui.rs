@@ -17,7 +17,7 @@ extern "C" {
     #[link_name = "gui_text"]
     fn sys_gui_text(field: u32, offset: usize, buf: *mut u8, len: usize, version: *mut u32) -> i32;
     #[link_name = "gui_set_text"]
-    fn sys_gui_set_text(field: u32, text: *const u8, len: usize) -> i32;
+    fn sys_gui_set_text(field: u32, text: *const u8, len: usize, guarded: i32) -> i32;
     #[link_name = "gui_measure"]
     fn sys_gui_measure(req: *const u8, len: usize, out: *mut f32, cap: usize) -> i32;
 }
@@ -134,6 +134,11 @@ pub struct Field<'a> {
     pub focus: bool,
     /// `focus`와 함께: 글 전체를 고른 채로 커서를 옮긴다.
     pub select: bool,
+    /// 여러 줄 칸에서: Tab과 Enter를 `Event::Key`로도 받는다. Tab은 칸이 처리하지 않고(다음 칸으로 넘어가지 않는다),
+    /// Enter는 줄바꿈이 된 뒤에, 그 `Event::Input`과 `Event::Caret` 다음에 온다 (커서 바로 앞이 그 줄바꿈이다).
+    pub keys: bool,
+    /// `keys`와 함께: Enter도 줄바꿈 없이 프로그램에만 온다 (고를 것을 띄워 두었을 때).
+    pub grab_enter: bool,
     /// 화면 낭독기 등에 알려 줄 이름
     pub label: &'a str,
     /// 비어 있을 때 흐리게 보이는 글
@@ -288,7 +293,13 @@ impl Frame {
         self.u(field.color.0);
         self.u(field.background.0);
         self.buf.push(
-            field.multiline as u8 | (field.mono as u8) << 1 | (field.focus as u8) << 2 | (field.bold as u8) << 3 | (field.select as u8) << 4,
+            field.multiline as u8
+                | (field.mono as u8) << 1
+                | (field.focus as u8) << 2
+                | (field.bold as u8) << 3
+                | (field.select as u8) << 4
+                | (field.keys as u8) << 5
+                | (field.grab_enter as u8) << 6,
         );
         self.s(field.label);
         self.s(field.placeholder);
@@ -350,6 +361,9 @@ pub enum Event {
     Menu(Option<usize>),
     /// 포인터가 그림 밖으로 나갔다.
     PointerLeave,
+    /// 입력 칸의 커서가 옮겨졌다 (`start`와 `end`가 다르면 그 사이를 골랐다). 자리는 글의 바이트 위치다.
+    /// 글이 바뀌어 옮겨진 경우에는 그 `Input` 다음에 온다.
+    Caret { field: u32, start: usize, end: usize },
 }
 
 fn decode(raw: [i32; 4]) -> Option<Event> {
@@ -385,6 +399,7 @@ fn decode(raw: [i32; 4]) -> Option<Event> {
         10 => Event::FieldFocus { field: a as u32, on: b != 0 },
         11 => Event::Menu(usize::try_from(a).ok()),
         12 => Event::PointerLeave,
+        13 => Event::Caret { field: a as u32, start: b.max(0) as usize, end: c.max(0) as usize },
         _ => return None,
     })
 }
@@ -435,7 +450,14 @@ impl Window {
 
     /// 입력 칸의 글을 정한다 (파일을 열었을 때 등).
     pub fn set_text(&self, field: u32, text: &str) -> io::Result<()> {
-        crate::check(unsafe { sys_gui_set_text(field, text.as_ptr(), text.len()) }).map(|_| ())
+        crate::check(unsafe { sys_gui_set_text(field, text.as_ptr(), text.len(), 0) }).map(|_| ())
+    }
+
+    /// 사용자가 친 글을 바탕으로 고쳐 쓸 때 쓴다 (자동 완성, 목록 이어 쓰기 등).
+    /// 이 프로그램이 글을 읽은 뒤로 사용자가 더 쳤으면 아무것도 하지 않고 `false`를 돌려준다
+    /// (방금 친 글자를 지우지 않기 위해서다. 곧 `Event::Input`으로 새 글이 온다).
+    pub fn set_text_if_unchanged(&self, field: u32, text: &str) -> io::Result<bool> {
+        Ok(crate::check(unsafe { sys_gui_set_text(field, text.as_ptr(), text.len(), 1) })? == 1)
     }
 
     /// 입력 칸에 지금 적혀 있는 글

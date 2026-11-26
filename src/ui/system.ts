@@ -153,7 +153,7 @@ export function createSystem() {
   const sessions = new Map<number, SessionState>()
   let nextRef = 1
   /** 프로세스가 연 창들: pid → 마지막으로 그린 내용과, 그 창을 그리는 화면 쪽 */
-  const surfaces = new Map<number, { last?: Uint8Array; texts: Map<number, string>; view?: SurfaceView }>()
+  const surfaces = new Map<number, { last?: Uint8Array; texts: Map<number, string>; edits: Map<number, number>; view?: SurfaceView }>()
   /** 글자 폭을 재는 데 쓰는, 화면에 보이지 않는 캔버스 */
   let ruler: CanvasRenderingContext2D | null | undefined
   let surfaceOpened: ((surface: { pid: number; title: string; w: number; h: number }) => void) | undefined
@@ -245,7 +245,7 @@ export function createSystem() {
         return
       }
       case 'gui-open':
-        surfaces.set(ev.pid, { texts: new Map() })
+        surfaces.set(ev.pid, { texts: new Map(), edits: new Map() })
         return surfaceOpened?.(ev)
       case 'gui-draw': {
         const surface = surfaces.get(ev.pid)
@@ -257,6 +257,9 @@ export function createSystem() {
       case 'gui-text': {
         const surface = surfaces.get(ev.pid)
         if (!surface) return
+        // 사용자가 그사이 더 쳤으면, 그 전의 글을 보고 프로그램이 고쳐 쓴 것은 버린다 (친 글자가 지워지지 않게).
+        // 프로그램은 곧 그 새 글을 받아 다시 맞춘다.
+        if (ev.after !== undefined && ev.after !== (surface.edits.get(ev.field) ?? 0)) return
         const text = new TextDecoder().decode(ev.data)
         surface.texts.set(ev.field, text)
         return surface.view?.setText(ev.field, text)
@@ -538,6 +541,7 @@ export function createSystem() {
         const surface = surfaces.get(pid)
         if (!surface) return
         surface.texts.set(field, text)
+        surface.edits.set(field, (surface.edits.get(field) ?? 0) + 1)
         send({ type: 'gui-text', pid, field, data: new TextEncoder().encode(text) })
       },
       /** 창에서 일어난 입력을 프로세스에 전한다 (src/kernel/gui.ts의 이벤트). */

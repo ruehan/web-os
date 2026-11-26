@@ -283,6 +283,63 @@ test('shows the graph of links, and moves notes by dragging them onto folders', 
   await expect(spot(page, 'tab', '회의록')).toHaveAttribute('aria-selected', 'true')
 })
 
+test('helps with writing: continues lists, indents, wraps, and completes links', async ({ page }) => {
+  await shell(page, 'mkdir notes; echo 안건 > notes/회의록.md', /\$$/)
+  await launch(page, '메모장')
+  await newNote(page, '글')
+  const value = (text: string) => expect(editor(page)).toHaveValue(text)
+
+  // 목록에서 Enter를 치면 다음 항목이 시작되고, 커서는 그 뒤에 있다.
+  await page.keyboard.type('- 우유')
+  await page.keyboard.press('Enter')
+  await value('- 우유\n- ')
+  await page.keyboard.type('빵')
+  await value('- 우유\n- 빵')
+  // Tab으로 들여 쓰고 Shift+Tab으로 내어 쓴다. 커서는 칸을 떠나지 않는다.
+  await page.keyboard.press('Tab')
+  await value('- 우유\n  - 빵')
+  await expect(editor(page)).toBeFocused()
+  await page.keyboard.press('Shift+Tab')
+  await value('- 우유\n- 빵')
+  // 빈 항목에서 Enter를 치면 목록이 끝난다.
+  await page.keyboard.press('Enter')
+  await value('- 우유\n- 빵\n- ')
+  await page.keyboard.press('Enter')
+  await value('- 우유\n- 빵\n')
+
+  // [[ 를 치면 링크할 메모를 고를 수 있고, Tab이나 Enter로 완성한다.
+  await page.keyboard.type('[[회')
+  await expect(spot(page, 'button', '회의록')).toBeVisible()
+  await page.keyboard.press('Enter')
+  await value('- 우유\n- 빵\n[[회의록]]')
+  await expect(spot(page, 'button', '회의록')).toHaveCount(0)
+  await page.keyboard.type(' 참고')
+  await value('- 우유\n- 빵\n[[회의록]] 참고')
+
+  // 고른 글을 Ctrl+B로 굵게.
+  await page.keyboard.press('Shift+ArrowLeft')
+  await page.keyboard.press('Shift+ArrowLeft')
+  await page.keyboard.press('Control+b')
+  await value('- 우유\n- 빵\n[[회의록]] **참고**')
+  expect(await editor(page).evaluate((el: HTMLTextAreaElement) => el.value.slice(el.selectionStart, el.selectionEnd))).toBe('참고')
+
+  // 보통의 줄에서는 Enter가 그냥 줄바꿈이다.
+  await page.keyboard.press('End')
+  await page.keyboard.press('Enter')
+  await page.keyboard.type('끝')
+  await value('- 우유\n- 빵\n[[회의록]] **참고**\n끝')
+  await shell(page, 'cat notes/글.md', '[[회의록]] **참고**')
+
+  // 텍스트(.txt) 메모에서는 Tab이 평소대로 다음 칸으로 넘어간다.
+  await shell(page, 'echo "- a" > notes/그냥.txt', /\$$/)
+  await page.getByRole('button', { name: '창: 메모장' }).click()
+  await press(page, 'treeitem', '그냥')
+  await expect(editor(page)).toBeFocused()
+  await page.keyboard.press('Tab')
+  await expect(editor(page)).not.toBeFocused()
+  await expect(editor(page)).toHaveValue('- a\n')
+})
+
 test('the notes app sees what the notepad wrote', async ({ page }) => {
   await launch(page, '메모장')
   await newNote(page, '함께')

@@ -40,7 +40,7 @@ export const Sys = {
   guidraw: 26, // data 그리기 명령 묶음      창의 내용을 통째로 바꿔 그린다
   guievent: 27, // args [timeoutMs | -1]    -> ret 이벤트가 있으면 1, 시간이 다 되면 0, data 이벤트
   guitext: 28, // args [field, offset, maxLen] -> data 입력 칸의 글 일부, ret 글의 판 번호 (읽는 사이에 바뀌었는지 확인용)
-  guisettext: 29, // args [field], data 글   입력 칸의 글을 정한다
+  guisettext: 29, // args [field, guarded], data 글   입력 칸의 글을 정한다. guarded가 1이면 사용자가 그사이 더 치지 않았을 때만 (-> ret 정했으면 1)
   guimeasure: 30, // data 요청               -> data 글마다 f32 폭 (화면 쪽이 잰다)
 } as const
 
@@ -184,8 +184,11 @@ export type KernelEvent =
   | { type: 'gui-draw'; pid: number; data: Uint8Array }
   /** 창을 연 프로세스가 끝났다. */
   | { type: 'gui-close'; pid: number }
-  /** 프로세스가 입력 칸의 글을 정했다. */
-  | { type: 'gui-text'; pid: number; field: number; data: Uint8Array }
+  /**
+   * 프로세스가 입력 칸의 글을 정했다. after가 있으면 "사용자의 after번째 고침까지 보고 정한 글"이라는 뜻이다:
+   * 화면 쪽은 그 뒤로 사용자가 더 고쳤으면 이 글을 버려야 한다 (방금 친 글자가 지워지지 않게).
+   */
+  | { type: 'gui-text'; pid: number; field: number; data: Uint8Array; after?: number }
   /** 프로세스가 글들의 폭을 묻는다. gui-measured 명령으로 답해야 프로세스가 다시 움직인다. */
   | { type: 'gui-measure'; pid: number; data: Uint8Array }
   /** 추적 중에 일어난 시스템 콜들. 너무 많으면 일부를 버리고 그 수를 dropped에 적는다. */

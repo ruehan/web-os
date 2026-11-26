@@ -4,6 +4,7 @@
 //! 글을 치는 곳만은 화면 쪽의 실제 입력 칸을 빌려 쓰고(한글 조합, 선택, 복사·붙여넣기를 위해서),
 //! 메뉴는 시스템의 것을 띄워 달라고 한다. 파일을 읽고 쓰는 것은 다른 프로그램과 똑같은 파일 시스템 콜이다.
 
+mod editing;
 mod graph;
 mod markdown;
 mod preview;
@@ -112,6 +113,8 @@ enum Action {
     /// 옆에 참고로 펼친다
     Beside(String),
     CloseBeside,
+    /// 링크할 메모를 골랐다
+    CompleteLink(String),
     /// 눌러도 아무 일도 없는 자리 (아래에 깔린 것이 눌리지 않게 막는다)
     Nothing,
 }
@@ -172,8 +175,12 @@ struct App {
     mode: Mode,
     preview_scroll: f32,
     preview: RefCell<PreviewInfo>,
-    /// 다음에 그릴 때 옮길 본문의 커서 자리 (바이트 위치)
-    caret: Option<usize>,
+    /// 다음에 그릴 때 옮길 본문의 커서 자리 (고를 범위의 시작과 끝, 바이트 위치)
+    select: Option<(usize, usize)>,
+    /// 본문 칸의 커서 자리 (화면 쪽이 알려 준 것, 또는 이 프로그램이 옮긴 것)
+    sel: (usize, usize),
+    /// 커서가 닫히지 않은 [[ 안에 있을 때: 그 안쪽이 시작하는 자리와 지금까지 친 글자
+    linking: Option<(usize, String)>,
     backlinks_open: bool,
     outline_open: bool,
     tags_open: bool,
@@ -369,6 +376,8 @@ impl App {
         self.current = path.map(str::to_string);
         self.text.clear();
         self.preview_scroll = 0.0;
+        self.sel = (0, 0);
+        self.linking = None;
         let Some(path) = path else { return };
         if kind_of(path) == Kind::Note {
             match fs::read_to_string(self.absolute(path)) {
@@ -592,12 +601,110 @@ impl App {
     /// 목차에서 고른 제목으로 간다: 편집 화면은 커서를 그 줄에 두고, 읽기 화면은 그 제목이 보이게 한다.
     fn jump(&mut self, line: usize) {
         if self.view_mode() != Mode::Read {
-            self.caret = Some(self.text.split('\n').take(line).map(|l| l.len() + 1).sum());
+            let at = self.text.split('\n').take(line).map(|l| l.len() + 1).sum();
+            self.select = Some((at, at));
+            self.sel = (at, at);
         }
         let preview = self.preview.borrow();
         if let (Some(view), Some(&(_, y))) = (preview.view, preview.headings.iter().find(|(at, _)| *at == line)) {
             self.preview_scroll = (y - 8.0).clamp(0.0, (preview.height - view.h).max(0.0));
         }
+    }
+
+    // ───────────── 글쓰기 편의 ─────────────
+
+    /// 본문의 글과 커서를 이 프로그램이 정한 것으로 바꾼다 (목록 이어 쓰기, 들여쓰기, 링크 완성).
+    fn apply_edit(&mut self, edit: editing::Edit) {
+        // 그사이 사용자가 더 쳤으면 그만둔다 (그 글자가 지워지면 안 된다).
+        if !self.window.set_text_if_unchanged(EDITOR, &edit.text).unwrap_or(false) {
+            return;
+        }
+        if let Some(path) = &self.current {
+            self.texts.insert(path.clone(), edit.text.clone());
+        }
+        self.dirty |= edit.text != self.text;
+        self.text = edit.text;
+        self.sel = (edit.start, edit.end);
+        self.select = Some(self.sel);
+        self.track_link();
+    }
+
+    /// 알고 있는 커서 자리가 지금의 글에서 쓸 수 있는 자리인가 (글이 그사이 바뀌었으면 아닐 수 있다)
+    fn sel_ok(&self) -> bool {
+        let (start, end) = self.sel;
+        start <= end && self.text.is_char_boundary(start) && self.text.is_char_boundary(end)
+    }
+
+    /// 커서가 닫히지 않은 [[ 안에 있는지 다시 본다.
+    fn track_link(&mut self) {
+        let (start, end) = self.sel;
+        self.linking = (start == end && self.sel_ok())
+            .then(|| editing::open_link(&self.text, start))
+            .flatten()
+            .map(|(from, typed)| (from, typed.to_string()));
+    }
+
+    /// [[ 뒤에 친 글자로 고를 수 있는 파일들 (메모는 제목, 그림은 파일 이름)
+    fn suggestions(&self) -> Vec<String> {
+        let Some((_, typed)) = &self.linking else { return Vec::new() };
+        let typed = typed.trim().to_lowercase();
+        let mut names: Vec<String> = Vec::new();
+        for entry in &self.entries {
+            if matches!(entry.kind, Kind::Dir | Kind::Other) || self.current.as_deref() == Some(entry.path.as_str()) {
+                continue;
+            }
+            let name = shown(&entry.path);
+            if name.to_lowercase().contains(&typed) && !names.iter().any(|n| n == name) {
+                names.push(name.to_string());
+            }
+        }
+        names.truncate(6);
+        names
+    }
+
+    fn complete_link(&mut self, name: &str) {
+        let Some((from, _)) = self.linking.take() else { return };
+        if self.sel_ok() && from <= self.sel.0 {
+            self.apply_edit(editing::complete_link(&self.text, from, self.sel.0, name));
+        }
+    }
+
+    /// 본문 칸에서 친 키. 처리했으면 true.
+    fn editor_key(&mut self, key: Key, mods: webos::gui::Mods) -> bool {
+        if !self.sel_ok() {
+            return false;
+        }
+        let (start, end) = self.sel;
+        if mods.command() {
+            // 고른 글을 감싼다: 굵게, 기울임, 링크
+            let marks = match key {
+                Key::Char(c) if !mods.alt && c.eq_ignore_ascii_case(&'b') => ("**", "**"),
+                Key::Char(c) if !mods.alt && c.eq_ignore_ascii_case(&'i') => ("*", "*"),
+                Key::Char(c) if !mods.alt && c.eq_ignore_ascii_case(&'k') => ("[[", "]]"),
+                _ => return false,
+            };
+            self.apply_edit(editing::wrap(&self.text, start, end, marks.0, marks.1));
+            return true;
+        }
+        if !self.is_markdown() {
+            return false;
+        }
+        let first = self.suggestions().into_iter().next();
+        match (key, first) {
+            (Key::Tab | Key::Enter, Some(name)) => self.complete_link(&name),
+            (Key::Tab, None) => self.apply_edit(editing::indent(&self.text, start, end, mods.shift)),
+            // 줄바꿈은 입력 칸이 이미 했다 (커서 바로 앞이 그 줄바꿈이다). 목록의 항목에서 친 것이면 다음 항목을 이어 쓴다.
+            (Key::Enter, None) => {
+                let Some(at) = start.checked_sub(1).filter(|at| start == end && !mods.shift && self.text.get(*at..start) == Some("\n")) else {
+                    return false;
+                };
+                let before = format!("{}{}", &self.text[..at], &self.text[start..]);
+                let Some(edit) = editing::continue_list(&before, at) else { return false };
+                self.apply_edit(edit);
+            }
+            _ => return false,
+        }
+        true
     }
 
     // ───────────── 빠른 열기 ─────────────
@@ -668,7 +775,9 @@ impl App {
         if text == self.text {
             return;
         }
-        let _ = self.window.set_text(EDITOR, &text);
+        if !self.window.set_text_if_unchanged(EDITOR, &text).unwrap_or(false) {
+            return;
+        }
         if let Some(path) = &self.current {
             self.texts.insert(path.clone(), text.clone());
         }
@@ -894,8 +1003,8 @@ impl App {
             ui.f.frame(x + 12.0, y + 6.0, w, 24.0, RADIUS, if self.drop_dir().is_some() { theme.accent } else { theme.line_strong }, 1.0);
             ui.text(x + 22.0, y + 18.0, 12.5, theme.text, Style::PLAIN, name);
         }
-        if let Some(at) = self.caret.take() {
-            ui.f.select(EDITOR, at, at);
+        if let Some((start, end)) = self.select.take() {
+            ui.f.select(EDITOR, start, end);
         }
         if let Some(((x, y), items)) = self.menu.take() {
             let (labels, actions): (Vec<MenuItem>, Vec<Option<Action>>) = items.into_iter().unzip();
@@ -925,6 +1034,8 @@ impl App {
             bold,
             focus: focus.is_some_and(|(field, _)| field == id),
             select: focus.is_some_and(|(field, select)| field == id && select),
+            keys: false,
+            grab_enter: false,
             label,
             placeholder,
         });
@@ -1271,6 +1382,24 @@ impl App {
             body_bottom = top;
         }
 
+        // 링크할 메모 고르기: 커서가 [[ 뒤에 있는 동안 나온다.
+        let suggestions = if is_note { self.suggestions() } else { Vec::new() };
+        if !suggestions.is_empty() {
+            const BAR: f32 = 39.0;
+            let top = body_bottom - BAR;
+            ui.f.rect(x0, top, width, BAR, 0.0, theme.surface2);
+            ui.hline(x0, top, width);
+            let hint = "링크할 메모 (Tab으로 첫 번째 선택)";
+            ui.text(x0 + 8.0, top + 20.0, 12.0, theme.muted, Style::PLAIN, hint);
+            let mut x = x0 + 14.0 + ui.width(hint, 12.0, Style::PLAIN);
+            ui.clip(Rect::new(x0, top + 1.0, width, BAR - 1.0));
+            for name in &suggestions {
+                x += ui.tool(x, top + 7.0, name, Tool::Plain, false, Some(Action::CompleteLink(name.clone()))) + 6.0;
+            }
+            ui.unclip();
+            body_bottom = top;
+        }
+
         // 본문
         let body = Rect::new(x0, y, width, (body_bottom - y).max(0.0));
         if !is_note {
@@ -1315,6 +1444,10 @@ impl App {
                 bold: false,
                 focus: focus.is_some_and(|(field, _)| field == EDITOR),
                 select: false,
+                // 마크다운 메모에서는 Tab(들여쓰기)과 Enter(목록 이어 쓰기)를 받는다.
+                keys: self.is_markdown(),
+                // 링크할 메모를 고르는 중에는 Enter가 줄바꿈이 아니라 "이것으로"다.
+                grab_enter: !suggestions.is_empty(),
                 label: "메모 내용",
                 placeholder: "",
             });
@@ -1678,6 +1811,7 @@ impl App {
                 self.beside_scroll = 0.0;
             }
             Action::CloseBeside => self.beside = None,
+            Action::CompleteLink(name) => self.complete_link(&name),
             Action::Nothing => {}
         }
     }
@@ -1793,7 +1927,15 @@ impl App {
                     self.commit_dir_name();
                 }
             }
+            Event::Caret { field: EDITOR, start, end } => {
+                self.sel = (start, end);
+                let was = self.linking.clone();
+                self.track_link();
+                return self.linking != was;
+            }
             Event::Key { key: key @ (Key::Up | Key::Down | Key::Enter | Key::Escape), .. } if self.quick.is_some() => self.quick_key(key),
+            Event::Key { key: Key::Escape, .. } if self.linking.is_some() => self.linking = None,
+            Event::Key { key, mods } if self.focused == Some(EDITOR) && self.editor_key(key, mods) => {}
             Event::Key { key: Key::Enter, .. } if self.focused == Some(TITLE) => {
                 self.commit_title();
                 self.focus = Some((EDITOR, false));
@@ -1888,7 +2030,9 @@ fn main() {
         mode: Mode::Edit,
         preview_scroll: 0.0,
         preview: RefCell::default(),
-        caret: None,
+        select: None,
+        sel: (0, 0),
+        linking: None,
         backlinks_open: false,
         outline_open: true,
         tags_open: false,

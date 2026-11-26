@@ -118,6 +118,12 @@ export function SurfaceApp(props: AppProps) {
   const texts = new Map<number, string>()
   /** 이 창에서 마지막으로 커서가 있던 입력 칸. 창이 다시 앞으로 오면 거기로 돌아간다. */
   let lastField: number | undefined
+  /** 칸마다의 가장 최근 명령 (어떤 키를 프로그램에 넘길지 등) */
+  const fieldOps = new Map<number, FieldOp>()
+  /** 방금 Enter를 눌러 줄바꿈을 기다리는 칸들과, 그때 함께 누른 키 */
+  const enters = new Map<number, number>()
+  /** 칸마다 프로그램에 마지막으로 알린 커서 자리 */
+  const carets = new Map<number, [number, number]>()
   let layer!: HTMLDivElement
   /** 입력 칸보다 위에 그리는 캔버스 */
   let top!: HTMLCanvasElement
@@ -181,16 +187,39 @@ export function SurfaceApp(props: AppProps) {
    * 프로그램에 전할 키인지 보고 전한다. 입력 칸에서는 글자를 칸이 받으므로 단축키와,
    * 칸이 쓰지 않는 키(Esc, 한 줄짜리 칸의 Enter와 위·아래)만 전한다.
    */
-  function key(e: KeyboardEvent, field?: FieldElement) {
+  function key(e: KeyboardEvent, field?: FieldElement, id?: number) {
     const code = keyCode(e.key)
     if (code === undefined || e.isComposing) return
     const command = e.ctrlKey || e.metaKey
-    if (field && !command) {
-      const free = e.key === 'Escape' || (field instanceof HTMLInputElement && ['Enter', 'ArrowUp', 'ArrowDown'].includes(e.key))
-      if (!free) return
+    if (field && id !== undefined) {
+      // 키를 받는 프로그램이 그 순간의 커서 자리를 알고 있도록, 달라졌으면 먼저 알린다.
+      reportCaret(id, field)
+      if (!command) {
+        const op = fieldOps.get(id)
+        const single = field instanceof HTMLInputElement
+        const asked = !single && op?.keys === true && (e.key === 'Tab' || e.key === 'Enter')
+        const free = e.key === 'Escape' || (single && ['Enter', 'ArrowUp', 'ArrowDown'].includes(e.key)) || asked
+        if (!free) return
+        // 여러 줄 칸의 Enter는 줄바꿈도 하고 프로그램에도 알린다 (프로그램이 막아 달라고 한 때는 빼고).
+        // 알리는 것은 줄바꿈이 글에 들어간 뒤다 (아래 input에서). 그래야 프로그램이 본 글과 순서가 어긋나지 않는다.
+        if (asked && e.key === 'Enter' && !op?.grabEnter) return void enters.set(id, modsOf(e))
+      }
     }
     if (!isBrowserKey(e) && !(field && command && isEditingKey(e))) e.preventDefault()
     send(GuiEvent.key, code, modsOf(e))
+  }
+
+  /** 입력 칸의 커서 자리(또는 고른 범위)가 지난번에 알린 것과 다르면 프로그램에 알린다. 자리는 UTF-8 바이트 위치다. */
+  function reportCaret(id: number, el: FieldElement) {
+    if (document.activeElement !== el) return
+    const [from, to] = [el.selectionStart ?? 0, el.selectionEnd ?? 0]
+    const bytes = (index: number) => new TextEncoder().encode(el.value.slice(0, index)).length
+    const start = bytes(from)
+    const end = to === from ? start : bytes(to)
+    const last = carets.get(id)
+    if (last && last[0] === start && last[1] === end) return
+    carets.set(id, [start, end])
+    send(GuiEvent.caret, id, start, end)
   }
 
   function makeField(op: FieldOp): FieldElement {
@@ -198,10 +227,18 @@ export function SurfaceApp(props: AppProps) {
     el.className = 'surface-field'
     el.spellcheck = false
     el.value = texts.get(op.id) ?? ''
-    el.addEventListener('input', () => {
+    el.addEventListener('input', (e) => {
       texts.set(op.id, el.value)
       gui.setText(pid, op.id, el.value)
+      reportCaret(op.id, el)
+      // 방금 친 Enter로 줄이 바뀌었다: 이제 프로그램에 그 Enter를 알린다.
+      const mods = enters.get(op.id)
+      enters.delete(op.id)
+      if (mods !== undefined && (e as InputEvent).inputType === 'insertLineBreak') send(GuiEvent.key, keyCode('Enter')!, mods)
     })
+    el.addEventListener('keyup', (e) => (e as KeyboardEvent).key === 'Enter' && enters.delete(op.id))
+    // 커서만 옮긴 것(방향키, 누르기, 끌어서 고르기)도 알린다. 브라우저마다 알려 주는 이벤트가 달라 여럿을 듣는다.
+    for (const type of ['keyup', 'pointerup', 'select', 'selectionchange', 'focus']) el.addEventListener(type, () => reportCaret(op.id, el))
     el.addEventListener('focus', () => {
       lastField = op.id
       send(GuiEvent.fieldFocus, op.id, 1)
@@ -210,7 +247,7 @@ export function SurfaceApp(props: AppProps) {
       // 창이 뒤로 간 것은 focus 이벤트로 따로 알린다. 여기서는 창 안에서 다른 곳으로 옮긴 것만 알린다.
       if (document.hasFocus() && props.focused()) send(GuiEvent.fieldFocus, op.id, 0)
     })
-    el.addEventListener('keydown', (e) => key(e as KeyboardEvent, el))
+    el.addEventListener('keydown', (e) => key(e as KeyboardEvent, el, op.id))
     host.append(el)
     return el
   }
@@ -257,6 +294,8 @@ export function SurfaceApp(props: AppProps) {
     lastField = op.id
     if (props.focused()) el.focus({ preventScroll: true })
     el.setSelectionRange(start, end)
+    // 프로그램이 정한 자리이므로 프로그램은 이미 안다. 다시 알리지 않는다.
+    carets.set(op.id, [op.start, op.end])
     if (el instanceof HTMLTextAreaElement) {
       // 긴 줄이 여러 줄로 접히면 줄 번호만으로는 높이를 알 수 없어, 전체 높이의 비율로 어림한다.
       const line = el.value.slice(0, start).split('\n').length - 1
@@ -295,10 +334,13 @@ export function SurfaceApp(props: AppProps) {
       if (document.activeElement === el && props.focused()) canvas.focus({ preventScroll: true })
       el.remove()
       fields.delete(id)
+      fieldOps.delete(id)
+      carets.delete(id)
     }
     for (const op of wanted) {
       let el = fields.get(op.id)
       if (!el) fields.set(op.id, (el = makeField(op)))
+      fieldOps.set(op.id, op)
       el.setAttribute('aria-label', op.label)
       el.placeholder = op.placeholder
       Object.assign(el.style, {
@@ -346,7 +388,11 @@ export function SurfaceApp(props: AppProps) {
         texts.set(field, text)
         const el = fields.get(field)
         // 같은 글이면 건드리지 않는다 (커서 위치와 조합 중인 글자가 날아가지 않게).
-        if (el && el.value !== text) el.value = text
+        if (el && el.value !== text) {
+          el.value = text
+          // 글을 통째로 바꾸면 커서가 끝으로 간다. 다음에 옮겨질 때 다시 알리도록 기억을 지운다.
+          carets.delete(field)
+        }
       },
       closed: () => props.close(),
     })
