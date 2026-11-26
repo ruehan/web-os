@@ -825,8 +825,6 @@ impl App {
             self.pick_at = 0;
         }
         if self.linking.is_none() && self.slashing.is_none() {
-            // 다음에 뜰 때는 그때의 자리를 새로 받는다.
-            self.caret_at = None;
             if !editing::open_link(&self.text, start.min(self.text.len())).is_some_and(|(from, _)| self.dismissed == Some(from))
                 && !editing::open_slash(&self.text, start.min(self.text.len())).is_some_and(|(from, _)| self.dismissed == Some(from))
             {
@@ -837,9 +835,12 @@ impl App {
 
     /// 커서 아래에 띄워 고르게 할 것들: [[ 뒤에서는 링크할 파일, / 뒤에서는 넣을 것
     fn choices(&self) -> Vec<Choice> {
+        // 한글은 "ㅈ" → "제" → "젬" → "제목"처럼 조합되어 간다. 아직 글자가 되지 않은 마지막 낱자는 빼고 거른다
+        // (그러지 않으면 치는 동안 목록이 사라졌다 나타났다 한다).
+        let settled = |typed: &str| typed.trim_end_matches(|c| ('\u{3131}'..='\u{3163}').contains(&c)).to_lowercase();
         if let Some((_, typed)) = &self.linking {
             // 메모는 제목, 그림은 파일 이름으로 고른다.
-            let typed = typed.trim().to_lowercase();
+            let typed = settled(typed.trim());
             let mut found: Vec<Choice> = Vec::new();
             for entry in &self.entries {
                 if matches!(entry.kind, Kind::Dir | Kind::Other) || self.current.as_deref() == Some(entry.path.as_str()) {
@@ -854,7 +855,7 @@ impl App {
             return found;
         }
         let Some((_, typed)) = &self.slashing else { return Vec::new() };
-        let typed = typed.to_lowercase();
+        let typed = settled(typed);
         COMMANDS
             .iter()
             .enumerate()
@@ -1221,6 +1222,11 @@ impl App {
         let below = if self.quick.is_some() || self.dragging.is_some() { None } else { self.mouse };
         let mut ui = Ui::new(self.window, std::mem::take(&mut self.widths), theme, below);
         let focus = self.focus.take();
+        // 고를 것이 없는 그림을 보내면 화면 쪽은 커서의 자리를 더 알리지 않는다. 다음에 뜰 때는 그때의 자리를 새로 받는다.
+        // (여러 입력을 한꺼번에 처리하는 도중에 잠깐 없어졌다 생기는 것은 치지 않도록, 그릴 때 본다.)
+        if self.choices().is_empty() {
+            self.caret_at = None;
+        }
         ui.f.clear(theme.surface);
         self.draw_main(&mut ui, focus);
         self.draw_side(&mut ui, focus);
@@ -2206,7 +2212,12 @@ impl App {
                 *scroll = to;
             }
             Event::Input { field } => match field {
-                EDITOR => self.typed(),
+                EDITOR => {
+                    self.typed();
+                    // 한글을 조합하는 동안에는 글자가 바뀌어도 커서 자리(바이트)는 그대로일 수 있다 ("ㅈ" → "제").
+                    // 커서가 옮겨졌다는 알림이 따로 오지 않으므로, 여기서도 고를 것을 다시 본다.
+                    self.track_link();
+                }
                 TITLE => self.title_draft = self.window.text(TITLE).unwrap_or_default(),
                 DIR_NAME => self.dir_draft = self.window.text(DIR_NAME).unwrap_or_default(),
                 SEARCH => {

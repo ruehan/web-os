@@ -136,6 +136,12 @@ export function SurfaceApp(props: AppProps) {
   /** 지금까지 프로그램에 건넨 파일의 수 (이름 앞에 붙이는 순번) */
   let handed = 0
   const fieldOps = new Map<number, FieldOp>()
+  /** 방금 줄이 바뀌려 한 칸들 (곧 올 입력이 그 줄바꿈이다) */
+  const broke = new Set<number>()
+  /** 조합을 확정하려고 초점을 잠깐 떼는 중이다 (프로그램에는 초점이 옮겨진 것으로 알리지 않는다). */
+  let settling = false
+  /** 조합 중에 이미 프로그램에 전한 키. 브라우저가 같은 키를 곧바로 한 번 더 알리면 그것은 버린다. */
+  let echo: { key: string; at: number } | undefined
   /** 방금 Enter를 눌러 줄바꿈을 기다리는 칸들과, 그때 함께 누른 키 */
   const enters = new Map<number, number>()
   /** 칸마다 프로그램에 마지막으로 알린 커서의 화면 자리 */
@@ -206,26 +212,66 @@ export function SurfaceApp(props: AppProps) {
    * 칸이 쓰지 않는 키(Esc, 한 줄짜리 칸의 Enter와 위·아래)만 전한다.
    */
   function key(e: KeyboardEvent, field?: FieldElement, id?: number) {
-    const code = keyCode(e.key)
-    if (code === undefined || e.isComposing) return
+    // 글자를 조합하는 중(한글의 마지막 글자 등)에는 브라우저가 키의 이름을 숨기기도 한다. 그때는 자판의 자리로 알아낸다.
+    const composing = e.isComposing || e.keyCode === 229
+    const name = e.key === 'Process' || e.key === 'Unidentified' ? e.code.replace(/^Numpad/, '') : e.key
+    const code = keyCode(name)
+    if (code === undefined) return
+    // 조합을 확정하면서 이미 전한 키가 곧바로 한 번 더 올 수 있다 (브라우저에 따라). 두 번 전하지 않는다.
+    if (!composing && echo && echo.key === name && e.timeStamp - echo.at < 200) {
+      echo = undefined
+      return e.preventDefault()
+    }
     const command = e.ctrlKey || e.metaKey
     if (field && id !== undefined) {
+      const op = fieldOps.get(id)
+      const single = field instanceof HTMLInputElement
+      const grabbed = !single && op?.keys === true && op.grabEnter && ['Enter', 'ArrowUp', 'ArrowDown'].includes(name)
+      const asked = grabbed || (!single && op?.keys === true && (name === 'Tab' || name === 'Enter'))
+      // 줄바꿈도 하고 프로그램에도 알리는 Enter (프로그램이 막아 달라고 한 때는 빼고)
+      const alongside = !command && asked && name === 'Enter' && !op?.grabEnter
+      if (composing) {
+        // 조합 중의 글자 키는 입력기의 것이다. 칸 대신 프로그램이 받는 키만 따로 다룬다.
+        const taken = !command && !alongside && (asked || (single && ['Enter', 'ArrowUp', 'ArrowDown'].includes(name)))
+        if (alongside) enters.set(id, modsOf(e))
+        if (!taken) return
+        // 조합하던 글자를 먼저 확정해 글에 넣고, 그 글과 커서 자리를 알린 다음에 키를 전한다.
+        e.preventDefault()
+        settle(id, field)
+        echo = { key: name, at: e.timeStamp }
+        reportCaret(id, field)
+        return send(GuiEvent.key, code, modsOf(e))
+      }
       // 키를 받는 프로그램이 그 순간의 커서 자리를 알고 있도록, 달라졌으면 먼저 알린다.
       reportCaret(id, field)
       if (!command) {
-        const op = fieldOps.get(id)
-        const single = field instanceof HTMLInputElement
-        const grabbed = !single && op?.keys === true && op.grabEnter && ['Enter', 'ArrowUp', 'ArrowDown'].includes(e.key)
-        const asked = grabbed || (!single && op?.keys === true && (e.key === 'Tab' || e.key === 'Enter'))
-        const free = e.key === 'Escape' || (single && ['Enter', 'ArrowUp', 'ArrowDown'].includes(e.key)) || asked
+        const free = name === 'Escape' || (single && ['Enter', 'ArrowUp', 'ArrowDown'].includes(name)) || asked
         if (!free) return
-        // 여러 줄 칸의 Enter는 줄바꿈도 하고 프로그램에도 알린다 (프로그램이 막아 달라고 한 때는 빼고).
         // 알리는 것은 줄바꿈이 글에 들어간 뒤다 (아래 input에서). 그래야 프로그램이 본 글과 순서가 어긋나지 않는다.
-        if (asked && e.key === 'Enter' && !op?.grabEnter) return void enters.set(id, modsOf(e))
+        if (alongside) return void enters.set(id, modsOf(e))
       }
-    }
+    } else if (composing) return
     if (!isBrowserKey(e) && !(field && command && isEditingKey(e))) e.preventDefault()
     send(GuiEvent.key, code, modsOf(e))
+  }
+
+  /**
+   * 조합 중인 글자를 확정한다. 입력 칸에서 초점을 잠깐 뗐다가 돌려주면 입력기가 조합을 끝내고 글자를 그대로 남긴다.
+   * 그 글이 프로그램에 아직 전해지지 않았으면 전한다.
+   */
+  function settle(id: number, el: FieldElement) {
+    settling = true
+    try {
+      el.blur()
+      el.focus({ preventScroll: true })
+    } finally {
+      settling = false
+    }
+    if (texts.get(id) !== el.value) {
+      texts.set(id, el.value)
+      gui.setText(pid, id, el.value)
+      paintLayer(id)
+    }
   }
 
   /** 입력 칸의 커서 자리(또는 고른 범위)가 지난번에 알린 것과 다르면 프로그램에 알린다. 자리는 UTF-8 바이트 위치다. */
@@ -279,20 +325,33 @@ export function SurfaceApp(props: AppProps) {
       paintLayer(op.id)
       reportCaret(op.id, el)
       // 방금 친 Enter로 줄이 바뀌었다: 이제 프로그램에 그 Enter를 알린다.
+      // (조합 중에 누른 Enter는 조합이 확정되는 입력이 먼저 온다. 줄이 바뀐 입력이 올 때까지 기다린다.)
       const mods = enters.get(op.id)
-      enters.delete(op.id)
-      if (mods !== undefined && (e as InputEvent).inputType === 'insertLineBreak') send(GuiEvent.key, keyCode('Enter')!, mods)
+      const type = (e as InputEvent).inputType
+      if (mods !== undefined && (type === 'insertLineBreak' || type === 'insertParagraph' || broke.has(op.id))) {
+        enters.delete(op.id)
+        send(GuiEvent.key, keyCode('Enter')!, mods)
+      }
+      broke.delete(op.id)
+    })
+    // 조합을 확정하며 프로그램에 넘긴 Enter가 줄까지 바꾸지는 않게 한다.
+    el.addEventListener('beforeinput', (e) => {
+      const type = (e as InputEvent).inputType
+      if (type !== 'insertLineBreak' && type !== 'insertParagraph') return
+      if (echo?.key === 'Enter' && e.timeStamp - echo.at < 200) e.preventDefault()
+      // 조합을 확정하며 줄이 바뀔 때는, 뒤따르는 입력이 "줄바꿈"이 아니라 "조합한 글"이라고만 알려지기도 한다. 여기서 봐 둔다.
+      else broke.add(op.id)
     })
     el.addEventListener('keyup', (e) => (e as KeyboardEvent).key === 'Enter' && enters.delete(op.id))
     // 커서만 옮긴 것(방향키, 누르기, 끌어서 고르기)도 알린다. 브라우저마다 알려 주는 이벤트가 달라 여럿을 듣는다.
     for (const type of ['keyup', 'pointerup', 'select', 'selectionchange', 'focus']) el.addEventListener(type, () => reportCaret(op.id, el))
     el.addEventListener('focus', () => {
       lastField = op.id
-      send(GuiEvent.fieldFocus, op.id, 1)
+      if (!settling) send(GuiEvent.fieldFocus, op.id, 1)
     })
     el.addEventListener('blur', () => {
       // 창이 뒤로 간 것은 focus 이벤트로 따로 알린다. 여기서는 창 안에서 다른 곳으로 옮긴 것만 알린다.
-      if (document.hasFocus() && props.focused()) send(GuiEvent.fieldFocus, op.id, 0)
+      if (!settling && document.hasFocus() && props.focused()) send(GuiEvent.fieldFocus, op.id, 0)
     })
     el.addEventListener('keydown', (e) => key(e as KeyboardEvent, el, op.id))
     host.append(el)

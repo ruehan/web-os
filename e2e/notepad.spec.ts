@@ -1,6 +1,6 @@
 // 메모장: 창을 직접 그리는 WASM 프로세스. 트리, 탭, 단추는 프로세스가 그리고, 글을 치는 곳은 화면의 실제 입력 칸,
 // 메뉴는 시스템의 메뉴다. 그림 속의 단추와 항목은 프로세스가 알려 준 자리(보이지 않는 요소)의 이름으로 찾는다.
-import { expect, test, type Page } from '@playwright/test'
+import { expect, test, type CDPSession, type Page } from '@playwright/test'
 import { appWindow, boot, expectScreen, launch, raise, typeIn } from './helpers.ts'
 
 const term = (page: Page) => appWindow(page, 'terminal')
@@ -462,6 +462,81 @@ test('colors the markdown source while it is typed', async ({ page }) => {
   await press(page, 'treeitem', '평문')
   await expect(layer).toHaveCount(0)
   await expect(editor(page)).toHaveCSS('color', 'rgb(25, 26, 32)')
+})
+
+/** 한글을 치듯 글자를 조합한다. 마지막 걸음의 글자는 확정되지 않은 채(밑줄이 그어진 채) 남는다. */
+async function compose(page: Page, cdp: CDPSession, steps: string[]) {
+  for (const text of steps) {
+    await cdp.send('Input.imeSetComposition', { text, selectionStart: text.length, selectionEnd: text.length })
+    await page.waitForTimeout(40)
+  }
+}
+
+/** 조합 중에 누른 키: 브라우저는 이런 키를 "조합 중"이라고 표시해서 알린다. */
+async function pressWhileComposing(cdp: CDPSession, key: string, vk: number) {
+  await cdp.send('Input.dispatchKeyEvent', { type: 'rawKeyDown', key, code: key, windowsVirtualKeyCode: vk })
+  await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key, code: key, windowsVirtualKeyCode: vk })
+}
+
+test('keys pressed while the last Korean letter is still being composed do what they should', async ({ page }) => {
+  await launch(page, '메모장')
+  await press(page, 'button', '새 메모')
+  await expect(title(page)).toBeFocused()
+  const cdp = await page.context().newCDPSession(page)
+  // 검사가 뜻하는 상황이 맞는지 본다: 조합 중의 키는 "조합 중"으로 온다.
+  const seen = title(page).evaluate((el) => new Promise<boolean>((resolve) => el.addEventListener('keydown', (e) => resolve((e as KeyboardEvent).isComposing), { once: true, capture: true })))
+
+  // 제목: "한"의 조합이 끝나지 않은 채 Enter. 글자가 확정되고 그 이름으로 바뀐다.
+  await compose(page, cdp, ['ㅎ', '하', '한'])
+  await pressWhileComposing(cdp, 'Enter', 13)
+  expect(await seen).toBe(true)
+  await expect(spot(page, 'tab', '한')).toHaveAttribute('aria-selected', 'true')
+  await expect(editor(page)).toBeFocused()
+  await shell(page, 'ls notes', '한.md')
+  await page.getByRole('button', { name: '창: 메모장' }).click()
+  await expect(editor(page)).toBeFocused()
+
+  // / 명령: "/제"에서 "제"가 조합 중인 채로 아래 키와 Enter.
+  await page.keyboard.type('/')
+  await expect(pad(page).getByRole('option')).toHaveCount(8)
+  await compose(page, cdp, ['ㅈ', '제'])
+  await expect(pad(page).getByRole('option')).toHaveCount(3)
+  await pressWhileComposing(cdp, 'ArrowDown', 40)
+  await expect(spot(page, 'option', '제목 2')).toHaveAttribute('aria-selected', 'true')
+  // 조합하던 글자는 확정되어 남고, 한 번만 내려간다.
+  await expect(editor(page)).toHaveValue('/제')
+  await page.keyboard.press('Enter')
+  await expect(editor(page)).toHaveValue('## ')
+  await expect(pad(page).getByRole('option')).toHaveCount(0)
+  // 조합 중인 낱자("ㅇ")만으로는 목록을 거르지 않아, 치는 동안 목록이 사라졌다 나타나지 않는다.
+  await page.keyboard.type('둘째')
+  await page.keyboard.press('Enter')
+  await page.keyboard.type('/')
+  await expect(pad(page).getByRole('option')).toHaveCount(8)
+  await compose(page, cdp, ['ㅇ'])
+  await expect(pad(page).getByRole('option')).toHaveCount(8)
+  // "인"이 조합 중인 채로 Enter: 글자가 확정되고 그 명령이 들어간다 (줄이 하나 더 바뀌지는 않는다).
+  await compose(page, cdp, ['이', '인'])
+  await expect(pad(page).getByRole('option')).toHaveCount(1)
+  await pressWhileComposing(cdp, 'Enter', 13)
+  await expect(editor(page)).toHaveValue('## 둘째\n> ')
+  await expect(pad(page).getByRole('option')).toHaveCount(0)
+
+  // Tab 들여쓰기도 조합 중인 글자를 잃지 않는다.
+  await editor(page).fill('- ')
+  await page.keyboard.press('Control+End')
+  await compose(page, cdp, ['ㅇ', '우'])
+  await pressWhileComposing(cdp, 'Tab', 9)
+  await expect(editor(page)).toHaveValue('  - 우')
+  await expect(editor(page)).toBeFocused()
+
+  // 목록 이어 쓰기: "유"가 조합 중인 채로 Enter. 입력기가 글자를 확정하고 줄을 바꾸면, 다음 항목이 이어진다.
+  await editor(page).fill('- 우')
+  await page.keyboard.press('Control+End')
+  await compose(page, cdp, ['ㅇ', '유'])
+  await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, text: '\r' })
+  await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 })
+  await expect(editor(page)).toHaveValue('- 우유\n- ')
 })
 
 test('the notes app sees what the notepad wrote', async ({ page }) => {
