@@ -23,6 +23,8 @@ const SIDE_ROW: f32 = 48.0;
 const NAV_ROW: f32 = 32.0;
 const TRACK_ROW: f32 = 46.0;
 const BAR_H: f32 = 78.0;
+/// 보관함 아래에 놓는 플레이어의 한 변 (유튜브가 정한 가장 작은 크기)
+const PLAYER: f32 = 200.0;
 const NO_ARTIST: &str = "아티스트 미상";
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -587,7 +589,16 @@ impl App {
         ui.hline(18.0, y, area.w - 37.0);
         ui.text(18.0, y + 22.0, 11.5, theme.muted, Style::BOLD, "최근에 쓴 글");
         y += 40.0;
-        ui.clip(Rect::new(area.x, y, area.w - 1.0, (area.bottom() - y).max(0.0)));
+        // 영상과 소리는 화면 쪽이 보관함의 아래에 놓는 유튜브의 플레이어가 낸다.
+        // 유튜브가 정한 가장 작은 크기(200×200)를 지킨다.
+        let mut bottom = area.bottom();
+        if self.loaded && !self.unsupported {
+            let player = Rect::new(area.x + (area.w - 1.0 - PLAYER) / 2.0, area.bottom() - PLAYER - 10.0, PLAYER, PLAYER);
+            ui.f.rect(player.x, player.y, player.w, player.h, RADIUS, Color::rgb(16, 17, 20));
+            ui.f.player(player.x, player.y, player.w, player.h);
+            bottom = player.y - 10.0;
+        }
+        ui.clip(Rect::new(area.x, y, area.w - 1.0, (bottom - y).max(0.0)));
         let current = self.current().map(|song| song.id.clone());
         for (i, post) in self.posts.iter().enumerate() {
             let rect = Rect::new(8.0, y + i as f32 * SIDE_ROW, area.w - 17.0, SIDE_ROW - 4.0);
@@ -936,8 +947,9 @@ impl App {
         // 왼쪽: 지금 곡
         let left_w = if narrow { bar.w - 116.0 } else { (bar.w * 0.3).clamp(210.0, 330.0) };
         let cover = if narrow { Rect::new(bar.x + 10.0, mid - 24.0, 85.0, 48.0) } else { Rect::new(bar.x + 14.0, mid - 30.0, 107.0, 60.0) };
-        if self.loaded && !self.unsupported {
-            // 영상과 소리는 화면 쪽이 이 그림 자리에 놓는 유튜브의 플레이어가 낸다.
+        if narrow && self.loaded && !self.unsupported {
+            // 좁은 화면에는 보관함이 없으므로, 플레이어를 이 그림 자리에 놓는다.
+            // (넓은 화면에서는 왼쪽 보관함의 아래에 놓는다.)
             ui.f.rect(cover.x, cover.y, cover.w, cover.h, 4.0, Color::rgb(16, 17, 20));
             ui.f.player(cover.x, cover.y, cover.w, cover.h);
         } else {

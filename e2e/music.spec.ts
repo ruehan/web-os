@@ -70,12 +70,13 @@ test('plays a picked song in a YouTube player placed inside the window', async (
   await expect(player(page)).toBeVisible()
   await expect(player(page)).toHaveAttribute('credentialless', '')
   expect(new URL((await player(page).getAttribute('src'))!).pathname).toBe('/embed/first000001')
-  // 영상은 아래 재생 막대의 그림 자리에서 나온다 (창의 왼쪽 아래, 16:9).
+  // 영상은 왼쪽 보관함의 아래에서 나온다. 유튜브가 정한 가장 작은 크기(200×200)를 지킨다.
   const box = (await player(page).boundingBox())!
   const frame = (await music(page).boundingBox())!
-  expect(Math.round(box.width)).toBe(107)
-  expect(Math.round(box.height)).toBe(60)
-  expect(box.y).toBeGreaterThan(frame.y + frame.height - 80)
+  expect(Math.round(box.width)).toBe(200)
+  expect(Math.round(box.height)).toBe(200)
+  expect(box.x + box.width).toBeLessThan(frame.x + 222)
+  expect(box.y + box.height).toBeLessThan(frame.y + frame.height - 78)
 
   // 플레이어가 "틀고 있다"고 알려 오면 단추가 바뀌고, 누르면 플레이어에 멈추라고 시킨다.
   await expect(music(page).getByRole('button', { name: '일시정지' })).toBeVisible()

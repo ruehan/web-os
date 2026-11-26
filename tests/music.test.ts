@@ -145,10 +145,11 @@ describe('music', () => {
     const app = await openMusic()
     app.press('둘')
     await app.until(() => app.player(), 'the player')
-    // 플레이어는 아래 재생 막대의 그림 자리에 놓이고(16:9), 영상의 번호만 넘긴다. 처음 놓을 때 소리 크기도 맞춘다.
+    // 플레이어는 왼쪽 보관함의 아래에 놓이고(유튜브가 정한 가장 작은 크기), 영상의 번호만 넘긴다. 처음 놓을 때 소리 크기도 맞춘다.
     const place = app.player()!
-    expect(place).toMatchObject({ w: 107, h: 60 })
-    expect(place.y).toBeGreaterThan(640 - 78)
+    expect(place).toMatchObject({ w: 200, h: 200 })
+    expect(place.x + place.w).toBeLessThan(220)
+    expect(place.y + place.h).toBeLessThan(640 - 78)
     expect(app.commands()).toEqual([
       { op: 'playerCommand', command: PlayerCommand.load, value: 1, id: 'aaaaaaaaaa2' },
       { op: 'playerCommand', command: PlayerCommand.volume, value: 80, id: '' },
@@ -340,9 +341,8 @@ describe('music', () => {
 
     app.press('모두 재생')
     await app.until(() => app.loaded().join() === 'aaaaaaaaaa1', 'the first song of the list')
-    // 아래의 재생 막대에는 지금 곡의 제목이 나오고, 그림 자리에는 플레이어가 놓인다.
-    await app.until(() => app.player(), 'the player in the bar')
-    expect(covers()).toHaveLength(1)
+    // 아래의 재생 막대에도 지금 곡의 그림과 제목이 나온다.
+    await app.until(() => covers().length === 2, 'the cover in the bar')
     expect(app.texts().filter((t) => t === '하나')).toHaveLength(2)
     delete PAGES['https://i.ytimg.com/vi/aaaaaaaaaa1/mqdefault.jpg']
   })
@@ -353,6 +353,7 @@ describe('music', () => {
     app.send(GuiEvent.resize, 390, 700, 0)
     app.press('하나')
     await app.until(() => app.player()?.w === 85, 'the player in the bar')
+    // 좁은 화면에서는 플레이어가 아래 막대의 그림 자리에 놓인다.
     // 왼쪽의 보관함 대신 목록을 고르는 단추가 있고, 아래의 막대에는 재생과 다음만 남는다.
     expect(app.labels('option')).toEqual(['하나', '둘', '셋'])
     expect(app.region('다음 곡')).toBeDefined()
