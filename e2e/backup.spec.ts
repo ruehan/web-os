@@ -45,7 +45,7 @@ test('downloads everything as a tar file and restores from it', async ({ page })
   expect(text('home/guest/논문.txt')).toBe('소중한 내용\n')
   expect(text('etc/custom')).toBe('conf\n')
   expect(entries.some((e) => e.path === 'data/깊은/폴더' && !e.data)).toBe(true)
-  expect(entries.filter((e) => e.path.startsWith('bin/')).length).toBe(28)
+  expect(entries.filter((e) => e.path.startsWith('bin/')).length).toBe(29)
   expect(entries.some((e) => e.path.startsWith('proc'))).toBe(false)
 
   // 그 뒤로 내용이 달라진다.

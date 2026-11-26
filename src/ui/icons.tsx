@@ -130,3 +130,18 @@ export const PinIcon = () => (
     <path d="M7 3.5h6l-1 5 2.5 2.5h-9L8 8.5zM10 11v5.5" />
   </Icon>
 )
+
+export const PaintIcon = () => (
+  <Icon>
+    <path d="M13.2 3.8l3 3-7.4 7.4-3.6.6.6-3.6z" />
+    <path d="M3.5 16.5c1.6 0 2.2-.7 2.3-1.7" />
+  </Icon>
+)
+
+/** 프로세스가 직접 연 창 */
+export const ProgramIcon = () => (
+  <Icon>
+    <rect x="3" y="4" width="14" height="12" rx="1.6" />
+    <path d="M3 7.5h14M7.5 12.5l2-1.7-2-1.7M11 12.5h2" />
+  </Icon>
+)

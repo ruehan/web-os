@@ -35,6 +35,10 @@ export const Sys = {
   winsize: 22, //                            -> data u32 열 수, u32 줄 수
   rename: 23, // args [fromDirfd, toDirfd], path "from\0to"
   pollin: 24, // args [fd, timeoutMs]       -> ret 읽을 것이 있으면 1, 시간이 다 되면 0
+  // 화면 (규약은 gui.ts)
+  guiopen: 25, // args [w, h], path 제목     이 프로세스의 창을 연다 (프로세스당 하나)
+  guidraw: 26, // data 그리기 명령 묶음      창의 내용을 통째로 바꿔 그린다
+  guievent: 27, // args [timeoutMs | -1]    -> ret 이벤트가 있으면 1, 시간이 다 되면 0, data 이벤트
 } as const
 
 export interface SysReq {
@@ -171,6 +175,12 @@ export type KernelEvent =
   | { type: 'backup-failed'; id: number; reason: 'invalid' | 'too-large'; msg: string }
   /** 보관 폴더에 저장하지 못했다 (권한이 취소됐거나 폴더가 사라진 경우 등) */
   | { type: 'archive-error'; msg: string }
+  /** 프로세스가 창을 열었다. w, h는 바라는 안쪽 크기다. */
+  | { type: 'gui-open'; pid: number; title: string; w: number; h: number }
+  /** 창에 그릴 내용 (gui.ts의 그리기 명령 묶음) */
+  | { type: 'gui-draw'; pid: number; data: Uint8Array }
+  /** 창을 연 프로세스가 끝났다. */
+  | { type: 'gui-close'; pid: number }
   /** 추적 중에 일어난 시스템 콜들. 너무 많으면 일부를 버리고 그 수를 dropped에 적는다. */
   | { type: 'trace'; records: TraceRecord[]; dropped: number }
 
@@ -181,6 +191,10 @@ export type KernelCommand =
   | { type: 'tty-resize'; tty: number; cols: number; rows: number }
   | { type: 'tty-input'; tty: number; text: string }
   | { type: 'kill'; pid: number }
+  /** 터미널 없이 프로그램을 실행한다 (실행 메뉴에서 띄우는 화면 프로그램). */
+  | { type: 'spawn'; path: string; argv: string[] }
+  /** 창에서 일어난 입력을 그 프로세스에 전한다 (gui.ts의 이벤트). */
+  | { type: 'gui-event'; pid: number; data: Uint8Array }
   | { type: 'fs'; id: number; request: FsRequest }
   | { type: 'storage-reset' }
   /**

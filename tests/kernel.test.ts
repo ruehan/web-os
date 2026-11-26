@@ -134,12 +134,12 @@ describe('shell', () => {
 
   it('lists many entries across multiple readdir calls', async () => {
     const r = await start().sh('ls /bin | wc -l; ls /bin | head -n 2; ls /bin | tail -n 1')
-    expect(r.stdout).toBe('28\ncat\nclear\nyes\n')
+    expect(r.stdout).toBe('29\ncat\nclear\nyes\n')
   })
 
   it('runs script files, directly and via sh', async () => {
     const { sh } = start()
-    const expected = '안녕하세요, guest 님\n현재 위치: /home/guest\n28\n'
+    const expected = '안녕하세요, guest 님\n현재 위치: /home/guest\n29\n'
     expect((await sh('sh hello.sh')).stdout).toBe(expected)
     expect((await start().sh('./hello.sh')).stdout).toBe(expected)
   })

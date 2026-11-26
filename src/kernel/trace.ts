@@ -1,4 +1,5 @@
 // 시스템 콜을 사람이 읽을 수 있는 한 줄로 풀어 쓴다 (strace와 비슷한 표기).
+import { GuiEvent, POINTER_SCALE } from './gui.ts'
 import { FdFlags, FileType, OFlags, Sys, type SysReq, type SysRes } from './abi.ts'
 import { Errno } from './errno.ts'
 
@@ -19,6 +20,7 @@ export interface TraceRecord {
   waited?: number
 }
 
+const GUI_EVENT_NAMES = new Map<number, string>(Object.entries(GuiEvent).map(([name, kind]) => [kind, name]))
 const SYS_NAMES = new Map<number, string>(Object.entries(Sys).map(([name, nr]) => [nr, name]))
 const ERRNO_NAMES = new Map<number, string>(Object.entries(Errno).map(([name, nr]) => [nr, `E${name}`]))
 const FILE_TYPES: Record<number, string> = {
@@ -97,6 +99,12 @@ export function describeArgs(req: SysReq): string {
       return a0 ? 'on' : 'off'
     case Sys.pollin:
       return `${a0}, ${a1}ms`
+    case Sys.guiopen:
+      return `${quote(path)}, ${a0}x${a1}`
+    case Sys.guidraw:
+      return `${req.data?.length ?? 0} bytes`
+    case Sys.guievent:
+      return a0 < 0 ? '' : `${a0}ms`
     case Sys.pipe:
     case Sys.getpid:
     case Sys.winsize:
@@ -131,6 +139,15 @@ export function describeResult(req: SysReq, res: SysRes): { result: string; erro
       break
     case Sys.wait:
       result = res.ret ? `${res.ret} (exit ${i32(0)})` : '0'
+      break
+    case Sys.guievent:
+      if (!res.ret) result = '0'
+      else {
+        // 포인터 좌표는 픽셀로 되돌려 보여 준다.
+        const pointer = i32(0) >= GuiEvent.pointerDown && i32(0) <= GuiEvent.pointerUp
+        const px = (v: number) => (pointer ? Math.round((v / POINTER_SCALE) * 10) / 10 : v)
+        result = `${GUI_EVENT_NAMES.get(i32(0)) ?? i32(0)}(${px(i32(1))}, ${px(i32(2))}, ${i32(3)})`
+      }
       break
     default:
       result = String(res.ret ?? 0)

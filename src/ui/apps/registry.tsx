@@ -7,7 +7,9 @@ import {
   GuideIcon,
   LogIcon,
   NoteIcon,
+  PaintIcon,
   ProcessesIcon,
+  ProgramIcon,
   SettingsIcon,
   TerminalIcon,
   TraceIcon,
@@ -19,6 +21,7 @@ import { LogApp } from './LogApp.tsx'
 import { NotesApp } from './NotesApp.tsx'
 import { ProcessesApp } from './ProcessesApp.tsx'
 import { SettingsApp } from './SettingsApp.tsx'
+import { SurfaceApp } from './SurfaceApp.tsx'
 import { TerminalApp } from './TerminalApp.tsx'
 import { TraceApp } from './TraceApp.tsx'
 import { WelcomeApp } from './WelcomeApp.tsx'
@@ -48,6 +51,13 @@ export interface AppDef {
   size: Size
   /** 창을 하나만 띄우는 앱. 다시 실행하면 기존 창을 앞으로 가져온다. */
   single?: boolean
+  /**
+   * 화면 쪽 컴포넌트가 아니라 프로그램(WASM 프로세스)인 앱: 실행하면 이 경로의 프로그램을 띄우고,
+   * 창은 그 프로세스가 직접 연다.
+   */
+  exec?: string
+  /** 실행 메뉴에 나오지 않는다. */
+  hidden?: boolean
 }
 
 export const APPS: AppDef[] = [
@@ -60,6 +70,12 @@ export const APPS: AppDef[] = [
   { id: 'log', name: '시스템 로그', icon: LogIcon, component: LogApp, size: { w: 560, h: 320 }, single: true },
   { id: 'settings', name: '설정', icon: SettingsIcon, component: SettingsApp, size: { w: 480, h: 600 }, single: true },
   { id: 'welcome', name: '시작하기', icon: GuideIcon, component: WelcomeApp, size: { w: 380, h: 580 }, single: true },
+  { id: 'paint', name: '그림판', icon: PaintIcon, component: SurfaceApp, size: { w: 720, h: 480 }, exec: '/bin/paint' },
+  // 프로세스가 연 창은 모두 이 앱으로 뜬다. 직접 실행하는 것이 아니므로 메뉴에는 없다.
+  { id: 'surface', name: '프로그램', icon: ProgramIcon, component: SurfaceApp, size: { w: 640, h: 480 }, hidden: true },
 ]
+
+/** 실행 메뉴와 막대에 올릴 수 있는 앱들 */
+export const LAUNCHABLE = APPS.filter((app) => !app.hidden)
 
 export const appById = (id: string) => APPS.find((a) => a.id === id)!

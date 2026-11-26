@@ -60,6 +60,8 @@ interface Process {
   blockedSince?: number
   /** 시간 제한이 있는 대기의 타이머 */
   timer?: ReturnType<typeof setTimeout>
+  /** 창을 열었으면: 아직 가져가지 않은 입력 이벤트들 */
+  gui?: { events: Uint8Array[]; queue: WaitQueue }
 }
 
 export interface ProcessHandle {
@@ -104,6 +106,8 @@ const TRACE_FLUSH_MS = 50
 const TRACE_BATCH_MAX = 400
 /** 파일 변경 알림을 묶어 보내는 간격 */
 const FS_NOTIFY_MS = 100
+/** 프로세스가 가져가지 않아 쌓아 둘 수 있는 입력 이벤트의 수. 넘으면 새 이벤트를 버린다. */
+const GUI_EVENT_BACKLOG = 2048
 const VERSION = 'Web OS 0.6 (wasm32-wasip1)'
 const SHELL = '/bin/sh'
 const SHELL_ENV = { USER: 'guest', HOME: '/home/guest', PWD: '/home/guest', PATH: '/bin', TERM: 'webos' }
@@ -145,6 +149,19 @@ export class Kernel {
   spawn(path: string, argv: string[], env: Record<string, string> = {}): number {
     const console: OpenFile = { kind: 'console', refs: 0 }
     return this.exec({ path, argv, env, stdio: [console, console, console] }).pid
+  }
+
+  /** 실행 메뉴에서 띄우는 프로그램. 셸에서 실행한 것과 같은 환경을 준다. */
+  launch(path: string, argv: string[]): number {
+    return this.spawn(path, argv, SHELL_ENV)
+  }
+
+  /** 창에서 일어난 입력을 그 창의 프로세스에 전한다. */
+  guiEvent(pid: number, data: Uint8Array): void {
+    const gui = this.procs.get(pid)?.gui
+    if (!gui || gui.events.length >= GUI_EVENT_BACKLOG) return
+    gui.events.push(data)
+    this.wake(gui.queue)
   }
 
   /** 새 터미널 장치를 만들고 거기에 셸을 띄운다. */
@@ -460,6 +477,7 @@ export class Kernel {
       parent.zombies.set(pid, code)
       this.wake(parent.childQ)
     }
+    if (proc.gui) this.host.emit({ type: 'gui-close', pid })
     this.host.emit({ type: 'exit', pid, code })
 
     if (proc.sessionLeader && proc.tty) this.hangup(proc.tty)
@@ -620,6 +638,23 @@ export class Kernel {
         if (!queue) return { errno: 0, ret: 1 }
         if (a1 <= 0) return { errno: 0, ret: 0 }
         throw new Block(queue, a1)
+      }
+      case Sys.guiopen:
+        if (proc.gui) throw new KernelError(Errno.EXIST)
+        if (!(a0 > 0 && a1 > 0)) throw new KernelError(Errno.INVAL)
+        proc.gui = { events: [], queue: new WaitQueue() }
+        this.host.emit({ type: 'gui-open', pid: proc.pid, title: req.path ?? '', w: a0, h: a1 })
+        return { errno: 0 }
+      case Sys.guidraw:
+        if (!proc.gui) throw new KernelError(Errno.BADF)
+        this.host.emit({ type: 'gui-draw', pid: proc.pid, data: req.data ?? new Uint8Array(0) })
+        return { errno: 0 }
+      case Sys.guievent: {
+        if (!proc.gui) throw new KernelError(Errno.BADF)
+        const event = proc.gui.events.shift()
+        if (event) return { errno: 0, ret: 1, data: event }
+        if (a0 === 0) return { errno: 0, ret: 0 }
+        throw new Block(proc.gui.queue, a0 < 0 ? undefined : a0)
       }
       case Sys.getpid:
         return { errno: 0, ret: proc.pid }

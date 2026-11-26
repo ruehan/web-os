@@ -335,6 +335,16 @@ button {
   border-radius: 0 0 var(--radius-l) var(--radius-l);
 }
 
+/* 프로세스가 직접 그리는 창의 그림판 */
+.surface {
+  display: block;
+  width: 100%;
+  height: 100%;
+  outline: 0;
+  /* 손가락으로 끌 때 화면이 밀리지 않고 프로그램이 입력을 받는다. */
+  touch-action: none;
+}
+
 /* 크기 조절 손잡이: 테두리에 걸쳐 놓아 창 바깥쪽에서도 잡힌다. */
 .resize {
   position: absolute;

@@ -314,6 +314,10 @@ self.onmessage = (e: MessageEvent<KernelCommand>) => {
         return kernel.ttyInput(cmd.tty, cmd.text)
       case 'kill':
         return kernel.kill(cmd.pid)
+      case 'spawn':
+        return void kernel.launch(cmd.path, cmd.argv)
+      case 'gui-event':
+        return kernel.guiEvent(cmd.pid, cmd.data)
       case 'fs':
         return emit({ type: 'fs-result', id: cmd.id, result: kernel.fsRequest(cmd.request) })
       case 'trace':

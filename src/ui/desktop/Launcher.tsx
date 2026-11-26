@@ -1,7 +1,7 @@
 // 실행 메뉴: 모든 앱을 이름과 함께 보여 주고, 글자를 쳐서 찾아 실행한다.
 // 왼쪽 막대에는 자주 쓰는 앱만 고정해 두고, 나머지는 여기서 연다.
 import { For, Show, createMemo, createSignal, onCleanup, onMount } from 'solid-js'
-import { APPS, type AppDef } from '../apps/registry.tsx'
+import { LAUNCHABLE as APPS, type AppDef } from '../apps/registry.tsx'
 import { showMenu } from '../contextmenu.tsx'
 import { PinIcon } from '../icons.tsx'
 import { setSettings, settings } from '../settings.ts'

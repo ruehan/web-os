@@ -321,6 +321,16 @@ export function runWasi(
       return 0
     },
     kill: (pid: number) => -sys.call({ nr: Sys.kill, args: [pid] }).errno,
+    gui_open: (titlePtr: number, titleLen: number, w: number, h: number) =>
+      -sys.call({ nr: Sys.guiopen, args: [w, h], path: readString(titlePtr, titleLen) }).errno,
+    // 메모리의 일부를 가리키는 채로는 보낼 수 없으므로 복사해서 보낸다.
+    gui_draw: (ptr: number, len: number) => -sys.call({ nr: Sys.guidraw, args: [], data: bytes().slice(ptr, ptr + len) }).errno,
+    gui_event(ptr: number, timeoutMs: number) {
+      const res = sys.call({ nr: Sys.guievent, args: [timeoutMs] })
+      if (res.errno) return -res.errno
+      if (res.ret) bytes().set(res.data!.subarray(0, 16), ptr)
+      return res.ret ?? 0
+    },
   }
 
   // 아직 구현하지 않은 함수는 링크 오류 대신 ENOSYS를 돌려준다.

@@ -125,6 +125,12 @@ function forget(key: string): void {
   } catch {}
 }
 
+/** 프로세스가 연 창을 화면에 그리는 쪽 */
+export interface SurfaceView {
+  draw(data: Uint8Array): void
+  closed(): void
+}
+
 export function createSystem() {
   const [procs, setProcs] = createStore<Proc[]>([])
   const [logs, setLogs] = createStore<LogLine[]>([])
@@ -133,6 +139,9 @@ export function createSystem() {
   const opening = new Map<number, SessionState>()
   const sessions = new Map<number, SessionState>()
   let nextRef = 1
+  /** 프로세스가 연 창들: pid → 마지막으로 그린 내용과, 그 창을 그리는 화면 쪽 */
+  const surfaces = new Map<number, { last?: Uint8Array; view?: SurfaceView }>()
+  let surfaceOpened: ((surface: { pid: number; title: string; w: number; h: number }) => void) | undefined
   /** 시스템 콜 추적을 보고 있는 창들. 하나라도 있는 동안만 커널이 기록을 보낸다. */
   /** flush 응답을 기다리는 쪽 */
   let flushed: (() => void) | undefined
@@ -219,6 +228,21 @@ export function createSystem() {
         if (session.queued) send({ type: 'tty-input', tty: ev.tty, text: session.queued })
         session.queued = ''
         return
+      }
+      case 'gui-open':
+        surfaces.set(ev.pid, {})
+        return surfaceOpened?.(ev)
+      case 'gui-draw': {
+        const surface = surfaces.get(ev.pid)
+        if (!surface) return
+        // 창이 아직 화면에 붙지 않았으면 붙을 때 그릴 수 있게 마지막 것만 기억한다.
+        surface.last = ev.data
+        return surface.view?.draw(ev.data)
+      }
+      case 'gui-close': {
+        const surface = surfaces.get(ev.pid)
+        surfaces.delete(ev.pid)
+        return surface?.view?.closed()
       }
       case 'tty-output':
         return sessions.get(ev.tty)?.output(ev.data)
@@ -450,6 +474,34 @@ export function createSystem() {
       rename: async (from: string, to: string) => void (await fsCall({ op: 'rename', from, to })),
     },
     kill: (pid: number) => send({ type: 'kill', pid }),
+
+    /** 터미널 없이 프로그램을 실행한다 (실행 메뉴에서 띄우는 화면 프로그램). */
+    run: (path: string, argv: string[]) => send({ type: 'spawn', path, argv }),
+
+    /** 프로세스가 연 창들 */
+    gui: {
+      /** 프로세스가 창을 열 때마다 불린다. */
+      onOpen(handler: NonNullable<typeof surfaceOpened>) {
+        surfaceOpened = handler
+      },
+      /**
+       * 화면의 창을 프로세스의 창에 붙인다. 이미 그려 보낸 것이 있으면 바로 그려 준다.
+       * 돌려주는 함수는 떼어 낼 때 부른다. 프로세스가 이미 끝났으면 undefined.
+       */
+      attach(pid: number, view: SurfaceView): (() => void) | undefined {
+        const surface = surfaces.get(pid)
+        if (!surface) return undefined
+        surface.view = view
+        if (surface.last) view.draw(surface.last)
+        return () => {
+          if (surface.view === view) surface.view = undefined
+        }
+      },
+      /** 창에서 일어난 입력을 프로세스에 전한다 (src/kernel/gui.ts의 이벤트). */
+      send(pid: number, event: Uint8Array) {
+        if (surfaces.has(pid)) send({ type: 'gui-event', pid, data: event })
+      },
+    },
     /**
      * 모든 프로세스의 시스템 콜을 받아 본다. 돌려주는 함수를 부르면 그만 받는다.
      * 보는 쪽이 없을 때는 커널이 기록하지 않으므로 평소 성능에는 영향이 없다.

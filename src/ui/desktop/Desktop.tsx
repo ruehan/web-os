@@ -1,6 +1,6 @@
 // 바탕 화면: 왼쪽의 실행 레일과 창들이 놓이는 영역.
 import { For, Show, createSignal, onCleanup, onMount } from 'solid-js'
-import { APPS, appById, type AppDef } from '../apps/registry.tsx'
+import { LAUNCHABLE, appById, type AppDef } from '../apps/registry.tsx'
 import type { System } from '../system.ts'
 import { ContextMenuHost, showMenu } from '../contextmenu.tsx'
 import { AppsIcon } from '../icons.tsx'
@@ -11,12 +11,15 @@ import { frameFor } from './geometry.ts'
 import { Window } from './Window.tsx'
 import { createWindowManager } from './wm.ts'
 
+/** 창 제목 표시줄의 높이 (style.css의 --title-height와 같아야 한다) */
+const TITLE_HEIGHT = 38
+
 export function Desktop(props: { system: System }) {
   const wm = createWindowManager()
   const [now, setNow] = createSignal(new Date())
   const [menuOpen, setMenuOpen] = createSignal(false)
   /** 막대에 고정된 앱들. 설정에 적힌 순서를 따르고, 없어진 앱의 id는 건너뛴다. */
-  const pinned = () => settings.pins.flatMap((id) => APPS.filter((app) => app.id === id))
+  const pinned = () => settings.pins.flatMap((id) => LAUNCHABLE.filter((app) => app.id === id))
   let layer!: HTMLDivElement
 
   /** 첫 방문 때만 안내 창을 띄우기 위한 표시 */
@@ -33,6 +36,8 @@ export function Desktop(props: { system: System }) {
   }
 
   function launch(app: AppDef, args: Record<string, string> = {}) {
+    // 프로그램인 앱은 프로세스를 띄우기만 한다. 창은 그 프로세스가 열 때 생긴다.
+    if (app.exec) return props.system.run(app.exec, [app.exec.slice(app.exec.lastIndexOf('/') + 1)])
     // 실행할 명령이 딸린 요청은 이미 열려 있는 터미널(맨 위의 것)에 넘긴다.
     if (app.id === 'terminal' && args.run !== undefined) {
       const terminals = wm.state.windows.filter((w) => w.app === 'terminal')
@@ -49,6 +54,11 @@ export function Desktop(props: { system: System }) {
     if (existing) wm.focus(existing.id)
     else wm.open(app.id, app.name, app.size, args)
   }
+
+  // 프로세스가 창을 열면 그 크기의 창을 만들어 붙인다. 안쪽 크기를 맞추려고 제목 표시줄과 테두리만큼 더한다.
+  props.system.gui.onOpen(({ pid, title, w, h }) => {
+    wm.open('surface', title || '프로그램', { w: w + 2, h: h + TITLE_HEIGHT + 2 }, { pid: String(pid), title })
+  })
 
   onMount(() => {
     const measure = () => {
