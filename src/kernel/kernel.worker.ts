@@ -123,6 +123,24 @@ async function loadInitrd(installDefaults: boolean): Promise<Initrd> {
     ...initrd.bin.map(async (name) => install(`/bin/${name}`, await fetchBytes(`bin/${name}.wasm`))),
     ...files.map(async (path) => install(`/${path}`, await fetchBytes(`rootfs/${path}`))),
   ])
+  // /usr 아래에서 더는 기본 파일이 아닌 것은 지운다. 쓰기만 하면, 배포에서 없앤 파일이 전에 방문한 사람에게는 계속 남는다.
+  const kept = new Set(initrd.files.map((path) => `/${path}`))
+  const prune = (dir: DirNode, path: string): void => {
+    for (const [name, node] of [...dir.entries]) {
+      if (node.kind === 'dir') {
+        prune(node, `${path}/${name}`)
+        if (node.entries.size === 0) kernel.fs.rmdir(dir, name)
+      } else if (!kept.has(`${path}/${name}`)) {
+        kernel.fs.unlink(dir, name)
+      }
+    }
+  }
+  try {
+    const usr = kernel.fs.lookup(kernel.fs.root, '/usr')
+    if (usr.kind === 'dir') prune(usr, '/usr')
+  } catch {
+    // /usr 가 아직 없다
+  }
   return { bin: initrd.bin, files }
 }
 

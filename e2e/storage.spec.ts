@@ -32,6 +32,15 @@ test('files survive a reload everywhere except /tmp', async ({ page }) => {
   await expect(page.getByTestId('klog')).toContainText('storage: restored')
 })
 
+test('the system files under /usr follow the deployment: changed ones are restored, removed ones go away', async ({ page }) => {
+  // 전에 배포했다가 없앤 파일이 남아 있는 경우를 흉내 낸다: /usr 아래에 기본 파일이 아닌 것을 둔다.
+  await type(page, 'mkdir -p /usr/share/music/playlists && echo old > /usr/share/music/playlists/gone.md && echo changed > /usr/share/music/songs.txt')
+  await expectScreen(page).toMatch(/songs\.txt\nguest@webos:~\$$/)
+  await reload(page)
+  await type(page, 'ls /usr/share/music; head -n 1 /usr/share/music/songs.txt')
+  await expectScreen(page).toContain('songs.txt\nsongs.txt\n// 음악 앱에 등록한 곡들입니다.')
+})
+
 test('the first visit installs the default files and says so', async ({ page }) => {
   await launch(page, '시스템 로그')
   await expect(page.getByTestId('klog')).toContainText('storage: created persistent storage')
