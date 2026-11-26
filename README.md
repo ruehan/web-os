@@ -94,6 +94,13 @@ https://youtu.be/영상번호
 https://youtu.be/영상번호
 ```
 
+새 플레이리스트의 뼈대는 명령으로 만듭니다. 만든 파일에 소개글과 곡마다의 이야기를 쓰고 커밋해서 배포하면, 누구나 보는 플레이리스트가 됩니다.
+
+```sh
+pnpm playlist "비 오는 날" https://youtu.be/영상번호 https://youtu.be/영상번호
+# → rootfs/usr/share/music/playlists/2026-11-26-비-오는-날.md
+```
+
 `/usr` 아래의 파일은 켤 때마다 새것으로 맞추므로, 고쳐서 배포하면 다시 방문한 사람에게도 바뀐 보관함이 보입니다. 방문자는 자기 것을 `~/music/songs.txt`와 `~/music/playlists/*.md`에 같은 형식으로 둘 수 있습니다.
 
 ## 개발

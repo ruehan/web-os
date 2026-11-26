@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "build:programs": "node scripts/build-programs.mjs",
+    "playlist": "node scripts/playlist.mjs",
     "dev": "pnpm build:programs && vite",
     "build": "pnpm build:programs && tsc --noEmit && vite build",
     "preview": "vite preview",
