@@ -2,7 +2,7 @@
 // 이 창에서 일어난 마우스·키보드 입력은 그 프로세스에 이벤트로 전해진다.
 // 화면 쪽은 프로그램이 무엇인지 모른다. 규약(src/kernel/gui.ts)만 안다.
 import { createEffect, on, onCleanup, onMount } from 'solid-js'
-import { GuiEvent, HANDOFF_LIMIT, Mod, decodeDrawList, encodeEvent, encodePointer, handoffDir, keyCode, type DrawOp } from '../../kernel/gui.ts'
+import { GuiEvent, HANDOFF_LIMIT, Mod, decodeDrawList, decodeStyles, encodeEvent, encodePointer, handoffDir, keyCode, styledPieces, type DrawOp, type StyleRange } from '../../kernel/gui.ts'
 import { settings } from '../settings.ts'
 import { showMenuAt, type MenuItem } from '../contextmenu.tsx'
 import { canvasFont, fontFamilies } from '../system.ts'
@@ -130,6 +130,9 @@ export function SurfaceApp(props: AppProps) {
   /** 이 창에서 마지막으로 커서가 있던 입력 칸. 창이 다시 앞으로 오면 거기로 돌아간다. */
   let lastField: number | undefined
   /** 칸마다의 가장 최근 명령 (어떤 키를 프로그램에 넘길지 등) */
+  /** 프로그램이 글에 색을 입힌 칸들: 색 범위와, 그 색으로 글을 보여 주는 층 (입력 칸 바로 아래에 겹쳐 있다) */
+  const styles = new Map<number, StyleRange[]>()
+  const layers = new Map<number, HTMLDivElement>()
   /** 지금까지 프로그램에 건넨 파일의 수 (이름 앞에 붙이는 순번) */
   let handed = 0
   const fieldOps = new Map<number, FieldOp>()
@@ -272,6 +275,8 @@ export function SurfaceApp(props: AppProps) {
     el.addEventListener('input', (e) => {
       texts.set(op.id, el.value)
       gui.setText(pid, op.id, el.value)
+      // 프로그램이 새 색을 보내기 전에도 방금 친 글자가 보이도록, 지금의 색으로 먼저 다시 그린다.
+      paintLayer(op.id)
       reportCaret(op.id, el)
       // 방금 친 Enter로 줄이 바뀌었다: 이제 프로그램에 그 Enter를 알린다.
       const mods = enters.get(op.id)
@@ -292,6 +297,50 @@ export function SurfaceApp(props: AppProps) {
     el.addEventListener('keydown', (e) => key(e as KeyboardEvent, el, op.id))
     host.append(el)
     return el
+  }
+
+  /**
+   * 색을 입힌 칸의 글을 다시 그린다. 입력 칸의 글자는 투명하게 두고(커서와 선택만 보인다),
+   * 같은 자리에 겹쳐 놓은 층에 같은 글을 색을 입혀 보여 준다.
+   */
+  function paintLayer(id: number) {
+    const [el, ranges, op] = [fields.get(id), styles.get(id), fieldOps.get(id)]
+    let layer = layers.get(id)
+    if (!el || !op || !ranges?.length) {
+      layer?.remove()
+      layers.delete(id)
+      el?.classList.remove('styled')
+      if (el && op) Object.assign(el.style, { color: op.color, background: op.background, caretColor: '' })
+      return
+    }
+    if (!layer) {
+      layers.set(id, (layer = document.createElement('div')))
+      layer.className = 'surface-field surface-field-layer'
+      layer.setAttribute('aria-hidden', 'true')
+      el.before(layer)
+      el.addEventListener('scroll', () => {
+        const own = layers.get(id)
+        if (own) [own.scrollTop, own.scrollLeft] = [el.scrollTop, el.scrollLeft]
+      })
+    }
+    el.classList.add('styled')
+    Object.assign(el.style, { color: 'transparent', background: 'transparent', caretColor: op.color })
+    Object.assign(layer.style, {
+      left: el.style.left, top: el.style.top, width: el.style.width, height: el.style.height,
+      fontSize: el.style.fontSize, fontFamily: el.style.fontFamily, fontWeight: el.style.fontWeight,
+      color: op.color, background: op.background,
+    })
+    const nodes = styledPieces(el.value, ranges).map((piece) => {
+      if (!piece.color) return document.createTextNode(piece.text)
+      const span = document.createElement('span')
+      span.textContent = piece.text
+      span.style.color = piece.color
+      if (piece.bold) span.style.fontWeight = '600'
+      return span
+    })
+    // 글이 줄바꿈으로 끝나면 입력 칸에는 빈 줄이 하나 더 보인다. 층에도 그 줄이 있어야 높이가 맞는다.
+    layer.replaceChildren(...nodes, document.createTextNode('\n'))
+    ;[layer.scrollTop, layer.scrollLeft] = [el.scrollTop, el.scrollLeft]
   }
 
   /** 그림의 단추·항목 자리에 보이지 않는 요소를 맞춰 놓는다 (화면 낭독기와 자동 검사가 이것을 본다). */
@@ -415,6 +464,8 @@ export function SurfaceApp(props: AppProps) {
       fieldOps.delete(id)
       carets.delete(id)
       points.delete(id)
+      layers.get(id)?.remove()
+      layers.delete(id)
     }
     for (const op of wanted) {
       let el = fields.get(op.id)
@@ -437,6 +488,7 @@ export function SurfaceApp(props: AppProps) {
         // overlay 뒤에 놓은 칸은 위층보다도 위에 온다.
         zIndex: split >= 0 && ops.indexOf(op) > split ? '3' : '',
       })
+      if (styles.has(op.id)) paintLayer(op.id)
       reportCaretPoint(op.id, el)
       // 프로그램은 커서를 옮기고 싶은 그림에만 focus를 켜서 보낸다 (파일을 새로 열었을 때 등).
       if (op.focus) {
@@ -472,9 +524,14 @@ export function SurfaceApp(props: AppProps) {
         // 같은 글이면 건드리지 않는다 (커서 위치와 조합 중인 글자가 날아가지 않게).
         if (el && el.value !== text) {
           el.value = text
+          paintLayer(field)
           // 글을 통째로 바꾸면 커서가 끝으로 간다. 다음에 옮겨질 때 다시 알리도록 기억을 지운다.
           carets.delete(field)
         }
+      },
+      setStyles(field, data) {
+        styles.set(field, decodeStyles(data))
+        paintLayer(field)
       },
       closed: () => props.close(),
     })

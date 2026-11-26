@@ -2,7 +2,7 @@
 // 실제 그림판 바이너리(programs/paint)를 커널 위에서 돌려 확인한다.
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { KernelEvent } from '../src/kernel/abi.ts'
-import { GuiEvent, Key, Mod, decodeDrawList, encodeEvent, encodePointer, keyCode, type DrawOp } from '../src/kernel/gui.ts'
+import { GuiEvent, Key, Mod, decodeDrawList, encodeEvent, encodePointer, keyCode, type DrawOp, styledPieces } from '../src/kernel/gui.ts'
 import { boot } from './host.ts'
 
 type Host = ReturnType<typeof boot>
@@ -254,6 +254,23 @@ describe('draw lists', () => {
     expect(() => decodeDrawList(bytes([4], Uint32Array.of(0xff), Float32Array.of(1), Uint32Array.of(0xffffffff)))).toThrow('too many points')
     expect(() => decodeDrawList(bytes([6], Float32Array.of(0, 0, 12), Uint32Array.of(0xff), [0], Uint32Array.of(50), [65]))).toThrow('ends in the middle')
     expect(decodeDrawList(new Uint8Array(0))).toEqual([])
+  })
+
+  it('splits text into colored pieces by byte ranges', () => {
+    const range = (start: number, end: number, color: string) => ({ start, end, color, bold: false })
+    // "가" 3바이트, "😀" 4바이트(글에서는 두 칸), "a" 1바이트
+    expect(styledPieces('가😀a끝', [range(3, 7, 'red'), range(8, 11, 'blue')])).toEqual([
+      { text: '가' },
+      { text: '😀', color: 'red', bold: false },
+      { text: 'a' },
+      { text: '끝', color: 'blue', bold: false },
+    ])
+    // 글이 그사이 짧아져 맞지 않는 범위는 맞는 데까지만 쓰고, 조각을 이으면 늘 원래 글이다.
+    const pieces = styledPieces('짧음', [range(0, 3, 'red'), range(3, 99, 'blue'), range(200, 300, 'green')])
+    expect(pieces.map((p) => p.text).join('')).toBe('짧음')
+    expect(pieces).toHaveLength(2)
+    expect(styledPieces('그대로', [])).toEqual([{ text: '그대로' }])
+    expect(styledPieces('', [range(0, 3, 'red')])).toEqual([])
   })
 
   it('maps browser keys to key codes', () => {

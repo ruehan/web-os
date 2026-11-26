@@ -113,6 +113,8 @@ export function describeArgs(req: SysReq): string {
       return `${req.data?.length ?? 0} bytes`
     case Sys.guiimage:
       return quote(req.path ?? '')
+    case Sys.guistyle:
+      return `${a0}, ${(req.data?.length ?? 0) / 13} ranges`
     case Sys.pipe:
     case Sys.getpid:
     case Sys.winsize:

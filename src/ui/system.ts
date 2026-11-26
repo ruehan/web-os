@@ -131,6 +131,8 @@ export interface SurfaceView {
   draw(data: Uint8Array): void
   /** 프로세스가 입력 칸의 글을 정했다. */
   setText(field: number, text: string): void
+  /** 프로세스가 입력 칸의 글에 입힐 색을 정했다 (gui.ts의 decodeStyles). */
+  setStyles(field: number, data: Uint8Array): void
   closed(): void
 }
 
@@ -158,7 +160,7 @@ export function createSystem() {
   const sessions = new Map<number, SessionState>()
   let nextRef = 1
   /** 프로세스가 연 창들: pid → 마지막으로 그린 내용과, 그 창을 그리는 화면 쪽 */
-  const surfaces = new Map<number, { last?: Uint8Array; texts: Map<number, string>; edits: Map<number, number>; images: Map<string, HTMLImageElement>; view?: SurfaceView }>()
+  const surfaces = new Map<number, { last?: Uint8Array; texts: Map<number, string>; edits: Map<number, number>; images: Map<string, HTMLImageElement>; styles: Map<number, Uint8Array>; view?: SurfaceView }>()
   /** 글자 폭을 재는 데 쓰는, 화면에 보이지 않는 캔버스 */
   let ruler: CanvasRenderingContext2D | null | undefined
   let surfaceOpened: ((surface: { pid: number; title: string; w: number; h: number }) => void) | undefined
@@ -250,7 +252,7 @@ export function createSystem() {
         return
       }
       case 'gui-open':
-        surfaces.set(ev.pid, { texts: new Map(), edits: new Map(), images: new Map() })
+        surfaces.set(ev.pid, { texts: new Map(), edits: new Map(), images: new Map(), styles: new Map() })
         return surfaceOpened?.(ev)
       case 'gui-draw': {
         const surface = surfaces.get(ev.pid)
@@ -281,6 +283,12 @@ export function createSystem() {
           // 형식이 틀린 요청: 빈 답을 보내면 프로그램이 어림값을 쓴다.
         }
         return send({ type: 'gui-measured', pid: ev.pid, data: encodeWidths(widths) })
+      }
+      case 'gui-style': {
+        const surface = surfaces.get(ev.pid)
+        if (!surface) return
+        surface.styles.set(ev.field, ev.data)
+        return surface.view?.setStyles(ev.field, ev.data)
       }
       case 'gui-image': {
         // 프로세스는 답이 올 때까지 멈춰 있으므로, 읽지 못하더라도 반드시 답한다.
@@ -572,6 +580,7 @@ export function createSystem() {
         if (!surface) return undefined
         surface.view = view
         for (const [field, text] of surface.texts) view.setText(field, text)
+        for (const [field, data] of surface.styles) view.setStyles(field, data)
         if (surface.last) view.draw(surface.last)
         return () => {
           if (surface.view === view) surface.view = undefined

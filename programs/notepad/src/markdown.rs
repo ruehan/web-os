@@ -387,6 +387,77 @@ pub fn toggle_task(text: &str, line: usize) -> String {
     lines.join("\n")
 }
 
+/// 편집 화면에서 색을 달리 보여 줄 조각의 종류
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Token {
+    Heading,
+    Quote,
+    /// 목록의 표시 (-, 1.)
+    Mark,
+    Code,
+    /// 링크, 메모 링크, 그림
+    Link,
+    Emphasis,
+}
+
+/// 원문에서 색을 입힐 범위들 (시작, 끝, 종류). 자리는 바이트 위치이고, 앞에서부터 겹치지 않게 나온다.
+/// 줄 단위로 본다: 제목, 인용, 목록, 코드 블록을 가리고, 줄 안에서는 강조와 링크를 찾는다.
+pub fn highlight(text: &str) -> Vec<(usize, usize, Token)> {
+    let mut out = Vec::new();
+    let mut fenced = false;
+    let mut start = 0;
+    for line in text.split('\n') {
+        let end = start + line.len();
+        let whole = |token| (start, end, token);
+        if fence(line).is_some() {
+            fenced = !fenced;
+            out.push(whole(Token::Code));
+        } else if fenced {
+            out.push(whole(Token::Code));
+        } else if heading(line).is_some() {
+            out.push(whole(Token::Heading));
+        } else if line.trim_start().starts_with('>') {
+            out.push(whole(Token::Quote));
+        } else {
+            // 목록의 표시까지, 그리고 그 뒤의 줄 안 서식들
+            let mut at = match list_item(line) {
+                Some((_, _, content)) => {
+                    let marker = line.len() - content.len();
+                    out.push((start, start + marker, Token::Mark));
+                    marker
+                }
+                None => 0,
+            };
+            let mut before = line[..at].chars().next_back();
+            while at < line.len() {
+                let rest = &line[at..];
+                let ch = rest.chars().next().expect("not at the end");
+                let found = if matches!(ch, '`' | '!' | '[' | '*' | '_') { inline_at(rest, before) } else { None };
+                let step = match found {
+                    Some((piece, len)) => {
+                        let token = match piece {
+                            Inline::Code(_) => Some(Token::Code),
+                            Inline::Strong(_) | Inline::Em(_) => Some(Token::Emphasis),
+                            Inline::Wiki { .. } | Inline::Image { .. } | Inline::Link { .. } | Inline::Text(_) => Some(Token::Link),
+                            Inline::Tag(_) => None,
+                        };
+                        if let Some(token) = token {
+                            out.push((start + at, start + at + len, token));
+                        }
+                        len
+                    }
+                    None => ch.len_utf8(),
+                };
+                before = rest[..step].chars().next_back();
+                at += step;
+            }
+        }
+        start = end + 1;
+    }
+    out.retain(|(from, to, _)| to > from);
+    out
+}
+
 /// 코드(``` 블록과 `줄 안 코드`)를 뺀 글. 코드 안의 #이나 [[ ]]는 태그나 링크가 아니다.
 pub fn without_code(text: &str) -> String {
     let mut out = String::new();
@@ -546,6 +617,27 @@ mod tests {
         assert_eq!(blocks[1], Block::Paragraph(vec![text("끝")]));
         // 아래에 구분 줄이 없으면 표가 아니다.
         assert!(matches!(parse("| a | b |")[0], Block::Paragraph(_)));
+    }
+
+    #[test]
+    fn marks_what_to_color_in_the_source() {
+        let text = "# 제목\n- **굵게** `코드` [[링크]]\n> 인용\n```\n# 코드 안\n```\n그냥 #태그";
+        let got: Vec<(&str, Token)> = highlight(text).into_iter().map(|(from, to, token)| (&text[from..to], token)).collect();
+        assert_eq!(
+            got,
+            [
+                ("# 제목", Token::Heading),
+                ("- ", Token::Mark),
+                ("**굵게**", Token::Emphasis),
+                ("`코드`", Token::Code),
+                ("[[링크]]", Token::Link),
+                ("> 인용", Token::Quote),
+                ("```", Token::Code),
+                ("# 코드 안", Token::Code),
+                ("```", Token::Code),
+            ]
+        );
+        assert!(highlight("").is_empty());
     }
 
     #[test]

@@ -277,10 +277,10 @@ impl<A: Clone> Preview<'_, '_, A> {
 
         // 4. 그린다.
         let theme = self.ui.theme;
-        let only = lines.iter().filter(|line| !line.is_empty()).count() <= 1;
+        let blank = lines.iter().all(|line| line.is_empty());
         for line in lines {
-            // 그림 뒤에 남은 빈 줄은 자리를 차지하지 않는다 (글이 하나도 없는 문단만 한 줄을 쓴다).
-            if line.is_empty() && !only {
+            // 그림 뒤에 남은 빈 줄은 자리를 차지하지 않는다 (아무것도 없는 문단만 한 줄을 쓴다).
+            if line.is_empty() && !blank {
                 continue;
             }
             let line_h = line.iter().find_map(|seg| seg.image_h).map_or(line_h, |h| h + IMAGE_GAP * 2.0);

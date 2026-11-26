@@ -352,6 +352,8 @@ export function runWasi(
       bytes().set(res.data!.subarray(0, count * 4), out)
       return count
     },
+    // 입력 칸의 글에 입힐 색 (범위마다 13바이트: 시작, 끝, 색, 꾸밈)
+    gui_style: (field: number, ptr: number, len: number) => -sys.call({ nr: Sys.guistyle, args: [field], data: bytes().slice(ptr, ptr + len) }).errno,
     // 그림 파일의 크기를 묻는다 (화면 쪽이 그 그림을 그릴 준비도 해 둔다). out에 f32 너비와 높이를 쓰고, 읽을 수 있는 그림이면 1.
     gui_image(pathPtr: number, pathLen: number, out: number) {
       const res = sys.call({ nr: Sys.guiimage, args: [], path: readString(pathPtr, pathLen) })

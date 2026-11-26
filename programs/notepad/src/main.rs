@@ -241,6 +241,8 @@ struct App {
     images: RefCell<HashMap<String, Option<(f32, f32)>>>,
     /// 다음에 그릴 때 그림 파일을 고르는 창을 띄운다.
     picking: bool,
+    /// 본문 칸의 글에 마지막으로 색을 입혔을 때의 글(의 지문)과 테마. 달라지면 다시 입힌다.
+    styled: Option<(u64, bool)>,
     backlinks_open: bool,
     outline_open: bool,
     tags_open: bool,
@@ -673,6 +675,47 @@ impl App {
         if let (Some(view), Some(&(_, y))) = (preview.view, preview.headings.iter().find(|(at, _)| *at == line)) {
             self.preview_scroll = (y - 8.0).clamp(0.0, (preview.height - view.h).max(0.0));
         }
+    }
+
+    // ───────────── 편집 화면의 색 ─────────────
+
+    /// 본문 칸의 마크다운에 색을 입힌다 (제목, 목록 표시, 코드, 링크, 강조). 글이나 테마가 바뀌었을 때만 다시 보낸다.
+    fn color_source(&mut self) {
+        use std::hash::{Hash, Hasher};
+        if self.current.is_none() || self.view_mode() == Mode::Read {
+            return;
+        }
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        (&self.text, self.is_markdown()).hash(&mut hasher);
+        let want = (hasher.finish(), self.dark);
+        if self.styled == Some(want) {
+            return;
+        }
+        self.styled = Some(want);
+        let theme = if self.dark { &DARK } else { &LIGHT };
+        let pick = |light: (u8, u8, u8), dark: (u8, u8, u8)| {
+            let (r, g, b) = if self.dark { dark } else { light };
+            webos::gui::Color::rgb(r, g, b)
+        };
+        let ranges: Vec<(usize, usize, webos::gui::Color, bool)> = if self.is_markdown() {
+            markdown::highlight(&self.text)
+                .into_iter()
+                .map(|(start, end, token)| {
+                    let color = match token {
+                        markdown::Token::Heading => theme.accent,
+                        markdown::Token::Quote => theme.muted,
+                        markdown::Token::Mark => pick((139, 63, 199), (201, 155, 245)),
+                        markdown::Token::Code => pick((26, 127, 55), (111, 208, 140)),
+                        markdown::Token::Link => pick((15, 123, 138), (102, 207, 220)),
+                        markdown::Token::Emphasis => pick((138, 97, 0), (229, 192, 123)),
+                    };
+                    (start, end, color, false)
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let _ = self.window.set_styles(EDITOR, &ranges);
     }
 
     // ───────────── 그림 ─────────────
@@ -1201,6 +1244,7 @@ impl App {
         if let Some((start, end)) = self.select.take() {
             ui.f.select(EDITOR, start, end);
         }
+        self.color_source();
         if std::mem::take(&mut self.picking) {
             ui.f.pick(true, "image/*");
         }
@@ -2303,6 +2347,7 @@ fn main() {
         caret_at: None,
         images: RefCell::new(HashMap::new()),
         picking: false,
+        styled: None,
         backlinks_open: false,
         outline_open: true,
         tags_open: false,

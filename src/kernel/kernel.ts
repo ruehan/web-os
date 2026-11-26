@@ -713,6 +713,10 @@ export class Kernel {
         this.host.emit({ type: 'gui-text', pid: proc.pid, field: a0, data, ...(a1 === 1 ? { after: edits } : {}) })
         return { errno: 0, ret: a1 === 1 ? 1 : 0 }
       }
+      case Sys.guistyle:
+        if (!proc.gui) throw new KernelError(Errno.BADF)
+        this.host.emit({ type: 'gui-style', pid: proc.pid, field: a0, data: req.data ?? new Uint8Array(0) })
+        return { errno: 0 }
       case Sys.guimeasure:
       case Sys.guiimage: {
         const gui = proc.gui

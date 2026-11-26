@@ -3,7 +3,7 @@
 // 단추와 항목은 그리기 명령에 든 "자리 알림"(region)의 이름으로 찾아 그 가운데를 누른다.
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { KernelEvent } from '../src/kernel/abi.ts'
-import { GuiEvent, Mod, decodeDrawList, decodeMeasure, encodeEvent, encodePointer, keyCode, type DrawOp } from '../src/kernel/gui.ts'
+import { GuiEvent, Mod, decodeDrawList, decodeMeasure, decodeStyles, encodeEvent, encodePointer, keyCode, styledPieces, type DrawOp } from '../src/kernel/gui.ts'
 import { boot } from './host.ts'
 
 type Host = ReturnType<typeof boot>
@@ -1030,6 +1030,41 @@ describe('notepad', () => {
       hand(pad.pid, { '도표.svg': '80x60' })
       await host.until(() => file('글.md') === '줄\n![[도표.svg]]', 'the embed where the command was')
     })
+  })
+
+  it('colors the markdown source in the text field', async () => {
+    const source = '# 제목\n- **굵게** `코드` [[링크]]\n> 인용\n그냥 글'
+    write('글.md', source)
+    write('그냥.txt', '# 제목 아님')
+    const pad = await openNotepad('글.md')
+    /** 프로그램이 마지막으로 정한 색을 글에 입힌 결과 (색이 있는 조각만) */
+    const colored = (text: string) => {
+      const style = all('gui-style', pad.pid).findLast((e) => e.field === EDITOR)
+      return style ? styledPieces(text, decodeStyles(style.data)).flatMap((piece) => (piece.color ? [[piece.text, piece.color]] : [])) : undefined
+    }
+    await pad.until(() => colored(source), 'the colors')
+    expect(colored(source)).toEqual([
+      ['# 제목', '#4553d6'],
+      ['- ', '#8b3fc7'],
+      ['**굵게**', '#8a6100'],
+      ['`코드`', '#1a7f37'],
+      ['[[링크]]', '#0f7b8a'],
+      ['> 인용', '#6b6e7b'],
+    ])
+    // 글이 바뀌면 다시 정하고, 그대로면 다시 보내지 않는다.
+    const count = () => all('gui-style', pad.pid).length
+    const before = count()
+    pad.send(GuiEvent.resize, 900, 580, 0)
+    pad.type('## 새 제목')
+    await pad.until(() => count() > before, 'new colors')
+    expect(colored('## 새 제목')).toEqual([['## 새 제목', '#4553d6']])
+    expect(count()).toBe(before + 1)
+    // 어두운 테마에서는 그 테마의 색으로.
+    pad.send(GuiEvent.resize, 900, 580, 1)
+    await pad.until(() => colored('## 새 제목')?.[0]?.[1] === '#8e9bff', 'the dark colors')
+    // 마크다운이 아닌 메모에는 색이 없다.
+    pad.press('그냥')
+    await pad.until(() => colored('# 제목 아님')?.length === 0, 'no colors')
   })
 
   it('scrolls a long tree with the wheel, drawing only the visible rows', async () => {

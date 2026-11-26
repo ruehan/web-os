@@ -356,6 +356,22 @@ button {
   font-family: inherit;
 }
 
+/* 글에 색을 입힌 입력 칸: 글자는 아래에 겹친 층이 보여 주고, 칸 자신은 커서와 선택만 보인다. */
+.surface-field-layer {
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  pointer-events: none;
+  user-select: none;
+  /* 스크롤 막대는 입력 칸의 것만 보인다. 자리는 똑같이 차지해야 줄바꿈 위치가 맞는다. */
+  scrollbar-color: transparent transparent;
+}
+
+.surface-field.styled::selection {
+  background: var(--accent-soft);
+  color: transparent;
+}
+
 /* 입력 칸보다 위에 그리는 층. 그린 것이 있을 때만 입력을 받는다. */
 .surface-top {
   position: absolute;

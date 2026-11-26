@@ -432,6 +432,38 @@ test('takes images dropped on the window or pasted into the text', async ({ page
   await shell(page, 'ls notes/attachments | wc -l', /\n\s*2\n/)
 })
 
+test('colors the markdown source while it is typed', async ({ page }) => {
+  await launch(page, '메모장')
+  await newNote(page, '색')
+  await page.keyboard.type('# 제목')
+  await page.keyboard.press('Enter')
+  await page.keyboard.type('글 [[링크]] 끝')
+  // 입력 칸의 글자는 투명하고(커서와 선택만 보인다), 같은 자리에 겹친 층이 색을 입혀 보여 준다.
+  const layer = pad(page).locator('.surface-field-layer')
+  await expect(layer.locator('span')).toHaveText(['# 제목', '[[링크]]'])
+  await expect(layer.locator('span').first()).toHaveCSS('color', 'rgb(69, 83, 214)')
+  await expect(editor(page)).toHaveCSS('color', 'rgba(0, 0, 0, 0)')
+  expect(await layer.evaluate((el) => el.textContent)).toBe('# 제목\n글 [[링크]] 끝\n')
+  // 층은 입력 칸과 같은 자리, 같은 크기, 같은 글꼴이다 (글자가 어긋나면 안 된다).
+  const [a, b] = [(await editor(page).boundingBox())!, (await layer.boundingBox())!]
+  expect(b).toEqual(a)
+  for (const property of ['font-family', 'font-size', 'line-height', 'white-space']) {
+    expect(await layer.evaluate((el, p) => getComputedStyle(el).getPropertyValue(p), property)).toBe(await editor(page).evaluate((el, p) => getComputedStyle(el).getPropertyValue(p), property))
+  }
+  // 긴 글을 밀면 층도 같이 밀린다.
+  await editor(page).fill(Array.from({ length: 80 }, (_, i) => `- 줄 ${i}`).join('\n'))
+  await expect(layer.locator('span')).toHaveCount(80)
+  await editor(page).evaluate((el) => (el.scrollTop = 500))
+  await expect.poll(() => layer.evaluate((el) => el.scrollTop)).toBe(500)
+
+  // 텍스트(.txt) 메모는 색 없이 평소의 입력 칸이다.
+  await shell(page, 'echo "# 그냥" > notes/평문.txt', /\$$/)
+  await page.getByRole('button', { name: '창: 메모장' }).click()
+  await press(page, 'treeitem', '평문')
+  await expect(layer).toHaveCount(0)
+  await expect(editor(page)).toHaveCSS('color', 'rgb(25, 26, 32)')
+})
+
 test('the notes app sees what the notepad wrote', async ({ page }) => {
   await launch(page, '메모장')
   await newNote(page, '함께')

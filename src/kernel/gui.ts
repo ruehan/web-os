@@ -351,6 +351,58 @@ export function decodeDrawList(data: Uint8Array): DrawOp[] {
   return ops
 }
 
+// ───────────── 입력 칸의 글에 색 입히기 ─────────────
+//
+// 입력 칸의 글은 화면 쪽에 있지만, 그 글이 무엇을 뜻하는지(제목인지, 링크인지)는 프로그램이 안다.
+// 프로그램은 글의 어느 범위를 무슨 색으로 보일지 보낸다(guistyle). 범위 하나는 13바이트:
+// u32 시작, u32 끝 (글의 UTF-8 바이트 위치), u32 색, u8 꾸밈 (1 굵게). 범위들은 겹치지 않고 앞에서부터 차례로 온다.
+// 범위에 들지 않은 글은 칸의 기본 색이다.
+
+export interface StyleRange {
+  start: number
+  end: number
+  color: string
+  bold: boolean
+}
+
+export function decodeStyles(data: Uint8Array): StyleRange[] {
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength)
+  const ranges: StyleRange[] = []
+  for (let at = 0; at + 13 <= data.length; at += 13) {
+    ranges.push({ start: view.getUint32(at, true), end: view.getUint32(at + 4, true), color: cssColor(view.getUint32(at + 8, true)), bold: (view.getUint8(at + 12) & 1) !== 0 })
+  }
+  return ranges
+}
+
+/**
+ * 글을 색이 붙은 조각들로 나눈다 (조각들을 이으면 원래 글이다). 범위의 자리는 UTF-8 바이트 위치이고,
+ * 글이 그사이 바뀌어 맞지 않는 범위는 맞는 데까지만 쓴다.
+ */
+export function styledPieces(text: string, ranges: StyleRange[]): { text: string; color?: string; bold?: boolean }[] {
+  const pieces: { text: string; color?: string; bold?: boolean }[] = []
+  let [index, bytes, next] = [0, 0, 0]
+  /** 바이트 위치 target까지 글을 읽어 나가고, 거기까지의 글을 돌려준다. */
+  const take = (target: number) => {
+    const from = index
+    while (index < text.length && bytes < target) {
+      const code = text.codePointAt(index)!
+      bytes += code < 0x80 ? 1 : code < 0x800 ? 2 : code < 0x10000 ? 3 : 4
+      index += code > 0xffff ? 2 : 1
+    }
+    return text.slice(from, index)
+  }
+  for (; next < ranges.length && index < text.length; next++) {
+    const range = ranges[next]!
+    if (range.start < bytes || range.end <= range.start) continue
+    const plain = take(range.start)
+    if (plain) pieces.push({ text: plain })
+    const colored = take(range.end)
+    if (colored) pieces.push({ text: colored, color: range.color, bold: range.bold })
+  }
+  if (index < text.length) pieces.push({ text: text.slice(index) })
+  return pieces
+}
+
 // ───────────── 글자 폭 재기 ─────────────
 //
 // 글자를 그리는 것은 화면 쪽이라, 글이 차지할 폭도 화면 쪽만 안다. 프로그램이 배치를 계산할 수 있게

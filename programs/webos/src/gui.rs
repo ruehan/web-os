@@ -20,6 +20,8 @@ extern "C" {
     fn sys_gui_set_text(field: u32, text: *const u8, len: usize, guarded: i32) -> i32;
     #[link_name = "gui_measure"]
     fn sys_gui_measure(req: *const u8, len: usize, out: *mut f32, cap: usize) -> i32;
+    #[link_name = "gui_style"]
+    fn sys_gui_style(field: u32, data: *const u8, len: usize) -> i32;
     #[link_name = "gui_image"]
     fn sys_gui_image(path: *const u8, len: usize, out: *mut f32) -> i32;
 }
@@ -512,6 +514,20 @@ impl Window {
                 bytes.extend_from_slice(&chunk[..n]);
             }
         }
+    }
+
+    /// 입력 칸의 글에 색을 입힌다 (문법 색상 등). 범위는 (시작, 끝, 색, 굵게)이고 자리는 글의 바이트 위치다.
+    /// 겹치지 않게, 앞에서부터 차례로 줘야 한다. 범위에 들지 않은 글은 칸의 기본 색이다. 빈 목록을 주면 색을 없앤다.
+    /// 글이 바뀌어도 화면 쪽은 지난 색을 그대로 두므로, 바뀔 때마다 다시 정해 줘야 한다.
+    pub fn set_styles(&self, field: u32, ranges: &[(usize, usize, Color, bool)]) -> io::Result<()> {
+        let mut data = Vec::with_capacity(ranges.len() * 13);
+        for &(start, end, color, bold) in ranges {
+            data.extend_from_slice(&(start as u32).to_le_bytes());
+            data.extend_from_slice(&(end as u32).to_le_bytes());
+            data.extend_from_slice(&color.0.to_le_bytes());
+            data.push(bold as u8);
+        }
+        crate::check(unsafe { sys_gui_style(field, data.as_ptr(), data.len()) }).map(|_| ())
     }
 
     /// 그림 파일의 크기 (너비, 높이). 화면 쪽이 그 파일을 읽어 두므로, 그 뒤로 `Frame::image`로 그릴 수 있다.
