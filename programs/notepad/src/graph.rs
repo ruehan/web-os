@@ -1,6 +1,6 @@
 //! 메모를 점으로, 링크를 선으로 본 그래프: 만들기와 자리 잡기.
 
-use crate::markdown::{is_image_name, without_code};
+use webos::markdown::{is_image_name, without_code};
 use crate::vault::{base_of, kind_of, parse_links, resolve_link, stem_of, Kind};
 use std::collections::{HashMap, HashSet};
 

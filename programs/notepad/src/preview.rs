@@ -3,7 +3,7 @@
 //! 화면 쪽의 미리보기(src/ui/editor/Preview.tsx와 .preview 스타일)와 같은 모양을 내도록 크기와 여백을 맞췄다.
 //! 배치와 그리기를 한 번에 한다. `draw`를 끄면 그리지 않고 높이만 잰다 (스크롤의 끝을 알기 위해).
 
-use crate::markdown::{self, Block, Inline, List};
+use webos::markdown::{self, Block, Inline, List};
 use webos::ui::{Rect, Ui};
 use crate::vault;
 use std::collections::HashMap;

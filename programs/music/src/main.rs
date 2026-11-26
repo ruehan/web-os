@@ -10,6 +10,7 @@
 mod library;
 
 use library::{clock, Post, Song};
+use webos::markdown::{self, Block, Inline, List};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::{env, fs, process};
@@ -66,6 +67,8 @@ enum Action {
     /// 소리 막대의 누른 자리만큼
     Volume,
     OpenOnYouTube,
+    /// 글 속의 링크를 연다
+    Open(String),
     /// 좁은 화면에서 볼 것을 고르는 메뉴
     ViewMenu,
     /// 펼쳐 둔 것을 처음부터 (섞기가 켜져 있으면 아무 곡부터) 튼다
@@ -82,12 +85,33 @@ enum Command {
     Volume(f32),
 }
 
+/// 줄 안에서 꾸밈이 같은 글 한 토막
+#[derive(Clone, Debug)]
+struct Run {
+    /// 줄의 처음에서 얼마나 떨어져 있는가
+    x: f32,
+    w: f32,
+    text: String,
+    style: Style,
+    /// 누르면 여는 주소
+    link: Option<String>,
+    code: bool,
+    quiet: bool,
+}
+
+/// 글에서 "여기서 줄을 바꾼다"를 나타내는 글자. 마크다운은 문단 안의 줄바꿈을 빈칸으로 잇지만,
+/// 플레이리스트의 글은 쓴 대로 줄이 바뀌는 편이 자연스러워서, 해석하기 전에 줄 끝에 이것을 붙여 둔다.
+/// (빈칸으로 치지 않는 글자여야 한다. 해석기가 줄 끝의 빈칸을 떼어 내기 때문이다.)
+const BREAK: char = '\u{e000}';
+
 /// 가운데의 스크롤되는 내용 한 줄
 enum Item {
     /// 곡: 펼쳐 둔 것에서의 순번과 곡
     Song { at: usize, song: usize },
-    /// 글 한 줄 (이미 폭에 맞춰 나눈 것)
-    Text { line: String, size: f32, bold: bool, quiet: bool, indent: f32 },
+    /// 글 한 줄 (이미 폭에 맞춰 나눈 것). quote는 인용(왼쪽에 줄), code는 코드 블록(바탕)이다.
+    Line { runs: Vec<Run>, size: f32, indent: f32, quote: bool, code: bool },
+    /// 구분선
+    Rule,
     /// 다른 보기로 가는 카드 (플레이리스트, 아티스트, 앨범)
     Card { cover: Option<String>, title: String, sub: String, excerpt: Vec<String>, go: View },
     Gap(f32),
@@ -97,7 +121,8 @@ impl Item {
     fn height(&self) -> f32 {
         match self {
             Item::Song { .. } => TRACK_ROW,
-            Item::Text { size, .. } => (size * 1.65).round(),
+            Item::Line { size, .. } => (size * 1.65).round(),
+            Item::Rule => 17.0,
             Item::Card { excerpt, .. } => if excerpt.is_empty() { 58.0 } else { 92.0 },
             Item::Gap(h) => *h,
         }
@@ -698,20 +723,86 @@ impl App {
         content
     }
 
-    /// 글을 폭에 맞춰 줄로 나눠 내용에 보탠다. 빈 줄은 문단 사이의 틈, `## `로 시작하는 줄은 작은 제목이다.
-    fn prose(ui: &mut Ui<Action>, text: &str, size: f32, room: f32, indent: f32, quiet: bool, out: &mut Vec<Item>) {
+    /// 안내하는 글 (꾸밈 없이, 흐린 색으로)
+    fn hint(ui: &mut Ui<Action>, text: &str, room: f32, out: &mut Vec<Item>) {
         for line in text.lines() {
-            let line = line.trim();
-            if line.is_empty() {
-                out.push(Item::Gap(8.0));
-                continue;
+            let pieces = [Run { quiet: true, ..run(line, Style::PLAIN) }];
+            out.extend(flow(ui, &pieces, 13.0, room).into_iter().map(|runs| Item::Line { runs, size: 13.0, indent: 6.0, quote: false, code: false }));
+        }
+    }
+
+    /// 마크다운으로 쓴 글을 폭에 맞춰 줄로 나눠 내용에 보탠다.
+    fn prose(ui: &mut Ui<Action>, text: &str, size: f32, room: f32, indent: f32, out: &mut Vec<Item>) {
+        let lines = |ui: &mut Ui<Action>, pieces: &[Run], size: f32, indent: f32, quote: bool, out: &mut Vec<Item>| {
+            out.extend(flow(ui, pieces, size, room - (indent - 6.0)).into_iter().map(|runs| Item::Line { runs, size, indent, quote, code: false }));
+        };
+        for block in markdown::parse(&soft_breaks(text)) {
+            match block {
+                Block::Heading { level, children, .. } => {
+                    let size = size + [6.0, 4.0, 2.0][level.clamp(1, 3) - 1];
+                    out.push(Item::Gap(6.0));
+                    lines(ui, &flatten(&children, Style::BOLD, None), size, indent, false, out);
+                    out.push(Item::Gap(4.0));
+                }
+                Block::Paragraph(children) => lines(ui, &flatten(&children, Style::PLAIN, None), size, indent, false, out),
+                Block::Quote(children) => {
+                    let pieces: Vec<Run> = flatten(&children, Style::PLAIN, None).into_iter().map(|piece| Run { quiet: true, ..piece }).collect();
+                    lines(ui, &pieces, size, indent + 16.0, true, out);
+                }
+                Block::List(list) => Self::list(ui, &list, size, room, indent, out),
+                Block::Code { text, .. } => {
+                    for line in text.lines() {
+                        let piece = Run { code: true, ..run(line, Style::MONO) };
+                        out.push(Item::Line { runs: vec![piece], size: size - 1.0, indent: indent + 10.0, quote: false, code: true });
+                    }
+                }
+                Block::Table { head, rows } => {
+                    // 표는 칸을 | 로 나눈 줄들로 보여 준다.
+                    for (i, row) in std::iter::once(&head).chain(rows.iter()).enumerate() {
+                        let style = if i == 0 { Style::BOLD } else { Style::PLAIN };
+                        let mut pieces = Vec::new();
+                        for (k, cell) in row.iter().enumerate() {
+                            if k > 0 {
+                                pieces.push(Run { quiet: true, ..run("  |  ", Style::PLAIN) });
+                            }
+                            pieces.extend(flatten(cell, style, None));
+                        }
+                        lines(ui, &pieces, size, indent, false, out);
+                    }
+                }
+                Block::Embed { label, .. } => lines(ui, &[run(&label, Style::PLAIN)], size, indent, false, out),
+                Block::Rule => {
+                    out.push(Item::Rule);
+                    continue;
+                }
             }
-            let (line, size, bold) = match line.strip_prefix("## ") {
-                Some(heading) => (heading, size + 2.0, true),
-                None => (line, size, false),
+            out.push(Item::Gap(8.0));
+        }
+        // 마지막 문단 뒤의 틈은 필요 없다.
+        if matches!(out.last(), Some(Item::Gap(_))) {
+            out.pop();
+        }
+    }
+
+    /// 목록: 항목마다 표시(•, 1., ☐)를 앞에 두고, 들여 쓴 목록은 한 단계 안쪽에 놓는다.
+    fn list(ui: &mut Ui<Action>, list: &List, size: f32, room: f32, indent: f32, out: &mut Vec<Item>) {
+        for (n, item) in list.items.iter().enumerate() {
+            let marker = match (item.checked, list.ordered) {
+                (Some(true), _) => "☑".to_string(),
+                (Some(false), _) => "☐".to_string(),
+                (None, true) => format!("{}.", n + 1),
+                (None, false) => "•".to_string(),
             };
-            for line in wrap(ui, line, size, if bold { Style::BOLD } else { Style::PLAIN }, room) {
-                out.push(Item::Text { line, size, bold, quiet, indent });
+            let inner = indent + 22.0;
+            let mut rows = flow(ui, &flatten(&item.children, Style::PLAIN, None), size, room - (inner - 6.0));
+            if rows.is_empty() {
+                rows.push(Vec::new());
+            }
+            // 표시는 첫 줄의 왼쪽 바깥에 둔다.
+            rows[0].insert(0, Run { x: -20.0, quiet: true, ..run(&marker, Style::PLAIN) });
+            out.extend(rows.into_iter().map(|runs| Item::Line { runs, size, indent: inner, quote: false, code: false }));
+            if let Some(sub) = &item.sub {
+                Self::list(ui, sub, size, room, inner, out);
             }
         }
     }
@@ -724,12 +815,15 @@ impl App {
         match &self.view {
             View::Posts => {
                 if self.posts.is_empty() {
-                    Self::prose(ui, "아직 플레이리스트가 없습니다.\n~/music/playlists/이름.md 파일에 글을 쓰고, 유튜브 주소를 한 줄에 하나씩 적어 보세요.", 13.0, room, 6.0, true, &mut items);
+                    Self::hint(ui, "아직 플레이리스트가 없습니다.\n~/music/playlists/이름.md 파일에 글을 쓰고, 유튜브 주소를 한 줄에 하나씩 적어 보세요.", room, &mut items);
                 }
                 for (i, post) in self.posts.iter().enumerate() {
                     // 소개글의 첫 문단을 두 줄까지 보여 준다.
-                    let first = post.intro.lines().map(str::trim).find(|line| !line.is_empty() && !line.starts_with("## ")).unwrap_or("");
-                    let mut excerpt = wrap(ui, first, 12.0, Style::PLAIN, (room - 160.0).max(60.0));
+                    let first = markdown::parse(&post.intro).into_iter().find_map(|block| match block {
+                        Block::Paragraph(children) => Some(flatten(&children, Style::PLAIN, None).into_iter().map(|piece| piece.text).collect::<String>()),
+                        _ => None,
+                    });
+                    let mut excerpt = wrap(ui, first.as_deref().unwrap_or(""), 12.0, Style::PLAIN, (room - 160.0).max(60.0));
                     if excerpt.len() > 2 {
                         excerpt.truncate(2);
                         excerpt[1].push('…');
@@ -748,7 +842,7 @@ impl App {
             View::Albums => {
                 let albums = self.albums();
                 if albums.is_empty() {
-                    Self::prose(ui, "앨범을 적어 둔 곡이 없습니다.\n곡 목록(songs.txt)에서 곡의 넷째 칸에 앨범을 적어 보세요.", 13.0, room, 6.0, true, &mut items);
+                    Self::hint(ui, "앨범을 적어 둔 곡이 없습니다.\n곡 목록(songs.txt)에서 곡의 넷째 칸에 앨범을 적어 보세요.", room, &mut items);
                 }
                 for (name, songs) in albums {
                     let artist = self.artist_name(&self.songs[songs[0]]);
@@ -758,7 +852,7 @@ impl App {
             View::Songs | View::Artist(_) | View::Album(_) => {
                 let songs = self.songs_of(&self.view);
                 if songs.is_empty() {
-                    Self::prose(ui, &format!("등록한 곡이 없습니다.\n{SHARED}/songs.txt 파일에 유튜브 주소를 한 줄에 하나씩 적어 주세요."), 13.0, room, 6.0, true, &mut items);
+                    Self::hint(ui, &format!("등록한 곡이 없습니다.\n{SHARED}/songs.txt 파일에 유튜브 주소를 한 줄에 하나씩 적어 주세요."), room, &mut items);
                 }
                 for (at, song) in songs.into_iter().enumerate() {
                     items.push(Item::Song { at, song });
@@ -768,7 +862,7 @@ impl App {
                 let Some(post) = self.posts.get(*i) else { return items };
                 if !post.intro.is_empty() {
                     items.push(Item::Gap(8.0));
-                    Self::prose(ui, &post.intro, 13.5, room - 12.0, 6.0, false, &mut items);
+                    Self::prose(ui, &post.intro, 13.5, room - 12.0, 6.0, &mut items);
                     items.push(Item::Gap(14.0));
                 }
                 for (at, entry) in post.entries.iter().enumerate() {
@@ -777,7 +871,7 @@ impl App {
                     // 그 곡 아래에 쓴 글
                     if !entry.text.is_empty() {
                         items.push(Item::Gap(4.0));
-                        Self::prose(ui, &entry.text, 13.5, room - 12.0, 6.0, false, &mut items);
+                        Self::prose(ui, &entry.text, 13.5, room - 12.0, 6.0, &mut items);
                     }
                     items.push(Item::Gap(16.0));
                 }
@@ -814,10 +908,27 @@ impl App {
             }
             match item {
                 Item::Song { at, song } => self.draw_row(ui, Rect::new(area.x + pad - 6.0, y, area.w - pad * 2.0 + 12.0, h - 2.0), *at, *song),
-                Item::Text { line, size, bold, quiet, indent } => {
-                    let style = if *bold { Style::BOLD } else { Style::PLAIN };
-                    ui.text(area.x + pad + indent, y + h / 2.0, *size, if *quiet { theme.muted } else { theme.text }, style, line);
+                Item::Line { runs, size, indent, quote, code } => {
+                    let x = area.x + pad + indent;
+                    if *quote {
+                        ui.f.rect(x - 14.0, y, 3.0, h, 1.5, theme.line_strong);
+                    }
+                    if *code {
+                        ui.f.rect(x - 10.0, y, area.right() - pad - x + 4.0, h, 0.0, theme.surface2);
+                    }
+                    for run in runs {
+                        let at = Rect::new(x + run.x, y, run.w, h);
+                        if run.code && !*code {
+                            ui.f.rect(at.x - 2.0, y + 2.0, at.w + 4.0, h - 4.0, 3.0, theme.hover);
+                        }
+                        let ink = if run.link.is_some() { theme.accent } else if run.quiet { theme.muted } else { theme.text };
+                        ui.f.styled(at.x, y + h / 2.0, *size, ink, Align::Left, run.style, &run.text);
+                        if let Some(url) = &run.link {
+                            ui.target(at, Role::Link, false, run.text.trim(), Action::Open(url.clone()));
+                        }
+                    }
                 }
+                Item::Rule => ui.hline(area.x + pad + 6.0, y + 8.0, area.w - pad * 2.0 - 12.0),
                 Item::Card { cover, title, sub, excerpt, go } => {
                     let rect = Rect::new(area.x + pad - 6.0, y, area.w - pad * 2.0 + 12.0, h - 4.0);
                     if ui.hot(rect) {
@@ -1095,6 +1206,7 @@ impl App {
                 self.slide(&action, at.0);
                 self.dragging = Some(action);
             }
+            Action::Open(url) => self.opening = Some(url),
             Action::OpenOnYouTube => self.opening = self.current().map(|track| format!("https://www.youtube.com/watch?v={}", track.id)),
             Action::PlayAll => {
                 let count = self.songs_of(&self.view).len();
@@ -1203,6 +1315,106 @@ impl App {
         }
         true
     }
+}
+
+fn run(text: &str, style: Style) -> Run {
+    Run { x: 0.0, w: 0.0, text: text.to_string(), style, link: None, code: false, quiet: false }
+}
+
+/// 마크다운의 줄 안 요소들을, 꾸밈이 같은 토막들로 편다.
+fn flatten(inlines: &[Inline], style: Style, link: Option<&str>) -> Vec<Run> {
+    let mut out = Vec::new();
+    for inline in inlines {
+        let piece = |text: &str, style: Style| Run { link: link.map(str::to_string), style: Style { underline: link.is_some(), ..style }, ..run(text, style) };
+        match inline {
+            Inline::Text(text) => out.push(piece(text, style)),
+            Inline::Code(text) => out.push(Run { code: true, ..piece(text, Style { mono: true, ..style }) }),
+            Inline::Strong(children) => out.extend(flatten(children, Style { bold: true, ..style }, link)),
+            Inline::Em(children) => out.extend(flatten(children, Style { italic: true, ..style }, link)),
+            Inline::Link { href, children } => out.extend(flatten(children, style, Some(href))),
+            // 그림은 그리지 않고, 그 설명을 그림으로 가는 링크로 보여 준다.
+            Inline::Image { src, alt } => out.extend(flatten(&[Inline::Text(if alt.is_empty() { src.clone() } else { alt.clone() })], style, Some(src).filter(|s| s.starts_with("http")).map(String::as_str))),
+            Inline::Wiki { label, .. } => out.push(piece(label, style)),
+            Inline::Tag(name) => out.push(piece(&format!("#{name}"), style)),
+        }
+    }
+    out
+}
+
+/// 문단의 줄들 끝에 "여기서 줄을 바꾼다"를 붙인다. 제목, 목록, 인용, 표, 코드처럼 줄의 처음이 뜻을 갖는 줄은 그대로 둔다.
+fn soft_breaks(text: &str) -> String {
+    let mut fenced = false;
+    let mut out = String::with_capacity(text.len() + 16);
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```") {
+            fenced = !fenced;
+        }
+        out.push_str(line);
+        let plain = !fenced && trimmed.chars().next().is_some_and(|c| !"#>-*+|`".contains(c) && !c.is_ascii_digit());
+        if plain {
+            out.push(BREAK);
+        }
+        out.push('\n');
+    }
+    out
+}
+
+/// 꾸밈이 섞인 글을 폭에 맞춰 줄들로 나눈다. 낱말 사이에서 나누고, 한 줄보다 긴 낱말은 글자 사이에서 나눈다.
+fn flow(ui: &mut Ui<Action>, pieces: &[Run], size: f32, room: f32) -> Vec<Vec<Run>> {
+    let mut lines: Vec<Vec<Run>> = Vec::new();
+    let mut line: Vec<Run> = Vec::new();
+    let (mut used, mut broke) = (0.0f32, false);
+    fn put(line: &mut Vec<Run>, piece: &Run, text: &str, x: f32, w: f32) {
+        match line.last_mut() {
+            Some(last) if last.x >= 0.0 && last.style == piece.style && last.link == piece.link && last.code == piece.code && last.quiet == piece.quiet => {
+                last.text.push_str(text);
+                last.w += w;
+            }
+            _ => line.push(Run { x, w, text: text.to_string(), ..piece.clone() }),
+        }
+    }
+    for piece in pieces {
+        for word in piece.text.split_inclusive([' ', BREAK]) {
+            let (word, forced) = match word.strip_suffix(BREAK) {
+                Some(word) => (word, true),
+                None => (word, false),
+            };
+            // 줄의 처음에 오는 빈칸은 버린다.
+            if !(word.trim().is_empty() && (line.is_empty() || broke)) {
+                if std::mem::take(&mut broke) && !line.is_empty() {
+                    lines.push(std::mem::take(&mut line));
+                    used = 0.0;
+                }
+                let width = ui.width(word, size, piece.style);
+                if used + width > room && !line.is_empty() {
+                    lines.push(std::mem::take(&mut line));
+                    used = 0.0;
+                }
+                if width <= room {
+                    put(&mut line, piece, word, used, width);
+                    used += width;
+                } else {
+                    for c in word.chars() {
+                        let mut buffer = [0; 4];
+                        let c = c.encode_utf8(&mut buffer);
+                        let w = ui.width(c, size, piece.style);
+                        if used + w > room && !line.is_empty() {
+                            lines.push(std::mem::take(&mut line));
+                            used = 0.0;
+                        }
+                        put(&mut line, piece, c, used, w);
+                        used += w;
+                    }
+                }
+            }
+            broke |= forced;
+        }
+    }
+    if !line.is_empty() {
+        lines.push(line);
+    }
+    lines
 }
 
 /// 글 한 줄을 폭에 맞춰 여러 줄로 나눈다. 낱말 사이에서 나누고, 한 줄보다 긴 낱말은 글자 사이에서 나눈다.

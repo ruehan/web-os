@@ -10,7 +10,7 @@
     "build": "pnpm build:programs && tsc --noEmit && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "test:programs": "cargo test --quiet --manifest-path programs/Cargo.toml -p notepad && cargo test --quiet --manifest-path programs/Cargo.toml -p coreutils --lib && cargo test --quiet --manifest-path programs/Cargo.toml -p music",
+    "test:programs": "cargo test --quiet --manifest-path programs/Cargo.toml -p webos --lib && cargo test --quiet --manifest-path programs/Cargo.toml -p notepad && cargo test --quiet --manifest-path programs/Cargo.toml -p coreutils --lib && cargo test --quiet --manifest-path programs/Cargo.toml -p music",
     "test": "pnpm build:programs && pnpm test:programs && vitest run",
     "e2e": "pnpm build:programs && playwright test"
   },

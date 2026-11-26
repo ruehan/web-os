@@ -138,6 +138,45 @@ describe('music', () => {
     expect(given.texts()).toContain('밤에 듣는다.')
   })
 
+  it('draws the writing in a playlist as markdown', async () => {
+    library(THREE, {
+      styled: [
+        '# 서식',
+        '',
+        '첫 줄이고 **굵은 글**과 *기운 글*, `코드`가 있다.',
+        '둘째 줄에는 [링크](https://example.com/page)가 있다.',
+        '',
+        '## 작은 제목',
+        '- 하나',
+        '- [x] 한 일',
+        '',
+        '> 인용한 말',
+        '',
+        '---',
+        'aaaaaaaaaa1',
+        '곡 아래의 글.',
+      ].join('\n'),
+    })
+    const app = await openMusic()
+    // 글의 목록에는 서식 기호를 뺀 첫 문단이 나온다.
+    expect(app.texts()).toContain('첫 줄이고 굵은 글과 기운 글, 코드가 있다. 둘째 줄에는 링크가 있다.')
+    app.press('서식', 'link')
+    await app.until(() => app.labels('option')[0] === '하나', 'the post')
+    const drawn = (text: string) => app.latest().find((op): op is Op<'text'> => op.op === 'text' && op.text === text)
+    expect(drawn('굵은 글')).toMatchObject({ bold: true })
+    expect(drawn('기운 글')).toMatchObject({ italic: true })
+    expect(drawn('코드')).toMatchObject({ mono: true })
+    expect(drawn('작은 제목')).toMatchObject({ bold: true, size: 17.5 })
+    expect(app.texts()).toEqual(expect.arrayContaining(['•', '☑', '한 일', '인용한 말', '곡 아래의 글.']))
+    // 문단 안에서도 쓴 대로 줄이 바뀐다.
+    expect(drawn('첫 줄이고 ')!.y).toBeLessThan(drawn('둘째 줄에는 ')!.y)
+    // 링크는 누르면 브라우저의 새 탭으로 연다.
+    expect(drawn('링크')).toMatchObject({ underline: true })
+    app.press('링크', 'link')
+    await app.until(() => app.latest().some((op) => op.op === 'open'), 'the link')
+    expect(app.latest()).toContainEqual({ op: 'open', url: 'https://example.com/page' })
+  })
+
   it('puts the player in the window and tells it what to play', async () => {
     library(THREE)
     const app = await openMusic()

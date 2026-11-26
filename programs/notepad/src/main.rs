@@ -7,7 +7,7 @@
 mod code;
 mod editing;
 mod graph;
-mod markdown;
+use webos::markdown;
 mod preview;
 mod vault;
 

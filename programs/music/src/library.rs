@@ -64,9 +64,9 @@ pub fn video_id(text: &str) -> Option<String> {
     (6..=20).contains(&id.len()).then_some(id)
 }
 
-/// 여러 줄의 글을 다듬는다: 앞뒤의 빈 줄을 떼고, 줄마다 앞뒤 공백을 뗀다.
+/// 여러 줄의 글을 다듬는다: 앞뒤의 빈 줄과 줄 끝의 공백을 뗀다 (들여쓰기는 마크다운에서 뜻이 있으므로 둔다).
 fn tidy(lines: &[&str]) -> String {
-    lines.iter().map(|line| line.trim()).collect::<Vec<_>>().join("\n").trim().to_string()
+    lines.iter().map(|line| line.trim_end()).collect::<Vec<_>>().join("\n").trim_matches('\n').to_string()
 }
 
 /// 곡 목록 파일을 읽는다. 알아볼 수 없는 줄은 건너뛴다.
