@@ -236,7 +236,7 @@ export type KernelCommand =
       type: 'archive-link'
       id: number
       handle: FileSystemDirectoryHandle
-      mode: 'auto' | 'export' | 'import' | 'attach'
+      mode: 'auto' | 'keep-browser' | 'keep-folder' | 'attach'
       maxFiles: number
       maxBytes: number
     }

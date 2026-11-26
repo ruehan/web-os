@@ -133,7 +133,30 @@ test('stays linked across reloads and keeps saving', async ({ page }) => {
   await expect.poll(async () => (await onDisk(page, 'backup')).files['home/guest/log.txt']).toBe('one\ntwo\n')
 })
 
-test('reconnecting makes the folder match the browser again', async ({ page }) => {
+test('picking an old archive folder again merges the two sides without asking when nothing conflicts', async ({ page }) => {
+  await link(page)
+  await raise(page, '설정')
+  await settings(page).getByRole('button', { name: '연결 해제' }).click()
+  await expect(status(page)).toHaveCount(0)
+  // 끊겨 있는 동안 브라우저에서 새로 만든 것과, 그사이 폴더에 직접 넣어 둔 것
+  await typeIn(page, term(page), 'cd /; mkdir work; echo offline > work/offline.txt; cd')
+  await expectScreen(page, term(page)).toMatch(/cd\nguest@webos:~\$$/)
+  await putOnDisk(page, 'backup', { 'home/guest/from-disk.txt': 'added outside', 'photos/a.txt': 'picture' })
+
+  await raise(page, '설정')
+  await settings(page).getByRole('button', { name: '보관 폴더 정하기…' }).click()
+  // 내용이 다른 파일이 없으므로 묻지 않고 합친다. 화면도 다시 열리지 않는다.
+  await expect(status(page)).toContainText('연결됨')
+  await expect(settings(page).getByRole('alertdialog')).toHaveCount(0)
+  await typeIn(page, term(page), 'cat from-disk.txt /photos/a.txt')
+  await expectScreen(page, term(page)).toContain('a.txt\nadded outsidepicture')
+  await expect.poll(async () => (await onDisk(page, 'backup')).files['work/offline.txt']).toBe('offline\n')
+  // 연결한 뒤로는 브라우저 쪽이 기준이다: 지우면 폴더에서도 지워진다.
+  await typeIn(page, term(page), 'rm from-disk.txt')
+  await expect.poll(async () => Object.keys((await onDisk(page, 'backup')).files)).not.toContain('home/guest/from-disk.txt')
+})
+
+test('when files differ it asks which side wins, and still merges the rest', async ({ page }) => {
   await link(page)
   // 연결이 끊겨 있는 동안 브라우저에서 바꾼 것과, 그사이 폴더에 직접 손댄 것
   await raise(page, '설정')
@@ -146,19 +169,23 @@ test('reconnecting makes the folder match the browser again', async ({ page }) =
   await raise(page, '설정')
   await settings(page).getByRole('button', { name: '보관 폴더 정하기…' }).click()
   const choice = settings(page).getByRole('alertdialog', { name: '보관 폴더의 내용 선택' })
-  await expect(choice).toContainText('예전에 보관하던 폴더입니다')
-  await choice.getByRole('button', { name: '지금 내용으로 폴더 덮어쓰기' }).click()
+  await expect(choice).toContainText('양쪽에 내용이 다른 파일이 있습니다')
+  await choice.getByRole('button', { name: '브라우저의 것으로' }).click()
   await expect(status(page)).toContainText('연결됨')
 
+  // 내용이 다른 파일(README)은 브라우저의 것으로. 한쪽에만 있는 것은 서로 넘어간다:
+  // 폴더에 넣어 둔 것은 들어오고, 브라우저에서 지웠지만 폴더에 남아 있던 것도 돌아온다.
+  await expect.poll(async () => (await onDisk(page, 'backup')).files['home/guest/offline.txt']).toBe('offline\n')
   const { files } = await onDisk(page, 'backup')
-  expect(files['home/guest/offline.txt']).toBe('offline\n')
   expect(files['home/guest/README.md']).toContain('환영합니다')
-  expect(files).not.toHaveProperty('home/guest/hello.sh')
-  expect(files).not.toHaveProperty('stray.txt')
+  expect(files['stray.txt']).toBe('added outside')
+  expect(Object.keys(files)).toContain('home/guest/hello.sh')
+  await typeIn(page, term(page), 'cat /stray.txt; ls')
+  await expectScreen(page, term(page)).toContain('added outsideREADME.md  hello.sh  offline.txt\n')
 })
 
 test('loading from the folder brings back everything after the browser data is lost', async ({ page }) => {
-  await typeIn(page, term(page), 'echo irreplaceable > thesis.txt && echo conf > /etc/custom')
+  await typeIn(page, term(page), 'echo irreplaceable > thesis.txt && echo mine >> README.md && echo conf > /etc/custom')
   await expectScreen(page, term(page)).toMatch(/custom\nguest@webos:~\$$/)
   await link(page)
   await expect.poll(async () => (await onDisk(page, 'backup')).files['home/guest/thesis.txt']).toBe('irreplaceable\n')
@@ -173,13 +200,14 @@ test('loading from the folder brings back everything after the browser data is l
 
   await launch(page, '설정')
   await settings(page).getByRole('button', { name: '보관 폴더 정하기…' }).click()
-  await settings(page).getByRole('button', { name: '폴더의 내용 불러오기' }).click()
+  // 새로 깔린 기본 파일(README)이 폴더의 것과 다르므로 어느 쪽 것으로 할지 묻는다.
+  await settings(page).getByRole('button', { name: '폴더의 것으로' }).click()
 
   // 화면이 다시 열리고, 폴더에 있던 내용으로 돌아온다. 연결도 이어진다.
   await expect(appWindow(page, 'settings')).toHaveCount(0)
   await expectScreen(page, term(page)).toMatch(/\$$/)
-  await typeIn(page, term(page), 'cat thesis.txt /etc/custom; hello | head -n 1')
-  await expectScreen(page, term(page)).toContain('head -n 1\nirreplaceable\nconf\nHello from a real WASM process!\n')
+  await typeIn(page, term(page), 'cat thesis.txt /etc/custom; tail -n 1 README.md; hello | head -n 1')
+  await expectScreen(page, term(page)).toContain('head -n 1\nirreplaceable\nconf\nmine\nHello from a real WASM process!\n')
   await launch(page, '설정')
   await expect(status(page)).toContainText('연결됨')
   // 다시 열어도 그대로다 (불러온 내용이 브라우저 저장소에도 들어갔다).
@@ -192,18 +220,18 @@ test('loading from the folder brings back everything after the browser data is l
 test('the choice can be cancelled without touching either side', async ({ page }) => {
   await link(page)
   await settings(page).getByRole('button', { name: '연결 해제' }).click()
-  await typeIn(page, term(page), 'echo local-only > local.txt')
-  await expectScreen(page, term(page)).toMatch(/local\.txt\nguest@webos:~\$$/)
+  await typeIn(page, term(page), 'echo local-only > local.txt; echo changed >> README.md')
+  await expectScreen(page, term(page)).toMatch(/README\.md\nguest@webos:~\$$/)
   await raise(page, '설정')
   await settings(page).getByRole('button', { name: '보관 폴더 정하기…' }).click()
   await settings(page).getByRole('alertdialog').getByRole('button', { name: '취소' }).click()
   await expect(status(page)).toHaveCount(0)
-  expect((await onDisk(page, 'backup')).files).not.toHaveProperty('home/guest/local.txt')
+  expect(Object.keys((await onDisk(page, 'backup')).files)).not.toContain('home/guest/local.txt')
   await typeIn(page, term(page), 'cat local.txt')
   await expectScreen(page, term(page)).toContain('cat local.txt\nlocal-only\n')
 })
 
-test('refuses to load a folder over the limit, until the limit is raised', async ({ page }) => {
+test('refuses to read a folder over the limit, until the limit is raised', async ({ page }) => {
   await link(page)
   await settings(page).getByRole('button', { name: '연결 해제' }).click()
   // 기본 한도(파일 2천 개)를 넘도록 폴더에 파일이 잔뜩 들어간 상황
@@ -213,7 +241,6 @@ test('refuses to load a folder over the limit, until the limit is raised', async
     await Promise.all(Array.from({ length: 2001 }, (_, i) => junk.getFileHandle(`f${i}`, { create: true })))
   })
   await settings(page).getByRole('button', { name: '보관 폴더 정하기…' }).click()
-  await settings(page).getByRole('button', { name: '폴더의 내용 불러오기' }).click()
   await expect(settings(page).getByRole('alert')).toContainText('폴더가 너무 큽니다 (파일 2,001개 이상')
   await expect(settings(page).getByRole('alert')).toContainText('지금 한도는 100MB · 파일 2천 개입니다')
   // 불러오지 않았으므로 지금 내용은 그대로다.
@@ -223,9 +250,8 @@ test('refuses to load a folder over the limit, until the limit is raised', async
   await raise(page, '설정')
   await settings(page).getByRole('button', { name: '500MB · 파일 1만 개' }).click()
   await settings(page).getByRole('button', { name: '보관 폴더 정하기…' }).click()
-  await settings(page).getByRole('button', { name: '폴더의 내용 불러오기' }).click()
-  await expect(appWindow(page, 'settings')).toHaveCount(0)
-  await expectScreen(page, term(page)).toMatch(/\$$/)
+  // 폴더에만 있는 파일들이므로 묻지 않고 가져온다.
+  await expect(status(page)).toContainText('연결됨')
   await typeIn(page, term(page), 'ls /junk | wc -l')
   await expectScreen(page, term(page)).toContain('wc -l\n2001\n')
 })

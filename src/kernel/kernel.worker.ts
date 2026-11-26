@@ -7,7 +7,7 @@ import { Kernel } from './kernel.ts'
 import { clearOpfs, openOpfs } from './opfs.ts'
 import { Persister } from './persist.ts'
 import { packTar, unpackTar, type TarEntry } from './tar.ts'
-import type { DirNode } from './vfs/memfs.ts'
+import type { DirNode, FileNode, Inode } from './vfs/memfs.ts'
 
 /** 보관 폴더임을 알리는 표시 파일. 폴더의 맨 위에 두며, OS의 파일로는 취급하지 않는다. */
 const MARKER = '.webos'
@@ -234,14 +234,45 @@ function clearTree(): void {
   }
 }
 
-/** 폴더의 내용으로 파일시스템을 통째로 바꾼다. 실행 중인 프로그램이 있으므로 곧바로 다시 시작해야 한다. */
-async function loadFrom(root: Dir): Promise<void> {
-  await stopArchive()
-  clearTree()
-  await new Persister(kernel.fs, '/', directoryStore(root, writeLocal), EXCLUDE).restore()
-  // 다시 시작하면 브라우저 저장소에서 부팅하므로, 불러온 내용을 먼저 거기에 반영해 둔다.
-  await persister?.sync()
-  kernel.log(`archive: loaded from local folder "${root.name}"`)
+/**
+ * 예전 보관 폴더를 다시 지정할 때, 폴더와 지금의 파일시스템을 견주거나 합친다.
+ *  - 폴더에만 있는 파일은 가져온다 (그사이 폴더에 직접 넣어 둔 것들).
+ *  - 양쪽에 있고 내용이 다른 파일은 세기만 하고, `apply`가 'folder-wins'일 때만 폴더의 것으로 바꾼다.
+ *  - 지금 쪽에만 있는 파일은 이 뒤의 맞추기(mirrorTo)가 폴더로 내보낸다.
+ * /bin, /usr 의 파일은 켤 때마다 배포된 것으로 맞추므로 다르다고 치지 않고, /tmp 는 견주지 않는다.
+ */
+async function merge(root: Dir, apply: 'none' | 'add' | 'folder-wins'): Promise<{ added: number; differing: number }> {
+  let added = 0
+  let differing = 0
+  for (const entry of await directoryStore(root, writeLocal).load()) {
+    const top = entry.path.split('/', 1)[0]!
+    if (EXCLUDE.includes(top) || top === 'tmp') continue
+    const path = `/${entry.path}`
+    let node: Inode | undefined
+    try {
+      node = kernel.fs.lookup(kernel.fs.root, path)
+    } catch {
+      // 지금 쪽에는 없는 것
+    }
+    if (!entry.data) {
+      if (!node && apply !== 'none') kernel.fs.mkdirp(path)
+      continue
+    }
+    if (!node) {
+      added++
+      if (apply !== 'none') {
+        kernel.fs.mkdirp(path.slice(0, path.lastIndexOf('/')) || '/')
+        kernel.fs.writeFile(path, entry.data)
+      }
+      continue
+    }
+    const data = entry.data
+    const same = node.kind === 'file' && node.size === data.length && data.every((b, i) => b === (node as FileNode).buf[i])
+    if (same || top === 'bin' || top === 'usr') continue
+    differing++
+    if (apply === 'folder-wins' && node.kind === 'file') kernel.fs.writeFile(path, data)
+  }
+  return { added, differing }
 }
 
 // ───────────── 백업 파일 ─────────────
@@ -301,16 +332,24 @@ async function linkArchive(cmd: Extract<KernelCommand, { type: 'archive-link' }>
   const fail = (result: Record<string, unknown>) => emit({ type: 'archive-result', id: cmd.id, ok: false, ...result } as KernelEvent)
   try {
     const marked = await hasMarker(root)
-    if (cmd.mode === 'auto' && marked) return fail({ reason: 'needs-choice' })
-    if (cmd.mode === 'auto' && !(await isEmpty(root))) return fail({ reason: 'not-empty' })
+    if (cmd.mode === 'auto' && !marked && !(await isEmpty(root))) return fail({ reason: 'not-empty' })
     if (cmd.mode === 'attach' && !marked) return fail({ reason: 'failed', msg: 'not an archive folder' })
     // 내용을 통째로 읽어 비교하거나 불러오므로, 예상 밖으로 큰 폴더는 읽기 전에 거절한다.
     await measure(root, cmd)
 
-    if (cmd.mode === 'import') {
-      await loadFrom(root)
+    if (marked && cmd.mode !== 'attach') {
+      // 예전에 보관하던 폴더를 다시 지정했다: 처음 한 번, 양쪽을 합친다.
+      // 내용이 다른 파일이 있으면 어느 쪽 것으로 할지 먼저 물어야 한다.
+      if (cmd.mode === 'auto' && (await merge(root, 'none')).differing > 0) return fail({ reason: 'needs-choice' })
+      const merged = await merge(root, cmd.mode === 'keep-folder' ? 'folder-wins' : 'add')
+      kernel.log(`archive: merged with local folder "${root.name}" (${merged.added} files brought in, ${merged.differing} differed)`)
+      // 가져온 것을 브라우저 저장소에도 반영해 두고, 폴더를 지금 내용에 맞춘다.
+      await persister?.sync()
+      await mirrorTo(root)
       emit({ type: 'archive-result', id: cmd.id, ok: true })
-      return emit({ type: 'restart' })
+      // 열려 있는 프로그램이 바뀌기 전의 내용을 들고 있을 수 있으므로, 폴더의 것으로 바꿨으면 다시 시작한다.
+      if (cmd.mode === 'keep-folder') emit({ type: 'restart' })
+      return
     }
     await mirrorTo(root)
     emit({ type: 'archive-result', id: cmd.id, ok: true })

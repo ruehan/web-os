@@ -204,17 +204,19 @@ export function SettingsApp(props: AppProps) {
             }
           >
             <div class="confirm" role="alertdialog" aria-label="보관 폴더의 내용 선택">
-              <span>예전에 보관하던 폴더입니다. 어느 쪽 내용을 살릴까요?</span>
+              <span>예전에 보관하던 폴더입니다. 양쪽에 내용이 다른 파일이 있습니다. 어느 쪽 것으로 할까요?</span>
               <button class="tool primary" onClick={() => resolve('import')}>
-                폴더의 내용 불러오기
+                폴더의 것으로
               </button>
-              <button class="tool danger" onClick={() => resolve('export')}>
-                지금 내용으로 폴더 덮어쓰기
+              <button class="tool" onClick={() => resolve('export')}>
+                브라우저의 것으로
               </button>
               <button class="tool" onClick={() => resolve('cancel')}>
                 취소
               </button>
-              <small class="hint">불러오면 지금 브라우저에 있는 파일은 사라지고 화면이 다시 열립니다.</small>
+              <small class="hint">
+                한쪽에만 있는 파일은 어느 쪽을 골라도 합쳐집니다. 폴더의 것으로 하면 화면이 다시 열립니다.
+              </small>
             </div>
           </Show>
 

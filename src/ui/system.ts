@@ -413,7 +413,8 @@ export function createSystem() {
 
     /**
      * 폴더 선택 창을 띄워 보관 폴더를 고른다. 반드시 클릭 같은 사용자 동작 안에서 불러야 한다.
-     * 빈 폴더면 지금 내용을 내보내며 연결하고, 예전에 쓰던 보관 폴더면 needs-choice를 돌려준다.
+     * 빈 폴더면 지금 내용을 내보내며 연결한다. 예전에 쓰던 보관 폴더면 양쪽을 합쳐서 연결하고,
+     * 내용이 다른 파일이 있을 때만 needs-choice를 돌려준다.
      */
     async pick(): Promise<LinkOutcome> {
       if (!pickDirectory) throw new Error('이 브라우저는 로컬 폴더를 다룰 수 없습니다.')
@@ -433,9 +434,9 @@ export function createSystem() {
     },
 
     /**
-     * 예전 보관 폴더를 골랐을 때의 선택.
-     *  - export: 지금 브라우저의 내용으로 폴더를 덮어쓴다.
-     *  - import: 폴더의 내용을 불러온다. 지금 브라우저의 내용은 사라지고 페이지가 다시 열린다.
+     * 예전 보관 폴더를 골랐는데 양쪽에 내용이 다른 파일이 있을 때의 선택. 한쪽에만 있는 파일은 어느 쪽을 골라도 합쳐진다.
+     *  - export: 다른 파일은 지금 브라우저의 것으로 둔다.
+     *  - import: 다른 파일은 폴더의 것으로 바꾼다. 페이지가 다시 열린다.
      */
     async resolve(choice: 'export' | 'import' | 'cancel'): Promise<void> {
       const handle = chosenHandle
@@ -445,14 +446,14 @@ export function createSystem() {
         // 다시 열린 뒤에 이어서 연결되도록 먼저 기억해 둔다.
         await saveHandle(ARCHIVE_KEY, handle).catch(() => {})
         try {
-          await requestArchive(handle, 'import')
+          await requestArchive(handle, 'keep-folder')
         } catch (e) {
           await forgetHandle(ARCHIVE_KEY).catch(() => {})
           throw e
         }
         return
       }
-      await requestArchive(handle, 'export')
+      await requestArchive(handle, 'keep-browser')
       await linked(handle)
     },
 
