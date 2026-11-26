@@ -1,19 +1,30 @@
-//! 문자열 포함 여부로 줄을 고른다 (정규식이 아닌 글자 그대로의 검색).
+//! 패턴에 맞는 줄을 고른다. 패턴은 정규식이다 (-F를 주면 글자 그대로 찾는다).
 
+use coreutils::regex::Regex;
 use std::io::{self, Write};
 use std::process::exit;
 
 fn main() {
     let args = coreutils::args();
     let flag = |c: char| args.iter().any(|a| a.starts_with('-') && a.len() > 1 && a.contains(c));
-    let (ignore_case, invert, numbers, count_only) = (flag('i'), flag('v'), flag('n'), flag('c'));
+    let (ignore_case, invert, numbers, count_only, fixed) = (flag('i'), flag('v'), flag('n'), flag('c'), flag('F'));
     let mut rest = args.iter().filter(|a| !(a.starts_with('-') && a.len() > 1)).cloned();
     let Some(pattern) = rest.next() else {
-        eprintln!("usage: grep [-i] [-v] [-n] [-c] PATTERN [FILE...]");
+        eprintln!("usage: grep [-i] [-v] [-n] [-c] [-F] PATTERN [FILE...]");
         exit(2);
     };
     let files: Vec<String> = rest.collect();
-    let pattern = if ignore_case { pattern.to_lowercase() } else { pattern };
+    let regex = if fixed {
+        Regex::literal(&pattern, ignore_case)
+    } else {
+        match Regex::new(&pattern, ignore_case) {
+            Ok(regex) => regex,
+            Err(problem) => {
+                eprintln!("grep: {pattern}: {problem}");
+                exit(2);
+            }
+        }
+    };
     let show_name = files.len() > 1;
 
     let mut out = io::stdout().lock();
@@ -30,8 +41,7 @@ fn main() {
             number += 1;
             let line = String::from_utf8_lossy(&buf);
             let line = line.trim_end_matches('\n');
-            let found = if ignore_case { line.to_lowercase().contains(&pattern) } else { line.contains(&pattern) };
-            if found == invert {
+            if regex.is_match(line) == invert {
                 continue;
             }
             hits += 1;

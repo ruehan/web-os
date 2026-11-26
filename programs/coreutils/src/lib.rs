@@ -1,5 +1,7 @@
 //! 기본 명령어들이 함께 쓰는 도우미.
 
+pub mod regex;
+
 use std::fs::File;
 use std::io::{self, BufRead, BufReader};
 

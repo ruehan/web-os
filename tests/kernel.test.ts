@@ -134,19 +134,19 @@ describe('shell', () => {
 
   it('lists many entries across multiple readdir calls', async () => {
     const r = await start().sh('ls /bin | wc -l; ls /bin | head -n 2; ls /bin | tail -n 1')
-    expect(r.stdout).toBe('30\ncat\nclear\nyes\n')
+    expect(r.stdout).toBe('31\ncat\nclear\nyes\n')
   })
 
   it('runs script files, directly and via sh', async () => {
     const { sh } = start()
-    const expected = '안녕하세요, guest 님\n현재 위치: /home/guest\n30\n'
+    const expected = '안녕하세요, guest 님\n현재 위치: /home/guest\n31\n'
     expect((await sh('sh hello.sh')).stdout).toBe(expected)
     expect((await start().sh('./hello.sh')).stdout).toBe(expected)
   })
 
   it('runs background jobs without waiting', async () => {
     const r = await start().sh('sleep 0.2 & echo fg')
-    expect(r.stdout).toMatch(/^\[\d+\]\nfg\n$/)
+    expect(r.stdout).toMatch(/^\[1\] \d+\nfg\n$/)
   })
 
   it('grep supports -i -v -n and sets its exit status', async () => {
@@ -178,7 +178,7 @@ describe('system call tracing', () => {
     expect(lines).toContain('sh: spawn("/bin/echo", ["echo", "hi"], stdio=[0,4,2]) = 2')
     expect(lines).toContain('echo: write(1, "hi\\n", 3) = 3')
     expect(lines).toContain('echo: exit(0)')
-    expect(lines).toContain('sh: wait(2) = 2 (exit 0)')
+    expect(lines).toContain('sh: wait(2, UNTRACED) = 2 (exit 0)')
     expect(lines).toContain('cat: open("/tmp/f") = 4')
     expect(lines).toContain('cat: read(4, 8192) = 3')
     expect(lines).toContain('cat: open("/nope") = -1 ENOENT')
@@ -261,7 +261,7 @@ describe('/proc', () => {
 
   it('entries disappear when the process exits', async () => {
     const r = await start().sh('sleep 0.2 & cat /proc/2/cmdline | wc -c; sleep 0.4; cat /proc/2/status')
-    expect(r.stdout).toMatch(/^\[2\]\n10\n$/)
+    expect(r.stdout).toMatch(/^\[1\] 2\n10\n$/)
     expect(r.stderr).toBe('cat: /proc/2/status: No such file or directory\n')
   })
 
@@ -306,7 +306,7 @@ describe('wildcards', () => {
 
   it('matches across directories, relative and absolute', async () => {
     const r = await inTmp('echo d*/x.txt; echo */*.md; echo /tmp/d?/x*; echo /bin/c*')
-    expect(r.stdout).toBe('d1/x.txt d2/x.txt\nd2/y.md\n/tmp/d1/x.txt /tmp/d2/x.txt\n/bin/cat /bin/clear /bin/cp\n')
+    expect(r.stdout).toBe('d1/x.txt d2/x.txt\nd2/y.md\n/tmp/d1/x.txt /tmp/d2/x.txt\n/bin/cat /bin/clear /bin/cp /bin/curl\n')
   })
 
   it('stays literal when quoted, escaped, or when nothing matches', async () => {
@@ -450,9 +450,60 @@ describe('terminal', () => {
 
   it('reports finished background jobs at the next prompt', async () => {
     const term = await start().terminal()
-    expect(await term.exec('sleep 0.1 &')).toMatch(/^\[\d+\]$/)
+    expect(await term.exec('sleep 0.1 &')).toMatch(/^\[1\] \d+$/)
     await new Promise((r) => setTimeout(r, 300))
-    expect(await term.exec('true')).toMatch(/^\[\d+\] done \(0\)$/)
+    expect(await term.exec('true')).toBe('[1] done (0)  sleep 0.1')
+  })
+
+  it('Ctrl+Z stops the foreground job, and fg and bg bring it back', async () => {
+    const term = await start().terminal()
+    const written = () => {
+      try {
+        return os.kernel.fs.readFile('/tmp/out').length
+      } catch {
+        return 0
+      }
+    }
+    // 화면이 아니라 파일에 쓰게 해서, 배경에서 돌 때의 출력이 프롬프트와 섞이지 않게 한다.
+    term.type('spin > /tmp/out\r')
+    await os.until(() => written() > 0, 'the first output')
+    term.type('\x1a')
+    await term.waitFor('^Z\n[1]+ Stopped  spin\nguest@webos')
+    expect(await term.exec('echo $?')).toBe('148')
+    // 멈춘 프로세스는 살아 있고, 상태가 T로 보이며, 더 쓰지 않는다.
+    expect(await term.exec('jobs')).toBe('[1]  Stopped  spin')
+    expect(await term.exec('ps | grep "spin$"')).toMatch(/^\s+\d+\s+1 T\s+1\s+spin$/)
+    const frozen = written()
+    await new Promise((r) => setTimeout(r, 1300))
+    expect(written()).toBe(frozen)
+
+    // bg: 배경에서 다시 돈다. 프롬프트는 그대로 쓸 수 있다.
+    expect(await term.exec('bg')).toBe('[1] spin &')
+    expect(await term.exec('jobs')).toBe('[1]  Running  spin')
+    await os.until(() => written() > frozen, 'more output')
+    // fg: 다시 앞으로 가져오면 Ctrl+C가 그 프로그램에 간다.
+    term.type('fg %1\r')
+    await term.waitFor('fg %1\nspin')
+    term.type('\x03')
+    await term.waitFor('^C\nguest@webos')
+    expect(await term.exec('jobs')).toBe('')
+    expect(await term.exec('fg')).toBe('sh: fg: no such job')
+    expect(os.kernel.pids().length).toBe(1)
+  }, 15_000)
+
+  it('kill -STOP and -CONT pause and resume a process', async () => {
+    const term = await start().terminal()
+    await term.exec('spin > /tmp/out &')
+    const pid = Number((await term.exec('ps | grep "spin$"')).match(/^\s*(\d+)\s+1 [RS]/)![1])
+    await term.exec(`kill -STOP ${pid}`)
+    expect(await term.exec('ps | grep "spin$"')).toContain(' T ')
+    await new Promise((r) => setTimeout(r, 200))
+    const size = (await term.exec('wc -c /tmp/out')).trim()
+    await new Promise((r) => setTimeout(r, 1300))
+    expect((await term.exec('wc -c /tmp/out')).trim()).toBe(size)
+    await term.exec(`kill -CONT ${pid}`)
+    await os.until(() => new TextDecoder().decode(os.kernel.fs.readFile('/tmp/out')).length > Number(size.split(' ')[0]), 'more output')
+    await term.exec(`kill ${pid}`)
   })
 
   it('Ctrl+D at the prompt ends the session and its processes', async () => {
@@ -915,5 +966,67 @@ describe('full-screen programs', () => {
     await term.waitFor('ac\nac')
     term.type('\x04')
     await term.waitForLine(P)
+  })
+})
+
+describe('grep', () => {
+  const LOG = 'read(3) = 10\nwrite(1) = 5\nopen("a.txt") = 4\nclose(4) = 0\n# 주석 read\n'
+  /** 명령 하나를 새 시스템에서 돌린다 (출력이 섞이지 않게). */
+  async function grep(args: string, text: string) {
+    const os = start()
+    os.kernel.fs.writeFile('/tmp/t', new TextEncoder().encode(text))
+    const r = await os.sh(`grep ${args} /tmp/t`)
+    os.shutdown()
+    return r
+  }
+
+  it('matches regular expressions', async () => {
+    expect((await grep('"^(read|write)\\("', LOG)).stdout).toBe('read(3) = 10\nwrite(1) = 5\n')
+    expect((await grep('-c "= [0-9]{2}$"', LOG)).stdout).toBe('1\n')
+    expect((await grep('-n "a.txt"', LOG)).stdout).toBe('3:open("a.txt") = 4\n')
+    expect((await grep('-i "^# 주석 READ$"', LOG)).stdout).toBe('# 주석 read\n')
+    expect((await grep('-v "\\d"', LOG)).stdout).toBe('# 주석 read\n')
+  })
+
+  it('takes the pattern literally with -F, and rejects a broken pattern', async () => {
+    const text = 'a.c\nabc\n(x\n'
+    expect((await grep('-F a.c', text)).stdout).toBe('a.c\n')
+    expect((await grep('a.c', text)).stdout).toBe('a.c\nabc\n')
+    expect((await grep('-F "(x"', text)).stdout).toBe('(x\n')
+    const bad = await grep('"(x"', text)
+    expect(bad.stderr).toBe('grep: (x: missing )\n')
+    expect(bad.code).toBe(2)
+  })
+})
+
+describe('/proc/self', () => {
+  it('is the process that is looking', async () => {
+    const r = await start().sh('cat /proc/self/status | grep -E "^(Name|Pid|PPid):"; ls /proc/self')
+    expect(r.stdout).toMatch(/^Name:\tcat\nPid:\t(\d+)\nPPid:\t1\ncmdline\nstatus\n$/)
+  })
+})
+
+describe('network', () => {
+  it('curl fetches a page through the kernel', async () => {
+    const os = start()
+    // 본문 그대로, 큰 응답을 파이프로(끝까지 읽는다), 머리글만, 파일로.
+    const r = await os.sh('curl https://example.test/hello.txt; curl -s https://example.test/big.txt | wc -l; curl -I https://example.test/hello.txt; curl -o /tmp/saved example.test/hello.txt')
+    expect(r.stdout).toMatch(/^안녕, 네트워크\n\s*40000\nHTTP 200\ncontent-type: text\/plain\ncontent-length: 12\n$/)
+    expect(new TextDecoder().decode(os.kernel.fs.readFile('/tmp/saved'))).toBe('안녕, 네트워크\n')
+  })
+
+  it('reports pages that are missing or cannot be reached', async () => {
+    const r = await start().sh('curl https://example.test/missing; echo $?; curl https://nowhere.test/; echo $?; curl ftp://example.test/; echo $?')
+    expect(r.stdout).toBe('not found\n22\n6\n6\n')
+    expect(r.stderr).toContain('curl: could not fetch https://nowhere.test/: Failed to fetch\n')
+  })
+
+  it('the fetch shows in the system call trace', async () => {
+    const os = start()
+    os.kernel.setTracing(true)
+    await os.sh('curl https://example.test/hello.txt')
+    await os.until(() => os.events.some((e) => e.type === 'trace' && e.records.some((r) => r.call === 'fetch')), 'the trace')
+    const fetch = os.events.flatMap((e) => (e.type === 'trace' ? e.records : [])).find((r) => r.call === 'fetch')!
+    expect(`${fetch.call}(${fetch.args}) ${fetch.result}`).toMatch(/^fetch\("https:\/\/example\.test\/hello\.txt"\) = \d+$/)
   })
 })

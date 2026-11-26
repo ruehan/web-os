@@ -57,7 +57,25 @@ struct Shell {
     pid: i32,
     /// $0, $1, ... (스크립트 인자)
     params: Vec<String>,
+    /// 배경에서 돌고 있거나 멈춰 있는 작업들
+    jobs: Vec<Job>,
 }
+
+/// 셸이 띄운 파이프라인 하나. 배경으로 보냈거나(&) 멈춘(Ctrl+Z) 것만 여기에 남는다.
+struct Job {
+    /// jobs에 보이는 번호. fg %1 처럼 가리킨다.
+    id: usize,
+    /// 프로세스 그룹. 터미널의 입력을 넘겨줄 때 쓴다.
+    pgid: i32,
+    /// 아직 끝나지 않은 프로세스들
+    pids: Vec<i32>,
+    /// 사용자가 친 명령 (보여 주기용)
+    line: String,
+    stopped: bool,
+}
+
+/// 멈춘 작업의 종료 상태 (128 + SIGTSTP)
+const STOPPED: i32 = 148;
 
 fn main() {
     webos::init();
@@ -67,6 +85,7 @@ fn main() {
         status: 0,
         pid: webos::getpid(),
         params: vec!["sh".to_string()],
+        jobs: Vec::new(),
     };
 
     if args.len() >= 3 && args[1] == "-c" {
@@ -128,7 +147,7 @@ impl Shell {
         };
         loop {
             while let Some((pid, code)) = webos::try_wait_any() {
-                println!("[{pid}] done ({code})");
+                self.reaped(pid, code);
             }
             let input = editor.read_line(&self.prompt(), &|word, command| self.complete(word, command));
             match input {
@@ -452,20 +471,65 @@ impl Shell {
         }
         drop(upstream);
 
+        let line = cmds.iter().map(|cmd| cmd.args.join(" ")).collect::<Vec<_>>().join(" | ");
         if background {
             if let Some(pid) = pids.last() {
-                println!("[{pid}]");
+                let id = self.next_job();
+                println!("[{id}] {pid}");
+                self.jobs.push(Job { id, pgid, pids, line, stopped: false });
             }
             return status;
         }
+        self.wait_foreground(pgid, pids, line, status)
+    }
+
+    fn next_job(&self) -> usize {
+        self.jobs.iter().map(|job| job.id).max().unwrap_or(0) + 1
+    }
+
+    /// 전경의 작업이 끝나거나 멈출 때까지 기다린다. 멈추면(Ctrl+Z) 작업 목록에 올리고 프롬프트로 돌아온다.
+    fn wait_foreground(&mut self, pgid: i32, pids: Vec<i32>, line: String, mut status: i32) -> i32 {
         for (i, pid) in pids.iter().enumerate() {
-            let code = webos::wait(*pid).unwrap_or(CANNOT_RUN);
-            if i == pids.len() - 1 && status == 0 {
-                status = code;
+            match webos::wait_job(*pid) {
+                Ok(webos::Waited::Exited(code)) => {
+                    if i == pids.len() - 1 && status == 0 {
+                        status = code;
+                    }
+                }
+                Ok(webos::Waited::Stopped) => {
+                    let id = self.next_job();
+                    println!("[{id}]+ Stopped  {line}");
+                    self.jobs.push(Job { id, pgid, pids: pids[i..].to_vec(), line, stopped: true });
+                    let _ = webos::set_foreground(self.pid);
+                    return STOPPED;
+                }
+                Err(_) => status = CANNOT_RUN,
             }
         }
         let _ = webos::set_foreground(self.pid);
         status
+    }
+
+    /// 배경의 프로세스가 끝났다: 그 작업의 프로세스가 모두 끝났으면 알린다.
+    fn reaped(&mut self, pid: i32, code: i32) {
+        let Some(at) = self.jobs.iter().position(|job| job.pids.contains(&pid)) else { return };
+        let job = &mut self.jobs[at];
+        job.pids.retain(|p| *p != pid);
+        if job.pids.is_empty() {
+            println!("[{}] done ({code})  {}", job.id, job.line);
+            self.jobs.remove(at);
+        }
+    }
+
+    /// `%2`나 `2`로 가리킨 작업의 순번. 가리키지 않았으면 가장 최근의 작업.
+    fn find_job(&self, arg: Option<&String>) -> Option<usize> {
+        match arg {
+            Some(arg) => {
+                let id: usize = arg.trim_start_matches('%').parse().ok()?;
+                self.jobs.iter().position(|job| job.id == id)
+            }
+            None => self.jobs.len().checked_sub(1),
+        }
     }
 
     fn launch(
@@ -555,6 +619,41 @@ impl Shell {
             "exit" => {
                 let code = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(self.status);
                 exit(code);
+            }
+            "jobs" => {
+                // 그사이 끝난 것을 먼저 거둔다.
+                while let Some((pid, code)) = webos::try_wait_any() {
+                    self.reaped(pid, code);
+                }
+                for job in &self.jobs {
+                    println!("[{}]  {}  {}", job.id, if job.stopped { "Stopped" } else { "Running" }, job.line);
+                }
+                Some(0)
+            }
+            "fg" | "bg" => {
+                let Some(at) = self.find_job(args.get(1)) else {
+                    eprintln!("sh: {}: no such job", args[0]);
+                    return Some(1);
+                };
+                // 무엇을 다시 움직이는지 먼저 알리고 (그 프로그램의 출력이 곧 이어진다), 움직이게 한다.
+                let resume = |job: &Job| {
+                    for pid in &job.pids {
+                        let _ = webos::signal(*pid, webos::Signal::Cont);
+                    }
+                };
+                if args[0] == "bg" {
+                    let job = &mut self.jobs[at];
+                    job.stopped = false;
+                    println!("[{}] {} &", job.id, job.line);
+                    resume(job);
+                    return Some(0);
+                }
+                // 전경으로: 터미널의 입력을 넘겨주고 끝나거나 다시 멈출 때까지 기다린다.
+                let job = self.jobs.remove(at);
+                let _ = webos::set_foreground(job.pgid);
+                println!("{}", job.line);
+                resume(&job);
+                Some(self.wait_foreground(job.pgid, job.pids, job.line, 0))
             }
             "export" => {
                 self.vars.extend(args[1..].iter().filter_map(|a| split_assignment(a)));

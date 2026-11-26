@@ -33,6 +33,7 @@ describe('Tty', () => {
     const tty = new Tty(1, {
       output: (d) => (out += text(d)),
       interrupt: () => interrupts++,
+      suspend() {},
       readable() {},
     })
     return { tty, out: () => out, interrupts: () => interrupts }

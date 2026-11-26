@@ -321,6 +321,21 @@ export function runWasi(
       return 0
     },
     kill: (pid: number) => -sys.call({ nr: Sys.kill, args: [pid] }).errno,
+    // sig: 0 끝내기, 18 다시 움직이기, 19 멈추기
+    signal: (pid: number, sig: number) => -sys.call({ nr: Sys.kill, args: [pid, sig] }).errno,
+    // 주소의 내용을 받아 온다. 본문을 읽을 fd를 돌려주고, statusPtr에 상태 코드를, headPtr에 머리글(최대 headCap)과 그 길이를 쓴다.
+    // 실패하면 음수 오류 번호이고, headPtr에 이유가 적힌다.
+    fetch(urlPtr: number, urlLen: number, head: number, statusPtr: number, headPtr: number, headCap: number, headLenPtr: number) {
+      const res = sys.call({ nr: Sys.fetch, args: [head], path: readString(urlPtr, urlLen) })
+      const view = new DataView(bytes().buffer)
+      const text = res.errno ? (res.data ?? new Uint8Array(0)) : res.data!.subarray(4)
+      const n = Math.min(text.length, headCap)
+      bytes().set(text.subarray(0, n), headPtr)
+      view.setUint32(headLenPtr, n, true)
+      if (res.errno) return -res.errno
+      view.setUint32(statusPtr, new DataView(res.data!.buffer, res.data!.byteOffset).getUint32(0, true), true)
+      return res.ret ?? 0
+    },
     gui_open: (titlePtr: number, titleLen: number, w: number, h: number) =>
       -sys.call({ nr: Sys.guiopen, args: [w, h], path: readString(titlePtr, titleLen) }).errno,
     // 메모리의 일부를 가리키는 채로는 보낼 수 없으므로 복사해서 보낸다.

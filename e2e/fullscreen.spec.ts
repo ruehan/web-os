@@ -22,7 +22,7 @@ test('top shows live processes and restores the screen when it exits', async ({ 
   await type(page, 'echo before-top')
   await expectScreen(page).toMatch(/\nbefore-top\nguest@webos:~\$$/)
   await type(page, 'sleep 60 &')
-  await expectScreen(page).toMatch(/\n\[\d+\]\nguest@webos:~\$$/)
+  await expectScreen(page).toMatch(/\n\[1\] \d+\nguest@webos:~\$$/)
   await type(page, 'top')
   await expectScreen(page).toContain('PID  PPID S TTY     TIME COMMAND')
   const text = await screen(page)
@@ -39,7 +39,7 @@ test('top shows live processes and restores the screen when it exits', async ({ 
   await expectScreen(page).toMatch(/프로세스 2개/)
 
   await page.keyboard.press('q')
-  await expectScreen(page).toMatch(/\$ top\n(\[\d+\] done \(143\)\n)?guest@webos:~\$$/)
+  await expectScreen(page).toMatch(/\$ top\n(\[\d+\] done \(143\).*\n)?guest@webos:~\$$/)
   expect(await screen(page)).toContain('\nbefore-top\n')
 })
 

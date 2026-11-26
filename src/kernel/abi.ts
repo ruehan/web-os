@@ -30,7 +30,7 @@ export const Sys = {
   pipe: 17, //                            -> data u32 읽기 fd, u32 쓰기 fd
   setfg: 18, // args [pgid]                터미널의 전경 프로세스 그룹 지정
   getpid: 19, //                            -> ret pid
-  kill: 20, // args [pid]
+  kill: 20, // args [pid, sig]           sig 0이면 끝낸다. Signal.STOP은 멈추고(다음 시스템 콜에서), Signal.CONT는 다시 움직인다
   ttyraw: 21, // args [0 | 1]              터미널을 키 단위 입력 모드로 전환
   winsize: 22, //                            -> data u32 열 수, u32 줄 수
   rename: 23, // args [fromDirfd, toDirfd], path "from\0to"
@@ -42,6 +42,7 @@ export const Sys = {
   guitext: 28, // args [field, offset, maxLen] -> data 입력 칸의 글 일부, ret 글의 판 번호 (읽는 사이에 바뀌었는지 확인용)
   guisettext: 29, // args [field, guarded], data 글   입력 칸의 글을 정한다. guarded가 1이면 사용자가 그사이 더 치지 않았을 때만 (-> ret 정했으면 1)
   guimeasure: 30, // data 요청               -> data 글마다 f32 폭 (화면 쪽이 잰다)
+  fetch: 33, // args [head], path 주소     -> ret 본문을 읽을 fd, data u32 상태 코드 + 응답 머리글 (http·https만. 커널이 대신 받아 온다)
   guistyle: 32, // args [field], data 범위들  입력 칸의 글에 색을 입힌다 (gui.ts의 decodeStyles). 빈 data면 색을 없앤다
   guiimage: 31, // path 그림 파일 (절대 경로) -> data f32 너비, f32 높이 (화면 쪽이 그림을 읽어 두고 크기를 알려 준다. 못 읽으면 0, 0)
 } as const
@@ -65,7 +66,11 @@ export const FileType = { UNKNOWN: 0, CHAR_DEVICE: 2, DIRECTORY: 3, REGULAR: 4 }
 export const OFlags = { CREAT: 1, DIRECTORY: 2, EXCL: 4, TRUNC: 8 } as const
 export const FdFlags = { APPEND: 1 } as const
 export const Whence = { SET: 0, CUR: 1, END: 2 } as const
-export const WaitFlags = { NOHANG: 1 } as const
+/** UNTRACED: 끝난 자식뿐 아니라 멈춘 자식도 알려 준다 (그때의 종료 코드는 WAIT_STOPPED) */
+export const WaitFlags = { NOHANG: 1, UNTRACED: 2 } as const
+/** wait가 "끝난 것이 아니라 멈췄다"고 알릴 때 종료 코드 자리에 넣는 값 (실제 종료 코드는 0~255다) */
+export const WAIT_STOPPED = 0x1000
+export const Signal = { TERM: 0, CONT: 18, STOP: 19 } as const
 /** spawn의 pgid 인자: 새 그룹을 만들거나 부모 그룹을 물려받는다. 양수면 그 그룹에 합류한다. */
 export const Pgid = { NEW: 0, INHERIT: -1 } as const
 

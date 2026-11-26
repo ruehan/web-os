@@ -20,6 +20,10 @@ extern "C" {
     fn sys_getpid() -> i32;
     #[link_name = "kill"]
     fn sys_kill(pid: i32) -> i32;
+    #[link_name = "signal"]
+    fn sys_signal(pid: i32, sig: i32) -> i32;
+    #[link_name = "fetch"]
+    fn sys_fetch(url: *const u8, len: usize, head: i32, status: *mut u32, text: *mut u8, cap: usize, text_len: *mut u32) -> i32;
     #[link_name = "set_raw"]
     fn sys_set_raw(on: i32) -> i32;
     #[link_name = "winsize"]
@@ -27,6 +31,9 @@ extern "C" {
 }
 
 const WAIT_NOHANG: u32 = 1;
+const WAIT_UNTRACED: u32 = 2;
+/// wait가 "끝난 것이 아니라 멈췄다"고 알릴 때의 값
+const WAIT_STOPPED: i32 = 0x1000;
 
 /// spawn의 pgid: 새 프로세스 그룹을 만든다.
 pub const PGID_NEW: i32 = 0;
@@ -89,6 +96,60 @@ pub fn wait(pid: i32) -> io::Result<i32> {
     let mut status = 0;
     check(unsafe { sys_wait(pid, 0, &mut status) })?;
     Ok(status)
+}
+
+/// 기다리던 자식에게 일어난 일
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Waited {
+    /// 끝났다 (종료 코드)
+    Exited(i32),
+    /// 멈췄다 (Ctrl+Z 등). 아직 살아 있고, `signal(pid, Signal::Cont)`로 다시 움직일 수 있다.
+    Stopped,
+}
+
+/// 자식이 끝나거나 멈출 때까지 기다린다 (셸이 전경의 작업을 기다릴 때 쓴다).
+pub fn wait_job(pid: i32) -> io::Result<Waited> {
+    let mut status = 0;
+    check(unsafe { sys_wait(pid, WAIT_UNTRACED, &mut status) })?;
+    Ok(if status == WAIT_STOPPED { Waited::Stopped } else { Waited::Exited(status) })
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Signal {
+    /// 끝낸다
+    Term = 0,
+    /// 멈춘 것을 다시 움직인다
+    Cont = 18,
+    /// 멈춘다. 프로세스는 다음 시스템 콜에서 선다 (계산만 하는 동안에는 서지 않는다).
+    Stop = 19,
+}
+
+pub fn signal(pid: i32, signal: Signal) -> io::Result<()> {
+    check(unsafe { sys_signal(pid, signal as i32) }).map(|_| ())
+}
+
+/// 네트워크에서 받아 온 응답
+pub struct Response {
+    pub status: u16,
+    /// "이름: 값" 줄들
+    pub headers: String,
+    /// 본문. 끝까지 읽으면 된다.
+    pub body: std::fs::File,
+}
+
+/// 주소(http, https)의 내용을 받아 온다. 받아 오는 것은 커널이고, 다 받을 때까지 멈춰 기다린다.
+/// `head`면 본문 없이 머리글만 받는다. 실패하면 그 이유를 돌려준다.
+pub fn fetch(url: &str, head: bool) -> Result<Response, String> {
+    let mut status = 0u32;
+    let mut text = vec![0u8; 16 * 1024];
+    let mut text_len = 0u32;
+    let fd = unsafe { sys_fetch(url.as_ptr(), url.len(), head as i32, &mut status, text.as_mut_ptr(), text.len(), &mut text_len) };
+    let text = String::from_utf8_lossy(&text[..text_len as usize]).into_owned();
+    if fd < 0 {
+        return Err(if text.is_empty() { describe(&io::Error::from_raw_os_error(-fd)) } else { text });
+    }
+    let body = unsafe { std::fs::File::from_raw_fd(fd as RawFd) };
+    Ok(Response { status: status as u16, headers: text, body })
 }
 
 /// 이미 끝난 자식이 있으면 (pid, 종료 코드)를 돌려준다. 기다리지 않는다.

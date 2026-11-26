@@ -25,6 +25,13 @@ export class Pipe {
     return n
   }
 
+  /** 용량과 상관없이 통째로 넣는다 (커널이 이미 다 받아 둔 내용을 읽기 전용으로 건넬 때). */
+  fill(data: Uint8Array): void {
+    if (data.length === 0) return
+    this.chunks.push(data)
+    this.size += data.length
+  }
+
   read(max: number): Uint8Array {
     const out = new Uint8Array(Math.min(max, this.size))
     let filled = 0

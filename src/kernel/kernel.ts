@@ -7,6 +7,8 @@ import {
   Pgid,
   Sys,
   WaitFlags,
+  WAIT_STOPPED,
+  Signal,
   Whence,
   createChannel,
   writeReply,
@@ -54,6 +56,13 @@ interface Process {
   /** 종료했지만 아직 wait로 거두지 않은 자식의 종료 코드 */
   zombies: Map<number, number>
   childQ: WaitQueue
+  /** 멈춰 있다 (Ctrl+Z, STOP). 멈춘 프로세스의 시스템 콜은 다시 움직일 때까지 응답이 미뤄진다. */
+  stopped: boolean
+  stopQ: WaitQueue
+  /** 멈췄지만 아직 wait로 알리지 않은 자식들 */
+  stoppedKids: Set<number>
+  /** 받아 오는 중인 네트워크 요청 */
+  net?: { queue: WaitQueue; done?: FetchResult | { error: string } }
   /** 조건을 기다리며 미뤄 둔 시스템 콜 */
   pending?: SysReq
   blockedOn?: WaitQueue
@@ -88,6 +97,15 @@ export interface KernelHost {
   /** 프로세스 실행 컨텍스트를 만든다. 브라우저에서는 Worker다. */
   launch(init: ProcessInit): ProcessHandle
   now(): number
+  /** 바깥 네트워크에서 받아 온다 (http·https). 없으면 fetch 시스템 콜은 지원하지 않는 것으로 답한다. */
+  fetch?(url: string, head: boolean): Promise<FetchResult>
+}
+
+export interface FetchResult {
+  status: number
+  /** "이름: 값" 줄들 */
+  headers: string
+  body: Uint8Array
 }
 
 /** 시스템 콜을 지금 끝낼 수 없다. 큐가 깨워질 때 처음부터 다시 실행된다. */
@@ -206,6 +224,7 @@ export class Kernel {
     const tty: Tty = new Tty(id, {
       output: (data) => this.host.emit({ type: 'tty-output', tty: id, data }),
       interrupt: () => this.interrupt(tty),
+      suspend: () => this.suspend(tty),
       readable: () => this.wake(tty.readQ),
     })
     tty.cols = cols
@@ -308,7 +327,7 @@ export class Kernel {
    * /proc 의 내용을 지금의 커널 상태로 다시 만든다. 누군가 /proc 아래를 열거나 조회하려 할 때마다 부른다.
    * 이미 열려 있는 파일은 열었을 때의 내용을 그대로 본다.
    */
-  private refreshProc(): void {
+  private refreshProc(self?: Process): void {
     const { fs } = this
     const text = (s: string) => new TextEncoder().encode(s)
     fs.quiet(() => {
@@ -319,8 +338,8 @@ export class Kernel {
       fs.writeFile('/proc/mounts', text(`memfs / rw\n${mounts}procfs /proc ro\n`))
       for (const p of this.procs.values()) {
         fs.mkdirp(`/proc/${p.pid}`)
-        // 조건을 기다리며 시스템 콜에 멈춰 있으면 S, 아니면 R
-        const state = p.pending ? 'S (sleeping)' : 'R (running)'
+        // 멈춰 세워 둔 것은 T, 조건을 기다리며 시스템 콜에 멈춰 있으면 S, 아니면 R
+        const state = p.stopped ? 'T (stopped)' : p.pending ? 'S (sleeping)' : 'R (running)'
         const fields: [string, string | number][] = [
           ['Name', p.argv[0] ?? ''],
           ['State', state],
@@ -334,6 +353,12 @@ export class Kernel {
         fs.writeFile(`/proc/${p.pid}/status`, text(fields.map(([k, v]) => `${k}:\t${v}\n`).join('')))
         // 리눅스처럼 인자를 NUL 문자로 구분한다.
         fs.writeFile(`/proc/${p.pid}/cmdline`, text(p.argv.map((a) => a + '\0').join('')))
+      }
+      // /proc/self: 지금 /proc을 들여다보는 그 프로세스
+      if (self) {
+        const own = fs.lookup(fs.root, `/proc/${self.pid}`) as DirNode
+        const dir = fs.mkdirp('/proc/self')
+        for (const [name, node] of own.entries) dir.entries.set(name, node)
       }
     })
   }
@@ -360,6 +385,9 @@ export class Kernel {
     const pid = proc.pid
     let res: SysRes
     try {
+      // 멈춘 프로세스는 다음 시스템 콜에서 선다: 다시 움직일 때까지 응답하지 않는다.
+      // (Worker를 바깥에서 세울 수는 없으므로, 시스템 콜 없이 계산만 하는 동안에는 멈추지 않는다.)
+      if (proc.stopped && req.nr !== Sys.exit) throw new Block(proc.stopQ)
       res = this.dispatch(proc, req)
     } catch (e) {
       if (e instanceof Gone) {
@@ -471,6 +499,9 @@ export class Kernel {
       children: new Set(),
       zombies: new Map(),
       childQ: new WaitQueue(),
+      stopped: false,
+      stopQ: new WaitQueue(),
+      stoppedKids: new Set(),
     }
     this.procs.set(pid, proc)
     parent?.children.add(pid)
@@ -509,6 +540,7 @@ export class Kernel {
     }
     const parent = this.procs.get(proc.ppid)
     if (parent) {
+      parent.stoppedKids.delete(pid)
       parent.children.delete(pid)
       parent.zombies.set(pid, code)
       this.wake(parent.childQ)
@@ -537,6 +569,31 @@ export class Kernel {
       else this.reap(p.pid, ExitStatus.INTERRUPT)
     }
     if (shellInForeground) tty.deliver('\n')
+  }
+
+  /** Ctrl+Z: 전경 그룹의 프로세스를 멈춘다. 셸 자신은 멈추지 않는다. */
+  private suspend(tty: Tty): void {
+    for (const p of [...this.procs.values()]) {
+      if (p.tty === tty && p.pgid === tty.fg && !p.sessionLeader) this.stop(p)
+    }
+  }
+
+  private stop(proc: Process): void {
+    if (proc.stopped) return
+    proc.stopped = true
+    // 부모(셸)가 wait로 기다리고 있으면 멈춘 것을 알 수 있게 깨운다.
+    const parent = this.procs.get(proc.ppid)
+    if (parent) {
+      parent.stoppedKids.add(proc.pid)
+      this.wake(parent.childQ)
+    }
+  }
+
+  private resume(proc: Process): void {
+    if (!proc.stopped) return
+    proc.stopped = false
+    this.procs.get(proc.ppid)?.stoppedKids.delete(proc.pid)
+    this.wake(proc.stopQ)
   }
 
   /** 미뤄 둔 시스템 콜을 다시 실행한다. 조건이 여전히 안 되면 다시 큐에 들어간다. */
@@ -590,7 +647,7 @@ export class Kernel {
   private dispatch(proc: Process, req: SysReq): SysRes {
     const [a0 = 0, a1 = 0, a2 = 0] = req.args
     const path = req.path ?? ''
-    if ((req.nr === Sys.open || req.nr === Sys.pathstat) && isProcPath(path)) this.refreshProc()
+    if ((req.nr === Sys.open || req.nr === Sys.pathstat) && isProcPath(path)) this.refreshProc(proc)
     switch (req.nr) {
       case Sys.exit:
         this.reap(proc.pid, a0)
@@ -737,11 +794,47 @@ export class Kernel {
       }
       case Sys.getpid:
         return { errno: 0, ret: proc.pid }
-      case Sys.kill:
-        if (!this.procs.has(a0)) throw new KernelError(Errno.SRCH)
-        this.reap(a0, ExitStatus.TERMINATED)
-        if (a0 === proc.pid) throw new Gone()
+      case Sys.kill: {
+        const target = this.procs.get(a0)
+        if (!target) throw new KernelError(Errno.SRCH)
+        if (a1 === Signal.STOP) this.stop(target)
+        else if (a1 === Signal.CONT) this.resume(target)
+        else {
+          this.reap(a0, ExitStatus.TERMINATED)
+          if (a0 === proc.pid) throw new Gone()
+        }
         return { errno: 0 }
+      }
+      case Sys.fetch: {
+        // 커널이 대신 받아 온다. 다 받을 때까지 프로세스는 멈춰 있고, 받은 본문은 읽기만 하는 fd로 건넨다.
+        if (!proc.net) {
+          if (!this.host.fetch) throw new KernelError(Errno.NOSYS)
+          if (!/^https?:\/\//i.test(path)) throw new KernelError(Errno.INVAL)
+          const net: NonNullable<Process['net']> = { queue: new WaitQueue() }
+          proc.net = net
+          this.host
+            .fetch(path, a0 === 1)
+            .then(
+              (result) => (net.done = result),
+              (e) => (net.done = { error: e instanceof Error ? e.message : String(e) }),
+            )
+            .finally(() => this.wake(net.queue))
+          throw new Block(net.queue)
+        }
+        const done = proc.net.done
+        if (!done) throw new Block(proc.net.queue)
+        proc.net = undefined
+        if ('error' in done) return { errno: Errno.IO, data: new TextEncoder().encode(done.error).subarray(0, 512) }
+        const pipe = new Pipe()
+        pipe.fill(done.body)
+        pipe.writers = 0 // 더 쓸 쪽이 없다: 다 읽으면 끝(EOF)이다
+        const fd = this.install(proc, { kind: 'pipe', pipe, end: 'read', refs: 1 })
+        const head = new TextEncoder().encode(done.headers).subarray(0, PAYLOAD_MAX - 4)
+        const data = new Uint8Array(4 + head.length)
+        new DataView(data.buffer).setUint32(0, done.status, true)
+        data.set(head, 4)
+        return { errno: 0, ret: fd, data }
+      }
       default:
         throw new KernelError(Errno.NOSYS)
     }
@@ -876,6 +969,14 @@ export class Kernel {
       const code = proc.zombies.get(target)!
       proc.zombies.delete(target)
       return { errno: 0, ret: target, data: new Uint8Array(Int32Array.of(code).buffer) }
+    }
+    // 멈춘 자식도 알려 달라고 했으면 그것부터 본다.
+    if (flags & WaitFlags.UNTRACED) {
+      const halted = pid === -1 ? proc.stoppedKids.values().next().value : proc.stoppedKids.has(pid) ? pid : undefined
+      if (halted !== undefined) {
+        proc.stoppedKids.delete(halted)
+        return { errno: 0, ret: halted, data: new Uint8Array(Int32Array.of(WAIT_STOPPED).buffer) }
+      }
     }
     const alive = pid === -1 ? proc.children.size > 0 : proc.children.has(pid)
     if (!alive) throw new KernelError(Errno.CHILD)

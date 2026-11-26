@@ -1,6 +1,6 @@
 // 시스템 콜을 사람이 읽을 수 있는 한 줄로 풀어 쓴다 (strace와 비슷한 표기).
 import { GuiEvent, POINTER_SCALE } from './gui.ts'
-import { FdFlags, FileType, OFlags, Sys, type SysReq, type SysRes } from './abi.ts'
+import { FdFlags, FileType, OFlags, Signal, Sys, WAIT_STOPPED, WaitFlags, type SysReq, type SysRes } from './abi.ts'
 import { Errno } from './errno.ts'
 
 export interface TraceRecord {
@@ -94,7 +94,7 @@ export function describeArgs(req: SysReq): string {
       return `${quote(path)}, [${(req.argv ?? []).map(quote).join(', ')}]${stdio}${a3 > 0 ? `, pgid=${a3}` : ''}`
     }
     case Sys.wait:
-      return `${a0}${a1 ? ', NOHANG' : ''}`
+      return `${a0}${a1 & WaitFlags.NOHANG ? ', NOHANG' : ''}${a1 & WaitFlags.UNTRACED ? ', UNTRACED' : ''}`
     case Sys.ttyraw:
       return a0 ? 'on' : 'off'
     case Sys.pollin:
@@ -113,6 +113,10 @@ export function describeArgs(req: SysReq): string {
       return `${req.data?.length ?? 0} bytes`
     case Sys.guiimage:
       return quote(req.path ?? '')
+    case Sys.fetch:
+      return `${quote(req.path ?? '')}${a0 ? ', HEAD' : ''}`
+    case Sys.kill:
+      return `${a0}${a1 === Signal.STOP ? ', STOP' : a1 === Signal.CONT ? ', CONT' : ''}`
     case Sys.guistyle:
       return `${a0}, ${(req.data?.length ?? 0) / 13} ranges`
     case Sys.pipe:
@@ -157,7 +161,7 @@ export function describeResult(req: SysReq, res: SysRes): { result: string; erro
       result = `${u32(0)}x${u32(1)}`
       break
     case Sys.wait:
-      result = res.ret ? `${res.ret} (exit ${i32(0)})` : '0'
+      result = !res.ret ? '0' : i32(0) === WAIT_STOPPED ? `${res.ret} (stopped)` : `${res.ret} (exit ${i32(0)})`
       break
     case Sys.guievent:
       if (!res.ret) result = '0'

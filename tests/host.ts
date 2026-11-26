@@ -14,6 +14,13 @@ const SHELL_ENV = { USER: 'guest', HOME: '/home/guest', PWD: '/home/guest', PATH
 /** 아무것도 입력하지 않은 프롬프트 줄 */
 const PROMPT = /^guest@webos:\S*\$$/
 
+/** 테스트에서 받아 올 수 있는 주소들 */
+export const PAGES: Record<string, { status: number; headers: string; body: string }> = {
+  'https://example.test/hello.txt': { status: 200, headers: 'content-type: text/plain\ncontent-length: 12', body: '안녕, 네트워크\n' },
+  'https://example.test/big.txt': { status: 200, headers: 'content-type: text/plain', body: 'line\n'.repeat(40_000) },
+  'https://example.test/missing': { status: 404, headers: 'content-type: text/plain', body: 'not found\n' },
+}
+
 export function boot() {
   const events: KernelEvent[] = []
   const workers = new Set<Worker>()
@@ -43,6 +50,12 @@ export function boot() {
       notify()
     },
     now: () => 0,
+    // 테스트의 네트워크: 정해 둔 주소만 답한다.
+    async fetch(url, head) {
+      const page = PAGES[url]
+      if (!page) throw new Error('Failed to fetch')
+      return { status: page.status, headers: page.headers, body: head ? new Uint8Array(0) : new TextEncoder().encode(page.body) }
+    },
     launch(init) {
       const worker = new Worker(new URL('./process.node-worker.ts', import.meta.url))
       workers.add(worker)

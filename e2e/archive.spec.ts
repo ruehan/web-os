@@ -90,7 +90,7 @@ test('linking an empty folder exports every directory, and later changes follow'
   expect(first.files['etc/motd']).toContain('Web OS')
   expect(first.files['home/guest/README.md']).toContain('환영합니다')
   // 실행 파일까지 모두 나간다. 가상 폴더인 /proc 은 나가지 않는다.
-  expect(first.programs).toBe(30)
+  expect(first.programs).toBe(31)
   expect(Object.keys(first.files).some((path) => path.startsWith('proc/'))).toBe(false)
 
   await typeIn(page, term(page), 'echo more >> note.txt; rm /etc/custom; echo t > /tmp/scratch; grep localdir /proc/mounts')

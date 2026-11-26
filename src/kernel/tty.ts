@@ -6,6 +6,8 @@ export interface TtyHost {
   output(data: Uint8Array): void
   /** Ctrl+C */
   interrupt(): void
+  /** Ctrl+Z: 전경의 프로그램을 멈춘다 */
+  suspend(): void
   /** 읽을 입력이 생겼다 */
   readable(): void
 }
@@ -143,6 +145,11 @@ export class Tty {
           this.host.output(enc.encode(echo + '^C\r\n'))
           echo = ''
           this.host.interrupt()
+          break
+        case '\x1a': // Ctrl+Z
+          this.host.output(enc.encode(echo + '^Z\r\n'))
+          echo = ''
+          this.host.suspend()
           break
         case '\x04': // Ctrl+D: 빈 줄이면 EOF, 아니면 지금까지 친 내용을 바로 넘긴다
           this.ready.push(enc.encode(this.line.join('')))

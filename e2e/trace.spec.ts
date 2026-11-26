@@ -33,7 +33,7 @@ test('shows the calls a command makes, as they happen', async ({ page }) => {
   await expect(failed).toHaveClass(/error/)
   await expect(failed).toContainText('= -1 ENOENT')
   // 셸이 cat이 끝나기를 기다린 시간이 함께 나온다.
-  await expect(rows(page).filter({ hasText: /sh\s*wait\(\d+\)/ }).last()).toContainText('초 대기')
+  await expect(rows(page).filter({ hasText: /sh\s*wait\(\d+, UNTRACED\)/ }).last()).toContainText('초 대기')
 })
 
 test('filters by program, pid or call', async ({ page }) => {

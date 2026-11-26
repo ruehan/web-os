@@ -43,7 +43,18 @@ const kernel: Kernel = new Kernel({
     worker.postMessage(init)
     return { terminate: () => worker.terminate() }
   },
+  // 프로그램 대신 바깥 네트워크에서 받아 온다. 브라우저의 규칙을 따르므로, 다른 사이트의 것은 그 사이트가 허락한 경우에만 받을 수 있다.
+  async fetch(url, head) {
+    const res = await fetch(url, { method: head ? 'HEAD' : 'GET', mode: 'cors', credentials: 'omit', redirect: 'follow' })
+    const body = new Uint8Array(await res.arrayBuffer())
+    if (body.length > FETCH_LIMIT) throw new Error('response is too large')
+    const headers = [...res.headers].map(([name, value]) => `${name}: ${value}`).join('\n')
+    return { status: res.status, headers, body }
+  },
 })
+
+/** 받아 올 수 있는 응답의 최대 크기 (전부 메모리에 올린다) */
+const FETCH_LIMIT = 16 * 1024 * 1024
 
 const describe = (e: unknown) => (e instanceof Error ? e.message : String(e))
 
