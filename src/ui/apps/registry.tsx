@@ -72,7 +72,7 @@ export const APPS: AppDef[] = [
   { id: 'settings', name: '설정', icon: SettingsIcon, component: SettingsApp, size: { w: 480, h: 600 }, single: true },
   { id: 'welcome', name: '시작하기', icon: GuideIcon, component: WelcomeApp, size: { w: 380, h: 580 }, single: true },
   { id: 'paint', name: '그림판', icon: PaintIcon, component: SurfaceApp, size: { w: 720, h: 480 }, exec: '/bin/paint' },
-  { id: 'notepad', name: '메모장', icon: NotepadIcon, component: SurfaceApp, size: { w: 760, h: 500 }, exec: '/bin/notepad' },
+  { id: 'notepad', name: '메모장', icon: NotepadIcon, component: SurfaceApp, size: { w: 900, h: 580 }, exec: '/bin/notepad' },
   // 프로세스가 연 창은 모두 이 앱으로 뜬다. 직접 실행하는 것이 아니므로 메뉴에는 없다.
   { id: 'surface', name: '프로그램', icon: ProgramIcon, component: SurfaceApp, size: { w: 640, h: 480 }, hidden: true },
 ]
