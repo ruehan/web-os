@@ -29,8 +29,13 @@ export async function type(page: Page, line: string) {
   await page.keyboard.press('Enter')
 }
 
-/** 왼쪽 레일에서 앱을 실행한다. */
-export const launch = (page: Page, name: string) => page.getByRole('button', { name, exact: true }).click()
+/** 앱을 실행한다. */
+export async function launch(page: Page, name: string) {
+  // 실행 메뉴를 열어 거기서 고른다. (막대에 고정된 앱도 메뉴에 있으므로 같은 방법으로 열 수 있다.)
+  const menu = page.getByRole('dialog', { name: '앱', exact: true })
+  if (!(await menu.isVisible())) await page.getByRole('button', { name: '앱', exact: true }).click()
+  await menu.getByRole('button', { name, exact: true }).click()
+}
 
 /**
  * 페이지를 열고 첫 터미널의 프롬프트가 뜰 때까지 기다린다.

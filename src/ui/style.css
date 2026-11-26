@@ -195,7 +195,8 @@ button {
   color: var(--text);
 }
 
-.window-tab.active {
+.window-tab.active,
+.rail-button.active {
   background: var(--accent-soft);
   color: var(--accent);
 }
@@ -1853,4 +1854,123 @@ input {
     animation: none !important;
     transition: none !important;
   }
+}
+
+/* ───────────── 실행 메뉴 ───────────── */
+
+.desktop {
+  position: relative;
+}
+
+.launcher {
+  position: absolute;
+  top: 8px;
+  left: calc(var(--rail-width) + 8px);
+  z-index: 1000001;
+  width: 260px;
+  max-height: calc(100% - 16px);
+  display: flex;
+  flex-direction: column;
+  padding: 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-l);
+  background: var(--surface);
+  box-shadow: var(--shadow-raised);
+  transform-origin: top left;
+  animation: launcher-in 0.16s var(--ease-out);
+}
+
+@keyframes launcher-in {
+  from {
+    opacity: 0;
+    scale: 0.96;
+  }
+}
+
+.launcher-search {
+  margin-bottom: 6px;
+}
+
+.launcher-list {
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.launcher-item {
+  display: flex;
+  align-items: center;
+  border-radius: var(--radius-s);
+}
+
+.launcher-item:hover,
+.launcher-item:focus-within {
+  background: var(--hover);
+}
+
+.launcher-app {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 8px;
+  border: 0;
+  border-radius: var(--radius-s);
+  background: none;
+  text-align: left;
+  cursor: pointer;
+}
+
+.launcher-icon {
+  display: grid;
+  color: var(--muted);
+}
+
+.launcher-pin {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  margin-right: 2px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-s);
+  background: none;
+  color: var(--muted);
+  opacity: 0.35;
+  cursor: pointer;
+  transition: opacity 0.12s ease, color 0.12s ease;
+}
+
+.launcher-item:hover .launcher-pin,
+.launcher-pin:focus-visible {
+  opacity: 1;
+}
+
+.launcher-pin[aria-pressed='true'] {
+  opacity: 1;
+  color: var(--accent);
+}
+
+.launcher-empty,
+.launcher-hint {
+  margin: 0;
+  padding: 10px 8px 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* 좁은 화면: 아래쪽 막대 바로 위에 화면 폭으로 연다. */
+.desktop.compact .launcher {
+  top: auto;
+  left: 8px;
+  right: 8px;
+  bottom: 60px;
+  width: auto;
+  max-height: 60%;
+  transform-origin: bottom left;
 }

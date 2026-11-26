@@ -38,10 +38,12 @@ interface Settings {
   theme: Theme
   accent: AccentId
   mountLimit: MountLimitId
+  /** 왼쪽 막대에 고정해 둔 앱들 (앱 id, 보이는 순서대로) */
+  pins: string[]
 }
 
 const KEY = 'webos.settings'
-const DEFAULTS: Settings = { theme: 'system', accent: 'indigo', mountLimit: 'small' }
+const DEFAULTS: Settings = { theme: 'system', accent: 'indigo', mountLimit: 'small', pins: ['terminal', 'files', 'notes'] }
 
 function load(): Settings {
   try {
@@ -50,6 +52,7 @@ function load(): Settings {
       theme: THEMES.some((t) => t.id === saved.theme) ? saved.theme : DEFAULTS.theme,
       accent: ACCENTS.some((a) => a.id === saved.accent) ? saved.accent : DEFAULTS.accent,
       mountLimit: MOUNT_LIMITS.some((l) => l.id === saved.mountLimit) ? saved.mountLimit : DEFAULTS.mountLimit,
+      pins: Array.isArray(saved.pins) ? saved.pins.filter((p: unknown) => typeof p === 'string') : DEFAULTS.pins,
     }
   } catch {
     return DEFAULTS

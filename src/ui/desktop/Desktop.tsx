@@ -2,7 +2,10 @@
 import { For, Show, createSignal, onCleanup, onMount } from 'solid-js'
 import { APPS, appById, type AppDef } from '../apps/registry.tsx'
 import type { System } from '../system.ts'
+import { AppsIcon } from '../icons.tsx'
+import { settings } from '../settings.ts'
 import { compact } from './compact.ts'
+import { Launcher } from './Launcher.tsx'
 import { frameFor } from './geometry.ts'
 import { Window } from './Window.tsx'
 import { createWindowManager } from './wm.ts'
@@ -10,6 +13,9 @@ import { createWindowManager } from './wm.ts'
 export function Desktop(props: { system: System }) {
   const wm = createWindowManager()
   const [now, setNow] = createSignal(new Date())
+  const [menuOpen, setMenuOpen] = createSignal(false)
+  /** 막대에 고정된 앱들. 설정에 적힌 순서를 따르고, 없어진 앱의 id는 건너뛴다. */
+  const pinned = () => settings.pins.flatMap((id) => APPS.filter((app) => app.id === id))
   let layer!: HTMLDivElement
 
   /** 첫 방문 때만 안내 창을 띄우기 위한 표시 */
@@ -72,9 +78,20 @@ export function Desktop(props: { system: System }) {
     <div class="desktop" classList={{ compact: compact() }}>
       <nav class="rail" aria-label="실행">
         <div class="rail-group">
-          <For each={APPS}>
+          <button
+            class="rail-button"
+            classList={{ active: menuOpen() }}
+            data-launcher-button
+            aria-label="앱"
+            aria-expanded={menuOpen()}
+            title="모든 앱"
+            onClick={() => setMenuOpen((open) => !open)}
+          >
+            <AppsIcon />
+          </button>
+          <For each={pinned()}>
             {(app) => (
-              <button class="rail-button" aria-label={app.name} title={app.name} onClick={() => launch(app)}>
+              <button class="rail-button pinned" aria-label={app.name} title={app.name} onClick={() => launch(app)}>
                 {app.icon()}
               </button>
             )}
@@ -100,6 +117,10 @@ export function Desktop(props: { system: System }) {
 
         <time class="clock">{now().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', hour12: false })}</time>
       </nav>
+
+      <Show when={menuOpen()}>
+        <Launcher onLaunch={(app) => launch(app)} onClose={() => setMenuOpen(false)} />
+      </Show>
 
       <div class="window-layer" ref={layer}>
         <Show when={preview()}>

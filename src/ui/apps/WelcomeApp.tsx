@@ -90,7 +90,7 @@ export function WelcomeApp(props: AppProps) {
         </li>
       </ul>
 
-      <p class="hint">이 안내는 왼쪽 막대의 나침반 아이콘으로 언제든 다시 열 수 있습니다.</p>
+      <p class="hint">이 안내는 막대 맨 위의 앱 메뉴에서 “시작하기”를 골라 언제든 다시 열 수 있습니다.</p>
     </div>
   )
 }

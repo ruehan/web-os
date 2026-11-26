@@ -115,3 +115,18 @@ export const NoteIcon = () => (
     <path d="M16.5 12H13a1 1 0 0 0-1 1v3.5M6.5 7h7M6.5 10h4" />
   </Icon>
 )
+
+export const AppsIcon = () => (
+  <Icon>
+    <rect x="3.5" y="3.5" width="5" height="5" rx="1.2" />
+    <rect x="11.5" y="3.5" width="5" height="5" rx="1.2" />
+    <rect x="3.5" y="11.5" width="5" height="5" rx="1.2" />
+    <rect x="11.5" y="11.5" width="5" height="5" rx="1.2" />
+  </Icon>
+)
+
+export const PinIcon = () => (
+  <Icon size={14}>
+    <path d="M7 3.5h6l-1 5 2.5 2.5h-9L8 8.5zM10 11v5.5" />
+  </Icon>
+)
