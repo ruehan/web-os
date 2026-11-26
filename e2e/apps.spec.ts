@@ -1,7 +1,7 @@
 // 시스템 앱: 파일 탐색기, 편집기, 설정.
 import { readFileSync } from 'node:fs'
 import { expect, test } from '@playwright/test'
-import { appWindow, boot, expectScreen, fileRow, launch, pinWindow, raise, typeIn } from './helpers.ts'
+import { appWindow, boot, expectScreen, fileNames, fileRow, launch, pinWindow, raise, typeIn } from './helpers.ts'
 
 test.beforeEach(async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 800 })
@@ -12,20 +12,20 @@ test.describe('files', () => {
   test('browses folders with double-click, breadcrumbs and the up button', async ({ page }) => {
     await launch(page, '파일')
     const files = appWindow(page, 'files')
-    await expect(files.locator('.file-name')).toHaveText(['hello.sh', 'README.md'])
-    await expect(files.locator('.statusbar')).toHaveText('항목 2개')
+    await expect(fileNames(page)).toHaveText(['hello.sh', 'README.md'])
+    await expect(files.getByRole('status')).toHaveText('항목 2개')
     await expect(files.locator('.title')).toHaveText('guest')
 
     await files.getByRole('button', { name: '위 폴더로' }).click()
-    await expect(files.locator('.file-name')).toHaveText(['guest'])
-    await files.getByRole('navigation', { name: '현재 위치' }).getByRole('button', { name: '/', exact: true }).click()
+    await expect(fileNames(page)).toHaveText(['guest'])
+    await files.getByRole('link', { name: '/', exact: true }).click()
     // 폴더가 먼저, 이름순으로 나온다.
-    await expect(files.locator('.file-name')).toHaveText(['bin', 'etc', 'home', 'proc', 'tmp'])
+    await expect(fileNames(page)).toHaveText(['bin', 'etc', 'home', 'proc', 'tmp'])
     await expect(files.getByRole('button', { name: '위 폴더로' })).toBeDisabled()
 
     await fileRow(page, 'etc').dblclick()
-    await expect(files.locator('.file-name')).toHaveText(['motd'])
-    await expect(files.locator('.crumb')).toHaveText(['/', 'etc'])
+    await expect(fileNames(page)).toHaveText(['motd'])
+    await expect(files.getByRole('link')).toHaveText(['/', 'etc'])
   })
 
   test('creates, renames and deletes, and the shell sees the result', async ({ page }) => {
@@ -33,16 +33,16 @@ test.describe('files', () => {
     await launch(page, '파일')
     const files = appWindow(page, 'files')
 
-    await files.getByRole('button', { name: '새 폴더' }).click()
+    await files.getByRole('button', { name: '새 폴더', exact: true }).click()
     const rename = files.getByRole('textbox', { name: '새 이름' })
     await expect(rename).toBeFocused()
     await expect(rename).toHaveValue('새 폴더')
     await page.keyboard.type('docs')
     await page.keyboard.press('Enter')
-    await expect(files.locator('.file-name')).toHaveText(['docs', 'hello.sh', 'README.md'])
+    await expect(fileNames(page)).toHaveText(['docs', 'hello.sh', 'README.md'])
 
-    await files.getByRole('button', { name: '새 파일' }).click()
-    await files.getByRole('group', { name: '새 파일의 형식' }).getByRole('button', { name: '텍스트 .txt' }).click()
+    await files.getByRole('button', { name: '새 파일', exact: true }).click()
+    await files.getByRole('button', { name: '텍스트 .txt' }).click()
     await expect(rename).toHaveValue('새 파일.txt')
     await expect(rename).toBeFocused()
     await page.keyboard.type('note')
@@ -56,6 +56,8 @@ test.describe('files', () => {
     await raise(page, 'guest')
     await fileRow(page, 'note.txt').click()
     await files.getByRole('button', { name: '이름 바꾸기' }).click()
+    // 이름 칸은 프로그램이 놓는다. 커서가 들어간 것을 보고 친다.
+    await expect(rename).toBeFocused()
     await page.keyboard.press('ControlOrMeta+a')
     await page.keyboard.type('hello.sh')
     await page.keyboard.press('Enter')
@@ -63,11 +65,11 @@ test.describe('files', () => {
     await expect(fileRow(page, 'note.txt')).toBeVisible()
 
     await fileRow(page, 'note.txt').click()
-    await files.getByRole('button', { name: '삭제' }).click()
-    await expect(files.locator('.statusbar')).toContainText('“note.txt”을(를) 지울까요?')
+    await files.getByRole('button', { name: '삭제', exact: true }).click()
+    await expect(files.getByRole('status')).toContainText('“note.txt”을(를) 지울까요?')
     await files.getByRole('button', { name: '취소' }).click()
     await expect(fileRow(page, 'note.txt')).toBeVisible()
-    await files.getByRole('button', { name: '삭제' }).click()
+    await files.getByRole('button', { name: '삭제', exact: true }).click()
     await files.getByRole('button', { name: '지우기' }).click()
     await expect(fileRow(page, 'note.txt')).toHaveCount(0)
   })
@@ -75,33 +77,34 @@ test.describe('files', () => {
   test('reflects changes made in the terminal without a manual refresh', async ({ page }) => {
     const term = await pinWindow(page)
     await launch(page, '파일')
+    // 파일 앱은 프로세스라 창이 조금 뒤에 뜬다. 뜬 것을 보고 터미널로 간다.
+    await expect(fileNames(page)).toHaveCount(2)
     await typeIn(page, term, 'mkdir work && echo hi > work/a.txt && touch from-shell.txt')
     await expect(fileRow(page, 'from-shell.txt')).toBeVisible()
-    await expect(fileRow(page, 'work').locator('.file-size')).toHaveText('항목 1개')
 
     await raise(page, 'guest')
     await fileRow(page, 'work').dblclick()
-    await expect(fileRow(page, 'a.txt').locator('.file-size')).toHaveText('3 B')
+    await expect(fileRow(page, 'a.txt')).toBeVisible()
     // 보고 있던 폴더가 지워지면 위 폴더로 물러난다.
     await typeIn(page, term, 'rm -r work')
-    await expect(appWindow(page, 'files').locator('.crumb')).toHaveText(['/', 'home', 'guest'])
+    await expect(appWindow(page, 'files').getByRole('link')).toHaveText(['/', 'home', 'guest'])
   })
 
   test('keyboard navigation opens folders and asks before deleting', async ({ page }) => {
     await launch(page, '파일')
     const files = appWindow(page, 'files')
-    await files.getByRole('navigation', { name: '현재 위치' }).getByRole('button', { name: 'home' }).click()
-    await expect(files.locator('.file-name')).toHaveText(['guest'])
-    await files.getByRole('listbox').focus()
+    await files.getByRole('link', { name: 'home', exact: true }).click()
+    await expect(fileNames(page)).toHaveText(['guest'])
+    await files.getByRole('application').focus()
     await page.keyboard.press('ArrowDown')
     await expect(fileRow(page, 'guest')).toHaveAttribute('aria-selected', 'true')
     await page.keyboard.press('Enter')
-    await expect(files.locator('.file-name')).toHaveText(['hello.sh', 'README.md'])
-    await files.getByRole('listbox').focus()
+    await expect(fileNames(page)).toHaveText(['hello.sh', 'README.md'])
+    await files.getByRole('application').focus()
     await page.keyboard.press('ArrowDown')
     await page.keyboard.press('ArrowDown')
     await page.keyboard.press('Delete')
-    await expect(files.locator('.statusbar')).toContainText('“README.md”을(를) 지울까요?')
+    await expect(files.getByRole('status')).toContainText('“README.md”을(를) 지울까요?')
     await page.keyboard.press('Escape')
     await expect(files.getByRole('button', { name: '지우기' })).toHaveCount(0)
     await expect(fileRow(page, 'README.md')).toBeVisible()
@@ -113,7 +116,7 @@ test.describe('files', () => {
     // 직접 컴파일한 프로그램을 끌어다 놓는 상황을 재현한다.
     const wasm = [...readFileSync(new URL('../public/bin/hello.wasm', import.meta.url))]
     await appWindow(page, 'files')
-      .locator('.files')
+      .locator('.surface-host')
       .evaluate((el, bytes) => {
         const data = new DataTransfer()
         data.items.add(new File([new Uint8Array(bytes)], 'mine.wasm'))
@@ -208,8 +211,12 @@ test.describe('editor', () => {
   test('refuses to edit binary files', async ({ page }) => {
     await launch(page, '파일')
     const files = appWindow(page, 'files')
-    await files.getByRole('navigation', { name: '현재 위치' }).getByRole('button', { name: '/', exact: true }).click()
+    await files.getByRole('link', { name: '/', exact: true }).click()
     await fileRow(page, 'bin').dblclick()
+    // 프로그램이 많아서 ls는 아래쪽에 있다. 목록을 밀어 내린다.
+    await expect(fileRow(page, 'cat')).toBeVisible()
+    await fileRow(page, 'cat').hover()
+    await page.mouse.wheel(0, 300)
     await fileRow(page, 'ls').dblclick()
     const editor = appWindow(page, 'editor')
     await expect(editor).toContainText('텍스트 파일이 아니라서 편집할 수 없습니다')

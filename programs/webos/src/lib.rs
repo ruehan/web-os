@@ -2,6 +2,7 @@
 
 pub mod gui;
 pub mod term;
+pub mod ui;
 
 use std::io;
 use std::os::fd::{FromRawFd, OwnedFd, RawFd};

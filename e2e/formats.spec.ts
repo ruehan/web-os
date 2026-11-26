@@ -33,11 +33,12 @@ test.beforeEach(async ({ page }) => {
 test('a new file can be created in several formats', async ({ page }) => {
   await launch(page, '파일')
   const files = appWindow(page, 'files')
-  const types = files.getByRole('group', { name: '새 파일의 형식' })
-  await files.getByRole('button', { name: '새 파일' }).click()
-  await expect(types.getByRole('button')).toHaveText(['텍스트 .txt', '마크다운 .md', 'JSON .json', '셸 스크립트 .sh', 'CSV .csv'])
+  // 새 파일의 형식을 고르는 단추들 (이름과 확장자)
+  const types = files.getByRole('button', { name: /\.(txt|md|json|sh|csv)$/ })
+  await files.getByRole('button', { name: '새 파일', exact: true }).click()
+  await expect(types).toHaveText(['텍스트 .txt', '마크다운 .md', 'JSON .json', '셸 스크립트 .sh', 'CSV .csv'])
 
-  await types.getByRole('button', { name: 'JSON .json' }).click()
+  await files.getByRole('button', { name: 'JSON .json' }).click()
   const rename = files.getByRole('textbox', { name: '새 이름' })
   await expect(rename).toHaveValue('새 파일.json')
   await expect(rename).toBeFocused()
@@ -53,13 +54,13 @@ test('a new file can be created in several formats', async ({ page }) => {
   await expect(editor(page).getByRole('document', { name: '미리보기' })).toHaveText('{}')
 
   await raise(page, 'guest')
-  await files.getByRole('button', { name: '새 파일' }).click()
-  await types.getByRole('button', { name: '마크다운 .md' }).click()
+  await files.getByRole('button', { name: '새 파일', exact: true }).click()
+  await files.getByRole('button', { name: '마크다운 .md' }).click()
   await expect(rename).toHaveValue('새 파일.md')
   // 형식 고르기는 다시 누르면 닫힌다.
   await page.keyboard.press('Enter')
-  await files.getByRole('button', { name: '새 파일' }).click()
-  await files.getByRole('button', { name: '새 파일' }).click()
+  await files.getByRole('button', { name: '새 파일', exact: true }).click()
+  await files.getByRole('button', { name: '새 파일', exact: true }).click()
   await expect(types).toHaveCount(0)
 })
 

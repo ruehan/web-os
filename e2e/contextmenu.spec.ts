@@ -134,7 +134,7 @@ test('files: act on an item, or create in the empty area', async ({ page }) => {
   await expect(fileRow(page, 'hello.sh')).toHaveAttribute('aria-selected', 'true')
   await expect(items(page)).toHaveText(['편집기로 열기', '이름 바꾸기', '경로 복사', '삭제…'])
   await pick(page, '경로 복사')
-  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe('/home/guest/hello.sh')
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe('/home/guest/hello.sh')
 
   await fileRow(page, 'hello.sh').click({ button: 'right' })
   await pick(page, '이름 바꾸기')
@@ -147,12 +147,13 @@ test('files: act on an item, or create in the empty area', async ({ page }) => {
   await fileRow(page, 'README.md').click({ button: 'right' })
   await pick(page, '삭제…')
   // 메뉴에서 골라도 바로 지우지 않고 한 번 더 묻는다.
-  await expect(files.locator('.statusbar')).toContainText('“README.md”을(를) 지울까요?')
+  await expect(files.getByRole('status')).toContainText('“README.md”을(를) 지울까요?')
   await files.getByRole('button', { name: '지우기' }).click()
   await expect(fileRow(page, 'README.md')).toHaveCount(0)
 
   // 빈 곳에서는 만들기 메뉴가 나온다.
-  const list = await box(files.getByRole('listbox', { name: '파일 목록' }))
+  const list = await box(files.getByRole('application'))
+  list.h -= 36 // 아래의 상태 줄은 뺀다
   await page.mouse.click(list.x + list.w / 2, list.y + list.h - 20, { button: 'right' })
   await expect(items(page)).toContainText(['새 폴더', '새 텍스트 파일 (.txt)', '새 마크다운 파일 (.md)'])
   await pick(page, '새 마크다운 파일 (.md)')
@@ -199,7 +200,7 @@ test('text fields keep the browser\'s own menu', async ({ page }) => {
   const notes = appWindow(page, 'notes')
   const create = notes.getByRole('button', { name: '새 메모', exact: true })
   await expect(create).toBeVisible()
-  await expect.poll(() => create.evaluate((el) => document.elementFromPoint(el.getBoundingClientRect().x + 10, el.getBoundingClientRect().y + 10)?.matches('canvas.surface') ?? false)).toBe(true)
+  await expect.poll(() => create.evaluate((el) => document.elementFromPoint(el.getBoundingClientRect().x + 10, el.getBoundingClientRect().y + 10)?.matches('canvas.surface, .surface-region') ?? false)).toBe(true)
   const at = await box(create)
   await page.mouse.click(at.x + at.w / 2, at.y + at.h / 2)
   await expect(notes.getByRole('textbox', { name: '제목' })).toBeFocused()

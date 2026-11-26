@@ -86,6 +86,10 @@ pub enum Role {
     Option = 3,
     Checkbox = 4,
     Link = 5,
+    /// 누르는 것이 아니라 읽을 글: 상태 줄의 안내
+    Status = 6,
+    /// 읽을 글: 오류처럼 바로 알려야 하는 것
+    Alert = 7,
 }
 
 /// 메뉴의 한 줄 (`Frame::menu`)
@@ -280,6 +284,18 @@ impl Frame {
     pub fn open_url(&mut self, url: &str) {
         self.op(17);
         self.s(url);
+    }
+
+    /// 창의 제목을 바꾼다. 바꿀 때의 묶음 하나에만 넣는다.
+    pub fn title(&mut self, text: &str) {
+        self.op(18);
+        self.s(text);
+    }
+
+    /// 이 파일(절대 경로)을 알맞은 앱으로 열어 달라고 한다. 어떤 앱으로 열지는 화면 쪽이 정한다.
+    pub fn launch(&mut self, path: &str) {
+        self.op(19);
+        self.s(path);
     }
 
     /// 이 뒤에 그리는 것은 입력 칸보다 위에 온다 (입력 칸을 덮는 창 등).

@@ -14,6 +14,13 @@ name = "exitcode"
 version = "0.1.0"
 
 [[package]]
+name = "files"
+version = "0.1.0"
+dependencies = [
+ "webos",
+]
+
+[[package]]
 name = "fsdemo"
 version = "0.1.0"
 

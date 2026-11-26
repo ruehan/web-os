@@ -101,6 +101,8 @@ function paint(ctx: CanvasRenderingContext2D, ops: DrawOp[], width: number, heig
       case 'pick': // 파일 고르기 창을 띄운다
       case 'copy': // 클립보드에 넣는다
       case 'open': // 새 탭으로 연다
+      case 'title': // 창의 제목
+      case 'launch': // 파일을 알맞은 앱으로 연다
         break
       case 'image': {
         const image = imageAt(op.path)
@@ -422,9 +424,23 @@ export function SurfaceApp(props: AppProps) {
       if (!el) {
         regions.push((el = document.createElement('div')))
         el.className = 'surface-region'
-        // 화면 낭독기로 "누르기"를 하면 그 자리를 누른 것으로 전한다.
-        el.addEventListener('click', () => {
-          const [x, y] = [Number(el!.dataset.x), Number(el!.dataset.y)]
+        // 이 요소 위에서의 입력은 그림 위에서의 입력과 똑같이 프로그램에 전한다.
+        const own = el
+        let pressedAt = -1e9
+        own.addEventListener('pointerdown', (e) => {
+          pressedAt = e.timeStamp
+          pointer.onPointerDown(e)
+        })
+        own.addEventListener('pointermove', pointer.onPointerMove)
+        own.addEventListener('pointerup', pointer.onPointerUp)
+        own.addEventListener('pointercancel', pointer.onPointerCancel)
+        own.addEventListener('pointerleave', pointer.onPointerLeave)
+        own.addEventListener('wheel', pointer.onWheel, { passive: true })
+        own.addEventListener('contextmenu', pointer.onContextMenu)
+        // 화면 낭독기의 "누르기"는 포인터 없이 click만 온다. 그때는 그 자리를 누른 것으로 전한다.
+        own.addEventListener('click', (e) => {
+          if (e.timeStamp - pressedAt < 1000) return
+          const [x, y] = [Number(own.dataset.x), Number(own.dataset.y)]
           point(GuiEvent.pointerDown, [x, y], 0)
           point(GuiEvent.pointerUp, [x, y])
         })
@@ -437,6 +453,8 @@ export function SurfaceApp(props: AppProps) {
       }
       el.setAttribute('role', op.role)
       el.setAttribute('aria-label', op.label)
+      // 글로도 넣어 둔다 (보이지는 않는다). 이름표를 읽지 않는 도구도 이 자리의 글을 읽을 수 있다.
+      if (el.textContent !== op.label) el.textContent = op.label
       if (op.disabled) el.setAttribute('aria-disabled', 'true')
       else el.removeAttribute('aria-disabled')
       el.dataset.x = String(op.x + op.w / 2)
@@ -591,6 +609,9 @@ export function SurfaceApp(props: AppProps) {
           if (op.op === 'copy') void navigator.clipboard?.writeText(op.text).catch(() => {})
           // 이 페이지에 접근할 수 없는 새 탭으로만 연다. 프로그램이 준 주소라도 웹 주소가 아니면 열지 않는다.
           else if (op.op === 'open' && /^(https?:|mailto:)/i.test(op.url)) window.open(op.url, '_blank', 'noopener,noreferrer')
+          else if (op.op === 'title') props.setTitle(op.text)
+          // 어떤 앱으로 열지는 화면 쪽이 정한다. 지금은 모두 편집기다.
+          else if (op.op === 'launch') props.launch('editor', { path: op.path })
         }
       },
       setText(field, text) {
@@ -644,12 +665,14 @@ export function SurfaceApp(props: AppProps) {
   /** 포인터 입력을 프로그램에 전한다. 아래 캔버스와 위층 캔버스가 같이 쓴다. */
   const pointer = {
     onPointerDown: (e: PointerEvent) => {
-      ;(e.currentTarget as HTMLCanvasElement).setPointerCapture(e.pointerId)
-      // 위층을 눌러도 입력 칸의 커서는 그대로 둔다 (위층에 놓인 칸에 글을 치는 중일 수 있다).
-      if (e.currentTarget === canvas) {
+      ;(e.currentTarget as Element).setPointerCapture(e.pointerId)
+      // 위층(입력 칸을 덮는 목록 등)이 떠 있는 동안에는 눌러도 입력 칸의 커서를 그대로 둔다 (그 칸에 글을 치는 중이다).
+      const typing = ops.some((op) => op.op === 'overlay') && [...fields.values()].includes(document.activeElement as FieldElement)
+      if (typing || e.currentTarget === top) e.preventDefault()
+      else {
         canvas.focus({ preventScroll: true })
         lastField = undefined
-      } else e.preventDefault()
+      }
       point(GuiEvent.pointerDown, at(e), e.button + 256 * (clicksAt(e) - 1))
     },
     onPointerMove: (e: PointerEvent) => {
@@ -658,7 +681,12 @@ export function SurfaceApp(props: AppProps) {
     },
     onPointerUp: (e: PointerEvent) => point(GuiEvent.pointerUp, at(e)),
     onPointerCancel: (e: PointerEvent) => point(GuiEvent.pointerUp, at(e)),
-    onPointerLeave: () => send(GuiEvent.pointerLeave),
+    onPointerLeave: (e: PointerEvent) => {
+      // 그림에서 그 위의 요소(단추·항목의 자리)로, 또는 그 반대로 옮겨 간 것은 나간 것이 아니다.
+      const to = e.relatedTarget
+      if (to instanceof Element && host.contains(to) && to.matches('.surface, .surface-region')) return
+      send(GuiEvent.pointerLeave)
+    },
     onWheel: (e: WheelEvent) => {
       // 줄 단위로 알려 주는 마우스는 한 줄을 대략의 픽셀로 바꾼다.
       const dy = e.deltaMode === WheelEvent.DOM_DELTA_LINE ? e.deltaY * 30 : e.deltaY

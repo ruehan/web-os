@@ -1,10 +1,10 @@
-//! 그리기 도우미: 시스템의 색, 글자 폭 기억, 단추 같은 공통 부품, 그리고 "어디를 누르면 무슨 일"의 기록.
+//! 창을 그리는 프로그램들이 함께 쓰는 그리기 도우미: 시스템의 색, 글자 폭 기억, 단추 같은 공통 부품, 그리고 "어디를 누르면 무슨 일"의 기록.
 //!
 //! 화면은 매번 처음부터 다시 그린다. 그리면서 누를 수 있는 자리마다 `hit`으로 할 일을 적어 두고,
 //! 입력이 오면 그 기록에서 포인터 아래의 것을 찾는다. 그래서 그리는 코드와 누르는 코드의 좌표가 어긋날 수 없다.
 
 use std::collections::HashMap;
-use webos::gui::{Align, Color, Frame, Role, Style, Window};
+use crate::gui::{Align, Color, Frame, Role, Style, Window};
 
 /// 시스템의 색 (src/ui/style.css의 디자인 토큰과 같은 값)
 pub struct Theme {
@@ -325,3 +325,46 @@ pub const FILE: &[&[(f32, f32)]] = &[
     ],
     &[(11.0, 2.5), (11.0, 6.5), (15.0, 6.5)],
 ];
+
+pub const UP: &[&[(f32, f32)]] = &[&[(10.0, 15.5), (10.0, 4.5)], &[(5.5, 9.0), (10.0, 4.5), (14.5, 9.0)]];
+
+/// 글자의 종류별 순서: 기호, 숫자, 한글, 그 밖의 글자 (한국어 사전의 순서)
+fn rank(c: char) -> u8 {
+    match c {
+        '0'..='9' => 1,
+        '\u{1100}'..='\u{11ff}' | '\u{3130}'..='\u{318f}' | '\u{ac00}'..='\u{d7a3}' => 2,
+        c if c.is_alphabetic() => 3,
+        _ => 0,
+    }
+}
+
+/// 사람이 기대하는 이름순: 대소문자를 가리지 않고, 숫자는 수로 견주고("메모 2"가 "메모 10"보다 먼저), 한글이 영문보다 먼저다.
+pub fn natural_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    let (a, b): (Vec<char>, Vec<char>) = (a.to_lowercase().chars().collect(), b.to_lowercase().chars().collect());
+    let (mut i, mut j) = (0, 0);
+    while i < a.len() && j < b.len() {
+        if a[i].is_ascii_digit() && b[j].is_ascii_digit() {
+            let number = |s: &[char], at: &mut usize| {
+                let mut n = 0u64;
+                while *at < s.len() && s[*at].is_ascii_digit() {
+                    n = n.saturating_mul(10).saturating_add(s[*at] as u64 - '0' as u64);
+                    *at += 1;
+                }
+                n
+            };
+            match number(&a, &mut i).cmp(&number(&b, &mut j)) {
+                Ordering::Equal => continue,
+                other => return other,
+            }
+        }
+        match rank(a[i]).cmp(&rank(b[j])).then(a[i].cmp(&b[j])) {
+            Ordering::Equal => {
+                i += 1;
+                j += 1;
+            }
+            other => return other,
+        }
+    }
+    (a.len() - i).cmp(&(b.len() - j))
+}

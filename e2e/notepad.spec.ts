@@ -31,7 +31,7 @@ async function press(page: Page, role: Role, name: string, options: { button?: '
     .poll(async () => {
       const before = point
       point = await at()
-      const onTop = await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.matches('canvas.surface') ?? false, point)
+      const onTop = await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.matches('canvas.surface, .surface-region') ?? false, point)
       return onTop && before.x === point.x && before.y === point.y
     })
     .toBe(true)
@@ -279,7 +279,7 @@ test('shows the graph of links, and moves notes by dragging them onto folders', 
   await page.mouse.up()
   await shell(page, 'cat notes/보관/회의록.md', '안건')
   await page.getByRole('button', { name: '창: 메모' }).click()
-  await expect(pad(page).getByRole('treeitem')).toHaveText(['', '', ''])
+  await expect(pad(page).getByRole('treeitem')).toHaveText(['보관', '회의록', '계획'])
   await expect(spot(page, 'tab', '회의록')).toHaveAttribute('aria-selected', 'true')
 })
 

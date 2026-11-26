@@ -68,7 +68,7 @@ test('vi edits a file inside the terminal', async ({ page }) => {
 
   // 파일 탐색기에서도 방금 만든 파일이 보인다.
   await launch(page, '파일')
-  await expect(appWindow(page, 'files').locator('.file-name')).toHaveText(['hello.sh', 'notes.txt', 'README.md'])
+  await expect(appWindow(page, 'files').getByRole('option')).toHaveText(['hello.sh', 'notes.txt', 'README.md'])
 })
 
 test('a full-screen program follows the window size', async ({ page }) => {

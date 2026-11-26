@@ -41,7 +41,8 @@ export function Desktop(props: { system: System }) {
       // 창을 하나만 띄우는 프로그램이 이미 떠 있으면 그 창을 앞으로 가져온다.
       const running = app.single && wm.state.windows.find((w) => w.app === app.id)
       if (running) return wm.focus(running.id)
-      return props.system.run(app.exec, [app.exec.slice(app.exec.lastIndexOf('/') + 1)])
+      // 열 것(폴더, 파일)이 딸려 있으면 프로그램의 인자로 넘긴다.
+      return props.system.run(app.exec, [app.exec.slice(app.exec.lastIndexOf('/') + 1), ...(args.path !== undefined ? [args.path] : [])])
     }
     // 실행할 명령이 딸린 요청은 이미 열려 있는 터미널(맨 위의 것)에 넘긴다.
     if (app.id === 'terminal' && args.run !== undefined) {

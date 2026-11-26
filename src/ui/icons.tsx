@@ -89,12 +89,6 @@ export const SettingsIcon = () => (
   </Icon>
 )
 
-export const UpIcon = () => (
-  <Icon size={16}>
-    <path d="M10 15.5v-11M5.5 9L10 4.5 14.5 9" />
-  </Icon>
-)
-
 export const GuideIcon = () => (
   <Icon>
     <circle cx="10" cy="10" r="7.5" />

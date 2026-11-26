@@ -9,7 +9,6 @@ mod editing;
 mod graph;
 mod markdown;
 mod preview;
-mod ui;
 mod vault;
 
 use std::cell::RefCell;
@@ -17,7 +16,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::{env, fs, io, process};
 use preview::Target;
-use ui::{Rect, Tool, Ui, Widths, DARK, LIGHT, RADIUS, TOOL_H};
+use webos::ui::{self, Rect, Tool, Ui, Widths, DARK, LIGHT, RADIUS, TOOL_H};
 use vault::{base_of, dir_of, ext_of, is_inside, join, kind_of, shown, stem_of, Kind, ATTACHMENTS};
 use webos::gui::{Align, Event, Field, Frame, Key, MenuItem, Role, Style, Window};
 

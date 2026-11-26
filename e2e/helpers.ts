@@ -79,8 +79,11 @@ export async function raise(page: Page, title: string) {
 
 export const appWindow = (page: Page, app: string) => page.locator(`.window[data-app="${app}"]`)
 
-export const fileRow = (page: Page, name: string) =>
-  appWindow(page, 'files').locator('.file-row').filter({ has: page.locator('.file-name', { hasText: new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`) }) })
+/** 파일 앱의 한 줄. 파일 앱은 프로세스가 그리는 창이라, 줄은 프로그램이 알려 준 자리(보이지 않는 요소)로 찾는다. */
+export const fileRow = (page: Page, name: string) => appWindow(page, 'files').getByRole('option', { name, exact: true })
+
+/** 파일 앱에 보이는 이름들 (위에서부터) */
+export const fileNames = (page: Page) => appWindow(page, 'files').getByRole('option')
 
 /**
  * 브라우저 저장소의 맨 위 항목들을 지운다 (브라우저가 데이터를 지운 상황을 흉내 낼 때 쓴다).

@@ -17,7 +17,6 @@ import {
 } from '../icons.tsx'
 import type { System } from '../system.ts'
 import { EditorApp } from './EditorApp.tsx'
-import { FilesApp } from './FilesApp.tsx'
 import { LogApp } from './LogApp.tsx'
 import { ProcessesApp } from './ProcessesApp.tsx'
 import { SettingsApp } from './SettingsApp.tsx'
@@ -63,9 +62,9 @@ export interface AppDef {
 
 export const APPS: AppDef[] = [
   { id: 'terminal', name: '터미널', icon: TerminalIcon, component: TerminalApp, size: { w: 760, h: 480 } },
-  { id: 'files', name: '파일', icon: FolderIcon, component: FilesApp, size: { w: 600, h: 420 } },
+  // 파일, 메모, 그림판은 화면까지 직접 그리는 프로세스다. 여기서는 그 프로그램을 실행하기만 한다.
+  { id: 'files', name: '파일', icon: FolderIcon, component: SurfaceApp, size: { w: 600, h: 420 }, exec: '/bin/files' },
   { id: 'editor', name: '편집기', icon: EditorIcon, component: EditorApp, size: { w: 640, h: 460 } },
-  // 메모와 그림판은 화면까지 직접 그리는 프로세스다. 여기서는 그 프로그램을 실행하기만 한다.
   { id: 'notes', name: '메모', icon: NoteIcon, component: SurfaceApp, size: { w: 900, h: 580 }, exec: '/bin/notepad', single: true },
   { id: 'processes', name: '프로세스', icon: ProcessesIcon, component: ProcessesApp, size: { w: 460, h: 380 }, single: true },
   { id: 'trace', name: '시스템 콜', icon: TraceIcon, component: TraceApp, size: { w: 700, h: 420 }, single: true },

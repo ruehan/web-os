@@ -94,7 +94,7 @@ export function keyCode(key: string): number | undefined {
 
 // ───────────── 그리기 명령 ─────────────
 
-const Op = { clear: 1, rect: 2, frame: 3, line: 4, circle: 5, text: 6, clip: 7, unclip: 8, field: 9, region: 10, menu: 11, select: 12, overlay: 13, image: 14, pick: 15, copy: 16, open: 17 } as const
+const Op = { clear: 1, rect: 2, frame: 3, line: 4, circle: 5, text: 6, clip: 7, unclip: 8, field: 9, region: 10, menu: 11, select: 12, overlay: 13, image: 14, pick: 15, copy: 16, open: 17, title: 18, launch: 19 } as const
 
 /** 입력 칸의 성질 (field 명령의 flags) */
 export const FieldFlag = { multiline: 1, mono: 2, focus: 4, bold: 8, select: 16, keys: 32, grabEnter: 64, where: 128 } as const
@@ -103,7 +103,8 @@ export const FieldFlag = { multiline: 1, mono: 2, focus: 4, bold: 8, select: 16,
 export const TextFlag = { bold: 4, mono: 8, italic: 16, strike: 32, underline: 64 } as const
 
 /** region 명령의 역할. 화면 낭독기에 이 자리가 무엇인지 알려 준다. */
-export const REGION_ROLES = ['button', 'tab', 'treeitem', 'option', 'checkbox', 'link'] as const
+/** status와 alert는 누르는 것이 아니라 읽을 글이다 (상태 줄의 안내, 오류). */
+export const REGION_ROLES = ['button', 'tab', 'treeitem', 'option', 'checkbox', 'link', 'status', 'alert'] as const
 export const RegionFlag = { on: 1, disabled: 2 } as const
 export const MenuFlag = { disabled: 1, danger: 2, separator: 4 } as const
 
@@ -171,6 +172,7 @@ export type DrawOp =
   /**
    * 그림의 이 자리가 무엇인지 알린다 (단추, 탭, 목록의 항목 …). 그려지는 것은 없다.
    * 화면 쪽은 이 자리에 보이지 않는 요소를 놓아, 화면 낭독기가 읽고 누를 수 있게 한다.
+   * 그 요소 위에서 일어난 입력은 그림 위에서 일어난 것과 똑같이 프로그램에 전해진다.
    * on은 역할에 따라 "골라짐"(탭, 항목), "눌려 있음"(단추), "체크됨"을 뜻한다.
    */
   | { op: 'region'; x: number; y: number; w: number; h: number; role: (typeof REGION_ROLES)[number]; on: boolean; disabled: boolean; label: string }
@@ -202,6 +204,10 @@ export type DrawOp =
   | { op: 'copy'; text: string }
   /** 바깥 사이트의 주소를 브라우저의 새 탭으로 연다 (http, https, mailto만). 묶음 하나에만 넣는다. */
   | { op: 'open'; url: string }
+  /** 창의 제목을 바꾼다 (보고 있는 폴더의 이름 등). 바꿀 때의 묶음 하나에만 넣는다. */
+  | { op: 'title'; text: string }
+  /** 이 파일을 알맞은 앱으로 열어 달라 (파일을 두 번 눌렀을 때). path는 절대 경로다. 묶음 하나에만 넣는다. */
+  | { op: 'launch'; path: string }
   | { op: 'menu'; x: number; y: number; items: { label: string; disabled: boolean; danger: boolean; separator: boolean }[] }
 
 const ALIGN = ['left', 'center', 'right'] as const
@@ -350,6 +356,12 @@ export function decodeDrawList(data: Uint8Array): DrawOp[] {
         break
       case Op.open:
         ops.push({ op: 'open', url: str() })
+        break
+      case Op.title:
+        ops.push({ op: 'title', text: str() })
+        break
+      case Op.launch:
+        ops.push({ op: 'launch', path: str() })
         break
       case Op.select:
         ops.push({ op: 'select', id: u32(), start: u32(), end: u32() })

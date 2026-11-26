@@ -1,7 +1,6 @@
 //! 메모 보관함의 규칙: 어떤 파일이 메모이고 그림인지, [[링크]]가 어느 파일을 가리키는지,
 //! 이름이 바뀌면 링크를 어떻게 고치는지. 화면이나 파일 접근 없이 글자만 다룬다.
 
-use std::cmp::Ordering;
 
 /// 붙여 넣은 그림이 저장되는 폴더 (보관함 기준)
 pub const ATTACHMENTS: &str = "attachments";
@@ -75,45 +74,7 @@ pub fn is_inside(path: &str, dir: &str) -> bool {
     dir.is_empty() || path == dir || (path.starts_with(dir) && path.as_bytes().get(dir.len()) == Some(&b'/'))
 }
 
-/// 글자의 종류별 순서: 기호, 숫자, 한글, 그 밖의 글자 (한국어 사전의 순서)
-fn rank(c: char) -> u8 {
-    match c {
-        '0'..='9' => 1,
-        '\u{1100}'..='\u{11ff}' | '\u{3130}'..='\u{318f}' | '\u{ac00}'..='\u{d7a3}' => 2,
-        c if c.is_alphabetic() => 3,
-        _ => 0,
-    }
-}
-
-/// 사람이 기대하는 이름순: 대소문자를 가리지 않고, 숫자는 수로 견주고("메모 2"가 "메모 10"보다 먼저), 한글이 영문보다 먼저다.
-pub fn natural_cmp(a: &str, b: &str) -> Ordering {
-    let (a, b): (Vec<char>, Vec<char>) = (a.to_lowercase().chars().collect(), b.to_lowercase().chars().collect());
-    let (mut i, mut j) = (0, 0);
-    while i < a.len() && j < b.len() {
-        if a[i].is_ascii_digit() && b[j].is_ascii_digit() {
-            let number = |s: &[char], at: &mut usize| {
-                let mut n = 0u64;
-                while *at < s.len() && s[*at].is_ascii_digit() {
-                    n = n.saturating_mul(10).saturating_add(s[*at] as u64 - '0' as u64);
-                    *at += 1;
-                }
-                n
-            };
-            match number(&a, &mut i).cmp(&number(&b, &mut j)) {
-                Ordering::Equal => continue,
-                other => return other,
-            }
-        }
-        match rank(a[i]).cmp(&rank(b[j])).then(a[i].cmp(&b[j])) {
-            Ordering::Equal => {
-                i += 1;
-                j += 1;
-            }
-            other => return other,
-        }
-    }
-    (a.len() - i).cmp(&(b.len() - j))
-}
+pub use webos::ui::natural_cmp;
 
 /// 글에 든 [[링크]] 하나
 #[derive(Clone, PartialEq, Eq, Debug)]

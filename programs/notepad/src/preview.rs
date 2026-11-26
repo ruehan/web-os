@@ -4,7 +4,7 @@
 //! 배치와 그리기를 한 번에 한다. `draw`를 끄면 그리지 않고 높이만 잰다 (스크롤의 끝을 알기 위해).
 
 use crate::markdown::{self, Block, Inline, List};
-use crate::ui::{Rect, Ui};
+use webos::ui::{Rect, Ui};
 use crate::vault;
 use std::collections::HashMap;
 use webos::gui::{Align, Color, Role, Style};
@@ -573,4 +573,4 @@ impl<A: Clone> Preview<'_, '_, A> {
     }
 }
 
-use crate::ui::RADIUS;
+use webos::ui::RADIUS;

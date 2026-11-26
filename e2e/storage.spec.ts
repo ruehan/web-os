@@ -36,7 +36,7 @@ test('the first visit installs the default files and says so', async ({ page }) 
   await launch(page, '시스템 로그')
   await expect(page.getByTestId('klog')).toContainText('storage: created persistent storage')
   await launch(page, '파일')
-  await expect(appWindow(page, 'files').locator('.file-name')).toHaveText(['hello.sh', 'README.md'])
+  await expect(appWindow(page, 'files').getByRole('option')).toHaveText(['hello.sh', 'README.md'])
 })
 
 test('files saved from the editor and the file browser persist too', async ({ page }) => {

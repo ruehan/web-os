@@ -388,7 +388,21 @@ button {
 .surface-regions,
 .surface-region {
   position: absolute;
+}
+
+/* 층 자체는 입력을 받지 않고, 그 안의 자리들만 받는다 (받은 입력은 그림이 받은 것처럼 프로그램에 전해진다). */
+.surface-regions {
   pointer-events: none;
+}
+
+.surface-region {
+  pointer-events: auto;
+  overflow: hidden;
+  /* 이름은 글로도 들어 있지만 보이지 않는다 (보이는 것은 프로그램이 그린 그림이다). */
+  font-size: 0;
+  color: transparent;
+  user-select: none;
+  touch-action: none;
 }
 
 .surface-regions {
@@ -738,116 +752,10 @@ input {
 
 /* ───────────── 파일 탐색기 ───────────── */
 
-.files,
 .editor {
   height: 100%;
   display: flex;
   flex-direction: column;
-}
-
-.files.dropping {
-  outline: 2px dashed var(--accent);
-  outline-offset: -6px;
-}
-
-.crumbs {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  overflow: hidden;
-}
-
-.crumb {
-  flex: none;
-  padding: 2px 6px;
-  border: 0;
-  border-radius: var(--radius-s);
-  background: none;
-  font: 12.5px var(--mono);
-  color: var(--muted);
-  cursor: pointer;
-}
-
-.crumb:hover {
-  background: var(--hover);
-  color: var(--text);
-}
-
-.crumb:last-child {
-  color: var(--text);
-}
-
-.crumb + .crumb::before {
-  content: '›';
-  margin-right: 10px;
-  color: var(--muted);
-}
-
-.file-list {
-  flex: 1;
-  min-height: 0;
-  margin: 0;
-  padding: 6px;
-  overflow-y: auto;
-  list-style: none;
-}
-
-.file-list:focus-visible {
-  outline-offset: -2px;
-}
-
-.file-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 4px 8px;
-  border-radius: var(--radius-s);
-  cursor: default;
-  user-select: none;
-}
-
-.file-row:hover {
-  background: var(--hover);
-}
-
-.file-row[aria-selected='true'] {
-  background: var(--accent-soft);
-}
-
-.file-icon {
-  display: grid;
-  color: var(--muted);
-}
-
-.file-icon.dir {
-  color: var(--accent);
-}
-
-.file-name {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-
-.file-rename {
-  flex: 1;
-  min-width: 0;
-}
-
-.file-size {
-  flex: none;
-  font-size: 12px;
-  font-variant-numeric: tabular-nums;
-  color: var(--muted);
-}
-
-.file-empty {
-  padding: 28px 16px;
-  text-align: center;
-  color: var(--muted);
 }
 
 /* ───────────── 편집기 ───────────── */
@@ -1652,17 +1560,6 @@ input {
   color: var(--danger);
 }
 
-/* 새 파일의 형식 고르기 */
-.type-bar {
-  flex-wrap: wrap;
-  background: var(--surface-2);
-}
-
-.type-ext {
-  font-family: var(--mono);
-  color: var(--muted);
-}
-
 /* 읽기 화면 안의 메모 링크, 태그, 그림, 체크 목록 */
 .md-wikilink {
   padding: 0;
@@ -1867,7 +1764,6 @@ button.md-tag {
 .controls button,
 .tool,
 .button,
-.crumb,
 .segmented button,
 .term-keys button,
 .swatch {
@@ -1951,7 +1847,6 @@ button.md-tag {
 
 /* 묻는 막대, 형식 고르기, 안내문처럼 눌러서 나타나는 것은 위에서 살짝 내려오며 나타난다. */
 .promptbar,
-.type-bar,
 .confirm,
 .mount-error,
 .storage-note,
@@ -1980,13 +1875,8 @@ button.md-tag {
   }
 }
 
-.file-row,
 .trace-row:hover {
   transition: background-color 0.1s ease;
-}
-
-.file-row[aria-selected='true'] {
-  transition: none;
 }
 
 /* 알림은 구석에서 올라온다. */
